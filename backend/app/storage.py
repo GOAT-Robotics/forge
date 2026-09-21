@@ -32,7 +32,9 @@ def upload(revision_id,path,relative=None):
  """Copy one finished local artifact to the configured Space."""
  if not enabled():return
  path=Path(path);relative=relative or path.name
- _client().upload_file(str(path),os.environ['S3_BUCKET'],key_for(revision_id,relative),ExtraArgs={'ServerSideEncryption':'AES256'})
+ # Spaces encrypts objects at rest; unlike AWS S3 it does not accept the
+ # x-amz-server-side-encryption header on every compatible endpoint.
+ _client().upload_file(str(path),os.environ['S3_BUCKET'],key_for(revision_id,relative))
 
 
 def sync_revision(revision_id,folder):
