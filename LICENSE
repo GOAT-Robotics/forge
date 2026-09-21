@@ -1,0 +1,87 @@
+Forge License (Private, Non-Commercial)
+
+Copyright (c) 2026 GOAT Robotics Private Limited, Coimbatore, India.
+All rights reserved, except as granted below.
+
+1. Definitions
+
+"Software" means Forge, including its source code, object code,
+documentation, designs and user interface, and every version of them.
+"You" means the individual who receives the Software. "GOAT Robotics" means
+GOAT Robotics Private Limited. "Modification" means any change to, or work
+derived from, the Software.
+
+2. What you may do
+
+Subject to this license, GOAT Robotics grants you a personal,
+non-exclusive, non-transferable, revocable, royalty-free license to:
+
+  a. Private use: download, install, run and use the Software for your own
+     private, non-commercial purposes, such as personal projects, study,
+     teaching and non-commercial research; and
+  b. Modification: modify the Software and use your Modifications for the
+     same private, non-commercial purposes.
+
+3. What you may not do
+
+Without the prior written permission of GOAT Robotics, signed by an
+authorised officer, you may not:
+
+  a. Commercial use: use the Software or any Modification for a commercial
+     purpose. Commercial purpose includes any use by or for a company,
+     firm or other business, or in its operations, including design,
+     engineering, manufacturing or production work; any use for a customer
+     or for payment; and offering the Software or any Modification as a
+     product, a hosted or managed service, or part of one, whether paid or
+     free;
+  b. Distribution: copy, publish, distribute, sell, rent, lease,
+     sublicense, transfer, host for others or otherwise make the Software
+     or any Modification, in whole or in part, in source or compiled form,
+     available to anyone else. Sending a Modification to GOAT Robotics
+     under section 5 is not distribution;
+  c. Patent use: no patent license is granted under any patent or patent
+     application of GOAT Robotics, whether expressly, by implication, by
+     estoppel or otherwise. The rights in section 2 do not include the
+     right to make, use, sell, offer for sale or import anything covered by
+     those patents beyond the private, non-commercial use section 2
+     permits;
+  d. remove or alter this notice or any other proprietary notice; or
+  e. use the Software, its source code or its documentation to train,
+     fine-tune or evaluate any machine-learning model that is distributed
+     or used commercially.
+
+4. Trademarks
+
+"Forge", "GOAT Robotics" and their names and logos are trademarks of GOAT
+Robotics. No right to use them is granted.
+
+5. Contributions
+
+You may send a Modification to GOAT Robotics. Anything you send is assigned
+to GOAT Robotics, which may use it for any purpose without obligation to
+you. If assignment is not possible under applicable law, you grant GOAT
+Robotics an exclusive, perpetual, irrevocable, worldwide, royalty-free
+license to it, with the right to sublicense.
+
+6. Termination
+
+This license ends automatically if you breach it. When it ends you must
+stop using the Software and your Modifications and delete every copy. Any
+use outside this license infringes the rights of GOAT Robotics, which may
+seek every remedy available in law and equity, including injunctive relief.
+
+7. No warranty and no liability
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL GOAT ROBOTICS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY ARISING FROM OR IN CONNECTION WITH THE SOFTWARE.
+
+8. Governing law
+
+This license is governed by the laws of India. The courts at Coimbatore,
+Tamil Nadu, have exclusive jurisdiction over any dispute arising from it.
+
+9. Commercial licensing and permission requests
+
+For commercial use, distribution or any other permission, write to
+naveen@goat-robotics.com.

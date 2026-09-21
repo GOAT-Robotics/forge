@@ -1,0 +1,45 @@
+name: forge-manufacturing
+services:
+  app:
+    build: .
+    image: forge-manufacturing:local
+    ports:
+      - "127.0.0.1:${PORT:-8100}:8100"
+    volumes:
+      - forge-data:/data
+    environment:
+      DATA_DIR: /data
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: /tmp:size=1536m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8100/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    mem_limit: 768m
+  worker:
+    image: forge-manufacturing:local
+    command: [python, -m, app.worker]
+    environment:
+      DATA_DIR: /data
+      OMP_NUM_THREADS: "2"
+    volumes:
+      - forge-data:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs: /tmp:size=2048m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 6g
+    cpus: 3
+volumes:
+  forge-data:
