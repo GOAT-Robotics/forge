@@ -1,5 +1,6 @@
 .venv/
 .env
+.forge-deploy-env
 .data/
 node_modules/
 frontend/dist/
