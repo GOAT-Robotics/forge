@@ -2,7 +2,7 @@ import time,json,traceback,os,zipfile,hashlib
 from pathlib import Path
 import numpy as np
 import trimesh,ezdxf
-from . import db
+from . import db,storage
 from .cad import import_model,explore,analyze,mesh,BRepTools,TopAbs_SOLID,bounds,classify_name,hidden_by_default,classify_prefix
 from .unfold import unfold
 from .drawings import make_part,assembly_pdf,render_meshes,combined_canvas,thumb_color
@@ -174,6 +174,7 @@ def run_once():
   job=dict(job);c.execute('UPDATE jobs SET status="running" WHERE id=?',(job['id'],))
  try:
   (process_import(job['revision_id']) if job['kind']=='import' else process_documents(job['revision_id'],json.loads(job['payload'])))
+  storage.sync_revision(job['revision_id'],db.revdir(job['revision_id']))
   with db.connect() as c:c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
  except Exception as e:
   traceback.print_exc()

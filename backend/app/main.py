@@ -5,7 +5,7 @@ from fastapi import FastAPI,Request,HTTPException,UploadFile,File,Form
 from fastapi.responses import FileResponse,JSONResponse,Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel,Field,ConfigDict
-from . import db
+from . import db,storage
 from .security import user,editor,revision_access,password_hash,verify_password,token_hash
 from .rules import evaluate,MANUAL_CHECKS,STANDARDS
 
@@ -161,6 +161,12 @@ async def upload(pid:str,request:Request,file:UploadFile=File(...),notes:str=For
   n=c.execute('SELECT COALESCE(MAX(number),0)+1 FROM revisions WHERE project_id=?',(pid,)).fetchone()[0]
   c.execute('INSERT INTO revisions(id,project_id,number,filename,sha256,state,status,created,created_by,notes,manifest) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(rid,pid,n,filename,h.hexdigest(),'pending','processing',db.now(),u['name'],notes,json.dumps({'rules_snapshot':json.loads(p['rules'])})))
   enqueue(c,rid,'import');db.audit(c,u['name'],'revision.uploaded',{'filename':filename,'sha256':h.hexdigest(),'bytes':size},rid)
+ try:storage.upload(rid,dest,dest.name)
+ except Exception as e:
+  # Do not leave a revision queued when durable artifact storage is unavailable.
+  with db.connect() as c:
+   c.execute('UPDATE revisions SET status="failed",message=? WHERE id=?',(f'Artifact storage upload failed: {str(e)[:300]}',rid));c.execute('UPDATE jobs SET status="failed",error=? WHERE revision_id=? AND status="queued"',(str(e)[:1000],rid))
+  raise HTTPException(503,'Artifact storage is unavailable; upload was not queued')
  return get_rev(rid)
 @app.get('/api/revisions/{rid}')
 def revision(rid:str,request:Request):
@@ -438,6 +444,7 @@ def revision_asset(rid:str,filename:str,request:Request):
  if filename.endswith(('.pdf','.dxf','.zip')) and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
  if filename not in ('assembly.glb','assembly.png','assembly.pdf','assembly.dxf','manufacturing-pack.zip','instances.json','machining-drawings.pdf','sheet-metal-drawings.pdf'):raise HTTPException(404,'Asset not found')
  p=db.revdir(rid)/filename
+ if not p.exists():storage.restore(rid,filename,p)
  if not p.exists():raise HTTPException(404,'Asset not generated yet')
  return FileResponse(p,filename=filename if filename.endswith(('.zip','.pdf')) else None)
 @app.get('/api/parts/{pid}/assets/{filename}')
@@ -446,6 +453,7 @@ def part_asset(pid:str,filename:str,request:Request):
  if filename not in ('model.glb','thumb.png') and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running")',(p['revision_id'],)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
  if filename not in ('model.glb','thumb.png','drawing.pdf','drawing.dxf','flat.glb','flat.dxf','flat.json','projections.json','part.step'):raise HTTPException(404,'Asset not found')
  f=db.revdir(p['revision_id'])/'parts'/pid/filename
+ if not f.exists():storage.restore(p['revision_id'],f'parts/{pid}/{filename}',f)
  if filename=='thumb.png' and not f.exists() and (f.parent/'model.glb').exists():
   # Revisions imported before thumbnails existed: render once on demand from the lightweight mesh.
   try:
