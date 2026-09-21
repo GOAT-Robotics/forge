@@ -45,6 +45,12 @@ React + Three.js frontend; FastAPI + SQLite WAL API; OpenCascade geometry worker
 
 The default deployment is **one API process and one worker**, on one host with a local persistent volume. Mutating HTTP requests are serialized; jobs are persisted and resumed after restart. Do not scale worker replicas: automatic running-job recovery assumes one worker. This is not a distributed job system or multi-tenant SaaS.
 
+### Ephemeral CAD workers on DigitalOcean
+
+For cost-controlled remote CAD work, set `CAD_EXECUTION_MODE=ephemeral`. The lightweight dispatcher uploads a per-job database/data snapshot to the revision's private Spaces prefix, creates one tagged Droplet, and gives it only an expiring download URL plus an expiring single-object upload capability. The Droplet runs exactly one job, returns a result archive, then is deleted by the dispatcher; a deadline (`DO_WORKER_TIMEOUT_SECONDS`, default two hours) deletes a worker that fails to return.
+
+Set `DO_TOKEN`, `DO_WORKER_REGION`, `DO_WORKER_IMAGE`, `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` in the ignored deployment environment file. `DO_WORKER_IMAGE` must be a public immutable Forge image such as `ghcr.io/goat-robotics/forge:main`; the build workflow publishes this image. Keep the DigitalOcean token and Spaces credentials on the API host only—the spawned Droplet receives neither. Use a DigitalOcean token restricted to Droplet read/write and a Spaces key restricted to the Forge bucket. The dispatcher intentionally runs one remote worker at a time, so the SQLite result merge is deterministic and the maximum concurrent compute cost is one Droplet.
+
 ### Durable artifact storage
 
 Set `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` to mirror every accepted source file and every completed generated artifact to an S3-compatible bucket. For DigitalOcean Spaces in SFO3, keep `S3_ENDPOINT=https://sfo3.digitaloceanspaces.com` and `S3_REGION=sfo3`. The service restores an absent artifact from the bucket on demand. The S3 key must be restricted to this bucket with read/write/delete access; do not put it in Git, a Docker image, or a GitHub Actions log.
