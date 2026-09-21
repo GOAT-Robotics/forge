@@ -43,7 +43,11 @@ The supplied OMNI STEP has been imported into the local installation. A fresh in
 
 React + Three.js frontend; FastAPI + SQLite WAL API; OpenCascade geometry worker; ezdxf + ReportLab outputs. No Redis, PostgreSQL or cloud CAD upload service. Fonts and frontend assets are bundled. The worker is necessarily heavier than the web service because a full CAD kernel is required.
 
-The supported deployment is **one API process and one worker**, on one host with a local persistent volume. Mutating HTTP requests are serialized; jobs are persisted and resumed after restart. Do not scale worker replicas: automatic running-job recovery assumes one worker. This is not a distributed job system or multi-tenant SaaS.
+The default deployment is **one API process and one worker**, on one host with a local persistent volume. Mutating HTTP requests are serialized; jobs are persisted and resumed after restart. Do not scale worker replicas: automatic running-job recovery assumes one worker. This is not a distributed job system or multi-tenant SaaS.
+
+### Durable artifact storage
+
+Set `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` to mirror every accepted source file and every completed generated artifact to an S3-compatible bucket. For DigitalOcean Spaces in SFO3, keep `S3_ENDPOINT=https://sfo3.digitaloceanspaces.com` and `S3_REGION=sfo3`. The service restores an absent artifact from the bucket on demand. The S3 key must be restricted to this bucket with read/write/delete access; do not put it in Git, a Docker image, or a GitHub Actions log.
 
 Docker service limits: API 768 MB; worker 6 GB / 3 CPUs. Large CAD assemblies need adequate host RAM and disk. Configure `PORT`, `COOKIE_SECURE`, and `MAX_UPLOAD_MB` in `.env` using `.env.example`. Keep `COOKIE_SECURE=false` only for local HTTP. For remote use, put the app behind an HTTPS reverse proxy and set `COOKIE_SECURE=true`; configure your hostname and upload/time limits. Complete first-run owner setup before making the endpoint remotely reachable. No public deployment is performed by this project.
 
