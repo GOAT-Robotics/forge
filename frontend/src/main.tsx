@@ -179,19 +179,32 @@ function App() {
     const data = new FormData();
     data.append('file', file); data.append('notes', notes);
     const xhr = new XMLHttpRequest();
+    const responseError = () => {
+      const fallback = xhr.status ? `Upload failed (HTTP ${xhr.status}${xhr.statusText ? ` ${xhr.statusText}` : ''})` : 'Upload failed';
+      try {
+        const body = JSON.parse(xhr.responseText);
+        return typeof body.detail === 'string' ? body.detail : fallback;
+      } catch {
+        // Proxies can return HTML for upload limits and timeouts. Never leave the
+        // enclosing action pending merely because their error is not JSON.
+        return fallback;
+      }
+    };
     xhr.open('POST', `/api/projects/${project.id}/revisions`);
     Object.entries(headers()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     xhr.upload.onprogress = e => setUploadPercent(Math.round(e.loaded / e.total * 100));
-    xhr.onload = async () => {
+    xhr.onload = () => {
       setUploadPercent(null);
-      if (xhr.status >= 400) { reject(new Error(JSON.parse(xhr.responseText).detail)); return; }
-      const r = JSON.parse(xhr.responseText);
-      await loadRevision(r.id);
-      setProject(await api('/projects/' + project.id));
-      setModal('');
-      resolve();
+      if (xhr.status < 200 || xhr.status >= 300) { reject(new Error(responseError())); return; }
+      void (async () => {
+        const r = JSON.parse(xhr.responseText);
+        await loadRevision(r.id);
+        setProject(await api('/projects/' + project.id));
+        setModal('');
+      })().then(resolve).catch(e => reject(e instanceof Error ? e : new Error(String(e))));
     };
     xhr.onerror = () => { setUploadPercent(null); reject(new Error('Upload failed')); };
+    xhr.onabort = () => { setUploadPercent(null); reject(new Error('Upload cancelled')); };
     xhr.send(data);
   });
 
