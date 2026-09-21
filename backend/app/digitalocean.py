@@ -5,7 +5,7 @@ import httpx
 API='https://api.digitalocean.com/v2'
 
 def configured():
- return bool(os.getenv('DO_TOKEN') and os.getenv('DO_WORKER_IMAGE') and os.getenv('DO_WORKER_REGION'))
+ return bool(os.getenv('DO_TOKEN') and os.getenv('DO_WORKER_IMAGE') and os.getenv('DO_WORKER_REGION') and os.getenv('GHCR_TOKEN'))
 
 def _headers():
  token=os.getenv('DO_TOKEN')
