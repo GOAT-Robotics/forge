@@ -55,7 +55,7 @@ def invalidate(rid,pid=None):
   for file in ['drawing.pdf','drawing.dxf','flat.dxf','flat.glb','flat.json']:(d/'parts'/pid/file).unlink(missing_ok=True)
 
 def enqueue(c,rid,kind,payload={}):
- id=db.uid();c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?)',(id,rid,kind,'queued',db.now(),'',json.dumps(payload)));return id
+ id=db.uid();c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(id,rid,kind,'queued',db.now(),'',json.dumps(payload)));return id
 @app.get('/api/health')
 def health():return {'status':'ok','version':'0.1.0'}
 @app.get('/api/auth/status')

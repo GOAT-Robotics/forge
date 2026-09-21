@@ -9,5 +9,5 @@ pid=db.uid();rid=db.uid();target=db.revdir(rid)/('source'+p.suffix.lower());shut
 with db.connect() as c:
  c.execute('INSERT INTO projects VALUES(?,?,?,?,?)',(pid,name,'Reference assembly imported for validation. No engineering approvals inferred.',db.now(),json.dumps(db.DEFAULT_RULES)))
  c.execute('INSERT INTO revisions(id,project_id,number,filename,sha256,state,status,created,created_by,manifest) VALUES(?,?,?,?,?,?,?,?,?,?)',(rid,pid,1,p.name,hashlib.file_digest(p.open('rb'),'sha256').hexdigest(),'pending','processing',db.now(),'Local reference import',json.dumps({'rules_snapshot':db.DEFAULT_RULES})))
- c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?)',(db.uid(),rid,'import','queued',db.now(),'','{}'))
+ c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(db.uid(),rid,'import','queued',db.now(),'','{}'))
 print('Queued project',pid,'revision',rid)

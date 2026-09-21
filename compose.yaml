@@ -30,10 +30,17 @@ services:
     mem_limit: 768m
   worker:
     image: forge-manufacturing:local
-    command: [python, -m, app.worker]
+    command: [sh, -ec, 'if [ "$$CAD_EXECUTION_MODE" = ephemeral ]; then exec python -m app.dispatcher; else exec python -m app.worker; fi']
     environment:
       DATA_DIR: /data
       OMP_NUM_THREADS: "2"
+      CAD_EXECUTION_MODE: ${CAD_EXECUTION_MODE:-local}
+      DO_TOKEN: ${DO_TOKEN:-}
+      DO_WORKER_REGION: ${DO_WORKER_REGION:-}
+      DO_WORKER_SIZE: ${DO_WORKER_SIZE:-s-4vcpu-8gb}
+      DO_WORKER_BASE_IMAGE: ${DO_WORKER_BASE_IMAGE:-ubuntu-24-04-x64}
+      DO_WORKER_IMAGE: ${DO_WORKER_IMAGE:-}
+      DO_WORKER_TIMEOUT_SECONDS: ${DO_WORKER_TIMEOUT_SECONDS:-7200}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_ENDPOINT: ${S3_ENDPOINT:-https://sfo3.digitaloceanspaces.com}
       S3_REGION: ${S3_REGION:-sfo3}

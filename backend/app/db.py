@@ -33,6 +33,11 @@ def init():
   existing={r[1] for r in c.execute('PRAGMA table_info(parts)').fetchall()}
   for column,definition in [('excluded','INTEGER DEFAULT 0'),('exclusion_reason',"TEXT DEFAULT ''"),('hidden','INTEGER DEFAULT 0'),('excluded_by',"TEXT DEFAULT ''"),('excluded_at',"TEXT DEFAULT ''")]:
    if column not in existing:c.execute(f'ALTER TABLE parts ADD COLUMN {column} {definition}')
+  # A remote CAD run is still one persisted job.  These fields make an
+  # interrupted dispatcher able to find and terminate its own Droplet.
+  job_columns={r[1] for r in c.execute('PRAGMA table_info(jobs)').fetchall()}
+  for column,definition in [('provider_id',"TEXT DEFAULT ''"),('provider_started',"TEXT DEFAULT ''"),('provider_deadline',"TEXT DEFAULT ''")]:
+   if column not in job_columns:c.execute(f'ALTER TABLE jobs ADD COLUMN {column} {definition}')
 def row(sql,args=()):
  with connect() as c:
   r=c.execute(sql,args).fetchone();return dict(r) if r else None
