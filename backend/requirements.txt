@@ -1,0 +1,14 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+cadquery-ocp==8.0.1.0.0
+ezdxf==1.4.4
+reportlab==4.4.4
+trimesh==4.8.3
+numpy>=2.2,<3
+shapely==2.1.2
+mapbox-earcut==2.0.0
+pillow>=11,<13
+pydantic>=2.11,<3
+httpx==0.28.1
+pytest==8.4.2
