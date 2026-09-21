@@ -12,9 +12,9 @@ def _headers():
  if not token:raise RuntimeError('DO_TOKEN is required for ephemeral CAD workers')
  return {'Authorization':f'Bearer {token}','Content-Type':'application/json'}
 
-def create(name,user_data,tags):
+def create(name,user_data,tags=None):
  """Create an Ubuntu runner. user_data has only expiring object capabilities."""
- body={'name':name,'region':os.environ['DO_WORKER_REGION'],'size':os.getenv('DO_WORKER_SIZE','s-4vcpu-8gb'),'image':os.getenv('DO_WORKER_BASE_IMAGE','ubuntu-24-04-x64'),'monitoring':True,'tags':tags,'user_data':user_data}
+ body={'name':name,'region':os.environ['DO_WORKER_REGION'],'size':os.getenv('DO_WORKER_SIZE','s-4vcpu-8gb'),'image':os.getenv('DO_WORKER_BASE_IMAGE','ubuntu-24-04-x64'),'monitoring':True,'user_data':user_data}
  with httpx.Client(timeout=30) as client:
   response=client.post(API+'/droplets',headers=_headers(),json=body);response.raise_for_status()
  return str(response.json()['droplet']['id'])

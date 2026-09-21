@@ -72,7 +72,8 @@ def _start(job):
   input_key,result_key=_job_paths(job);storage.upload_path(job['revision_id'],archive,input_key)
   timeout=int(os.getenv('DO_WORKER_TIMEOUT_SECONDS','7200'))
   config={'revision_id':job['revision_id'],'input_url':storage.presigned_get(job['revision_id'],input_key,timeout),'result_post':storage.presigned_post(job['revision_id'],result_key,timeout)}
-  droplet_id=digitalocean.create('forge-job-'+job['id'][:12],_cloud_init(config),['forge-ephemeral','forge-job-'+job['id']])
+  # The worker ID is persisted locally; avoid the optional Tags API permission.
+  droplet_id=digitalocean.create('forge-job-'+job['id'][:12],_cloud_init(config))
   try:
    with db.connect() as c:
     c.execute('UPDATE jobs SET provider_id=?,provider_started=?,provider_deadline=? WHERE id=?',(droplet_id,db.now(),_utc_after(timeout),job['id']))
