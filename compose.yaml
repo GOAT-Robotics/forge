@@ -41,6 +41,8 @@ services:
       DO_WORKER_BASE_IMAGE: ${DO_WORKER_BASE_IMAGE:-ubuntu-24-04-x64}
       DO_WORKER_IMAGE: ${DO_WORKER_IMAGE:-}
       DO_WORKER_TIMEOUT_SECONDS: ${DO_WORKER_TIMEOUT_SECONDS:-7200}
+      GHCR_USERNAME: ${GHCR_USERNAME:-naveenrobo}
+      GHCR_TOKEN: ${GHCR_TOKEN:-}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_ENDPOINT: ${S3_ENDPOINT:-https://sfo3.digitaloceanspaces.com}
       S3_REGION: ${S3_REGION:-sfo3}

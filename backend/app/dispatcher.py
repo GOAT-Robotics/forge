@@ -58,6 +58,7 @@ def _cloud_init(config):
   'apt-get update -qq',
   'apt-get install -y -qq docker.io ca-certificates',
   'systemctl enable --now docker',
+  'printf %s '+shlex.quote(os.environ['GHCR_TOKEN'])+' | docker login ghcr.io -u '+shlex.quote(os.getenv('GHCR_USERNAME','naveenrobo'))+' --password-stdin',
   'docker pull '+shlex.quote(image),
   'docker run --rm --read-only --tmpfs /tmp:rw,size=4g --memory=7g --cpus=4 -e FORGE_EPHEMERAL_CONFIG='+shlex.quote(encoded)+' '+shlex.quote(image)+' python -m app.ephemeral_worker',
   'shutdown -h now'])
@@ -65,7 +66,7 @@ def _cloud_init(config):
 
 def _start(job):
  if not storage.enabled():raise RuntimeError('S3_BUCKET is required: an ephemeral worker cannot use the API host volume')
- if not digitalocean.configured():raise RuntimeError('Set DO_TOKEN, DO_WORKER_REGION and DO_WORKER_IMAGE before enabling ephemeral workers')
+ if not digitalocean.configured():raise RuntimeError('Set DO_TOKEN, DO_WORKER_REGION, DO_WORKER_IMAGE and GHCR_TOKEN before enabling ephemeral workers')
  stage,archive=_bundle(job)
  try:
   input_key,result_key=_job_paths(job);storage.upload_path(job['revision_id'],archive,input_key)
