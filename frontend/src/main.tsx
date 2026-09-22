@@ -90,6 +90,27 @@ function App() {
     else api('/auth/status').then(a => { setAuth(a); if (a.user) { loadProjects().catch(fail); api('/settings').then(setSettings).catch(() => {}); openRoute().catch(fail); } }).catch(fail);
   }, []);
 
+  // Track project imports even while an older revision or upload dialog is open.
+  useEffect(() => {
+    if (!project?.id || vendorId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const updated = await api('/projects/' + project.id);
+        if (!cancelled) setProject(updated);
+      } catch (e) { if (!cancelled) fail(e); }
+    };
+    void refresh();
+    const timer = setInterval(refresh, 2500);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [project?.id]);
+  const importingRevision = project?.revisions?.find((r: Any) => r.status === 'processing');
+  const showImport = () => action(async () => {
+    if (!importingRevision) return;
+    await loadRevision(importingRevision.id);
+    setTab('parts'); setModal(''); setError('');
+  });
+
   useEffect(() => {
     if (!rev) return;
     const active = rev.status === 'processing' || rev.jobs?.some((j: Any) => ['queued', 'running'].includes(j.status));
@@ -317,13 +338,21 @@ function App() {
                 <span className="project-sub">{vendor ? 'Supplier review portal' : rev ? `${parts.length} parts · ${rev.manifest?.occurrences || 0} body instances · ${holes} named bores` : 'Upload your first CAD file to begin'}</span>
               </div>
               <div className="project-actions">
-                {!vendor && <button onClick={() => setModal('upload')}><Upload size={16} />Upload revision</button>}
+                {!vendor && <button onClick={() => importingRevision ? showImport() : setModal('upload')}>{importingRevision ? <LoaderCircle size={16} className="spin" /> : <Upload size={16} />}{importingRevision ? 'View import progress' : 'Upload revision'}</button>}
                 {rev && <>
                   <button onClick={() => doc(`/revisions/${rev.id}/assets/manufacturing-pack.zip`, 'manufacturing-pack.zip')} disabled={!rev.assets?.includes('manufacturing-pack.zip')} title="Generate the manufacturing pack in the revision overview"><Download size={16} />Package</button>
                   {!vendor && <button className="primary" disabled={!['ready', 'released'].includes(rev.status)} onClick={() => { setSharePath(''); setModal('share'); }}><Link size={16} />Share with vendor</button>}
                 </>}
               </div>
             </section>
+
+            {importingRevision && <div className="progress-banner" role="status" aria-live="polite">
+              <LoaderCircle size={16} className="spin" />
+              <span>Revision {importingRevision.number} · {importingRevision.message || 'Import queued'}</span>
+              <progress aria-label="CAD import progress" max="100" value={importingRevision.progress || 0} />
+              <b>{importingRevision.progress || 0}%</b>
+              {rev?.id !== importingRevision.id && <button className="mini" onClick={showImport}>View import</button>}
+            </div>}
 
             {!rev && vendor ? (
               <div className="empty-page"><LoaderCircle className="spin" /><p>Loading shared revision…</p></div>
@@ -348,7 +377,7 @@ function App() {
                   </div>
                 </div>
 
-                {job && <div className="progress-banner"><LoaderCircle size={16} className="spin" /><span>{rev.message || 'Job queued'}</span><progress max="100" value={rev.progress} /><b>{rev.progress}%</b></div>}
+                {job && !importingRevision && <div className="progress-banner"><LoaderCircle size={16} className="spin" /><span>{rev.message || 'Job queued'}</span><progress max="100" value={rev.progress} /><b>{rev.progress}%</b></div>}
                 {rev.status === 'failed' && <div className="error-banner">Import failed: {rev.message}. The previous active revision is preserved.</div>}
                 {rev.state === 'archived' && <div className="notice"><Archive size={15} />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
 
@@ -727,13 +756,19 @@ function App() {
 
       {modal === 'upload' && (
         <Modal title="Upload a CAD revision" close={() => !busy && setModal('')}>
-          <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const file = f.get('file') as File; action(() => uploadFile(file, String(f.get('notes') || ''))); }}>
+          {importingRevision ? <div role="status" aria-live="polite">
+            <h3>Revision {importingRevision.number} is processing · {importingRevision.progress || 0}%</h3>
+            <p>{importingRevision.message || 'Import queued'}</p>
+            <progress aria-label="CAD import progress" max="100" value={importingRevision.progress || 0} />
+            <p className="muted">Progress updates automatically. You can upload the next revision after this import finishes.</p>
+            <button className="primary full" onClick={showImport}>View import progress</button>
+          </div> : <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const file = f.get('file') as File; action(() => uploadFile(file, String(f.get('notes') || ''))); }}>
             <label className="dropzone"><Upload size={32} /><b>Choose your part or assembly</b><span>STEP · STP · BREP · IGES / up to 1 GB</span><input name="file" type="file" accept=".step,.stp,.brep,.brp,.igs,.iges" required /></label>
             <label>Revision notes<textarea name="notes" placeholder="What changed in this version?" /></label>
             <p className="muted">The previous revision stays active until this file processes successfully. No review approvals carry over automatically.</p>
             {uploadPercent !== null && <progress max="100" value={uploadPercent} />}
             <button className="primary full" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <Upload size={16} />}Upload & analyze {uploadPercent !== null && uploadPercent + '%'}</button>
-          </form>
+          </form>}
         </Modal>
       )}
 
