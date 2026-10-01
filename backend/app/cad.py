@@ -180,6 +180,96 @@ def transform_matrix(t):
   for j in range(4):m[i,j]=t.Value(i+1,j+1)
  return m
 
+def step_meta(doc,label):
+ """Engineering data a STEP file can carry for one product: material (AP214/AP242 material designation,
+ density), product description and surface colour. Absent data is simply omitted."""
+ out={}
+ from OCP.XCAFDoc import XCAFDoc_DocumentTool,XCAFDoc_ColorType
+ from OCP.Quantity import Quantity_Color,Quantity_TOC_sRGB
+ try:
+  ct=XCAFDoc_DocumentTool.ColorTool_s(doc.Main());col=Quantity_Color()
+  shape=XCAFDoc_DocumentTool.ShapeTool_s(doc.Main()).GetShape_s(label)
+  candidates=[shape]+[f for f in explore(shape,TopAbs_FACE)][:1]
+  for s_,kind in [(x,k) for x in candidates for k in (XCAFDoc_ColorType.XCAFDoc_ColorSurf,XCAFDoc_ColorType.XCAFDoc_ColorGen)]:
+   if ct.GetColor(s_,kind,col):
+    r,g,b=col.Values(Quantity_TOC_sRGB);out['color']='#%02X%02X%02X'%(round(r*255),round(g*255),round(b*255));break
+ except Exception:pass
+ return out
+
+def step_materials(path):
+ """Material designations by product name, read from the STEP text (AP214/AP242 'material name' property:
+ PROPERTY_DEFINITION -> PRODUCT_DEFINITION[_SHAPE] -> PRODUCT, and its REPRESENTATION item)."""
+ import re
+ want={'PRODUCT','PRODUCT_DEFINITION','PRODUCT_DEFINITION_SHAPE','PROPERTY_DEFINITION','PROPERTY_DEFINITION_REPRESENTATION','REPRESENTATION','DESCRIPTIVE_REPRESENTATION_ITEM','MEASURE_REPRESENTATION_ITEM'}
+ ents={};buf=''
+ head=re.compile(r"\s*#(\d+)\s*=\s*([A-Z_0-9]+)\s*\(")
+ try:
+  with open(path,'r',errors='ignore') as f:
+   for line in f:
+    if not buf:
+     m=head.match(line)
+     if not m or not (m.group(2) in want or m.group(2).startswith('PRODUCT_DEFINITION_FORMATION')):continue
+    buf+=line
+    if ';' not in line:continue
+    stmt=buf.replace('\n',' ');buf=''
+    m=re.match(r"\s*#(\d+)\s*=\s*([A-Z_0-9]+)\s*\((.*)\)\s*;",stmt,re.S)
+    if m:ents[int(m.group(1))]=(m.group(2),m.group(3))
+ except OSError:return {}
+ refs=lambda body:[int(x) for x in re.findall(r"#(\d+)",body)]
+ strs=lambda body:re.findall(r"'((?:[^']|'')*)'",body)
+ def product_of(eid,depth=0):
+  if depth>4 or eid not in ents:return None
+  t,body=ents[eid]
+  if t=='PRODUCT':return strs(body)[1] if len(strs(body))>1 else strs(body)[0]
+  for r in refs(body):
+   n=product_of(r,depth+1)
+   if n:return n
+  return None
+ out={}
+ for eid,(t,body) in ents.items():
+  if t!='PROPERTY_DEFINITION_REPRESENTATION':continue
+  pd,rep=(refs(body)+[0,0])[:2]
+  if ents.get(pd,('',''))[0]!='PROPERTY_DEFINITION' or ents.get(rep,('',''))[0]!='REPRESENTATION':continue
+  ps=strs(ents[pd][1])
+  if not ps or 'material' not in ' '.join(ps).lower():continue
+  target=[r for r in refs(ents[pd][1])]
+  name=product_of(target[0]) if target else None
+  rs=strs(ents[rep][1]);kind=(rs[0] if rs else '').lower()
+  for item in refs(ents[rep][1]):
+   it=ents.get(item)
+   if not it:continue
+   if it[0]=='DESCRIPTIVE_REPRESENTATION_ITEM' and 'name' in kind+ ' '.join(ps).lower():
+    v=strs(it[1]);out.setdefault(name or '*',{})['material']=v[0] if v else ''
+    if len(v)>1 and v[1]:out[name or '*']['material_description']=v[1]
+   elif it[0]=='MEASURE_REPRESENTATION_ITEM' and 'density' in kind+' '.join(ps).lower():
+    m=re.search(r"\(\s*([-0-9.Ee+]+)\s*\)",it[1])
+    if m:out.setdefault(name or '*',{})['density']=float(m.group(1))
+ return out
+
+def step_header(path):
+ """FILE_NAME / FILE_DESCRIPTION from the STEP header: originating system, author, organisation, time stamp."""
+ import re
+ try:
+  with open(path,'r',errors='ignore') as f:head=f.read(6000)
+ except OSError:return {}
+ out={}
+ m=re.search(r"FILE_NAME\s*\((.*?)\)\s*;",head,re.S)
+ if m:
+  vals=re.findall(r"'((?:[^']|'')*)'",m.group(1))
+  keys=['name','time_stamp','author','organization','preprocessor','originating_system','authorization']
+  out={k:v.strip() for k,v in zip(keys,vals) if v.strip()}
+ m=re.search(r"FILE_SCHEMA\s*\(\(\s*'([^']+)'",head)
+ if m:out['schema']=m.group(1)
+ return out
+
+# kg/m3, for mass estimates when the material is known
+DENSITIES=[('stainless',7930),('ss3',7930),('ss4',7750),('aluminium',2700),('aluminum',2700),('6061',2700),('6082',2700),('5052',2680),('brass',8500),('copper',8940),('cast iron',7200),('fg260',7200),('nylon',1140),('pa6',1140),('pom',1410),('delrin',1410),('uhmw',940),('steel',7850),('en8',7850),('en24',7850),('en19',7850),('en1a',7850),('crca',7850),('is 2062',7850),('mild',7850)]
+def density_for(material):
+ m=(material or '').lower()
+ for key,rho in DENSITIES:
+  if key in m:return rho
+ return None
+
 def import_model(path):
  from OCP.STEPCAFControl import STEPCAFControl_Reader
  from OCP.TDocStd import TDocStd_Document
@@ -210,7 +300,7 @@ def import_model(path):
    for i in range(1,seq.Length()+1):walk(seq.Value(i),matrix,anc)
   else:
    key=str(l.Tag())
-   if key not in leaves:leaves[key]={'key':key,'name':n,'shape':st.GetShape_s(l),'instances':[]}
+   if key not in leaves:leaves[key]={'key':key,'name':n,'shape':st.GetShape_s(l),'instances':[],'meta':step_meta(doc,l)}
    leaves[key]['instances'].append({'matrix':matrix.tolist(),'path':' / '.join(anc)})
  for i in range(1,roots.Length()+1):walk(roots.Value(i),np.eye(4),[])
  return list(leaves.values())

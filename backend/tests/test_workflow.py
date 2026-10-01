@@ -6,7 +6,8 @@ from app.worker import run_once
 from app.cad import BRepTools
 from test_geometry import plate
 
-def test_end_to_end_revision_vendor_release_and_qc(tmp_path):
+def test_end_to_end_revision_vendor_release_and_qc(tmp_path,monkeypatch):
+ (tmp_path/'data').mkdir();monkeypatch.setattr(db,'ROOT',tmp_path/'data')  # fresh workspace (setup flow)
  with TestClient(app) as client:
   h={'X-Forge-Request':'1'}
   assert client.get('/api/projects').status_code==401
@@ -23,10 +24,16 @@ def test_end_to_end_revision_vendor_release_and_qc(tmp_path):
   vendor=TestClient(app);vh={'Authorization':'Bearer '+token,'X-Forge-Request':'1'}
   assert vendor.get('/api/revisions/'+r['id'],headers=vh).status_code==200
   assert vendor.get('/api/projects',headers=vh).status_code==401
-  assert vendor.post('/api/revisions/'+r['id']+'/comments',headers=vh,json={'body':'Check H001 diameter','part_id':part['id'],'feature':'H001'}).status_code==200
+  # vendor links are read-only: no comments, no production marks, no CAD downloads, no raw meshes
+  assert vendor.post('/api/revisions/'+r['id']+'/comments',headers=vh,json={'body':'Check H001 diameter','part_id':part['id'],'feature':'H001'}).status_code==403
+  assert vendor.get('/api/revisions/'+r['id']+'/assets/assembly.glb',headers=vh).status_code==403
+  assert client.get('/api/revisions/'+r['id']+'/assets/assembly.glb').status_code==403
   assert vendor.patch('/api/parts/'+part['id'],headers=vh,json={'spec':part['spec'],'category':'machining'}).status_code==403
   spec=part['spec'];spec.update({'material':'Test material','process':'Laser','finish':'Deburred','datums':'A = bottom; B = left; C = front','general_tolerance':'Fixture tolerance','manual_checks':{k:'Verified against synthetic test fixture' for k in ['load_strength','functional_gdt','threads','process_tooling','assembly','coating']},'feature_specs':{'H001':{'designation':'6 mm through bore','lower':5.9,'upper':6.1}}})
   assert client.patch('/api/parts/'+part['id'],headers=h,json={'spec':spec,'category':'sheet_metal','reviewed':True}).status_code==200
+  check=client.get('/api/revisions/'+r['id']+'/release-check').json();assert not check['can_release'] and any('drawing not reviewed' in x for x in check['reasons']),check
+  assert client.post(f'/api/revisions/{r["id"]}/documents',headers=h,json={}).status_code==200;assert run_once()
+  assert client.post('/api/parts/'+part['id']+'/doc-review',headers=h,json={'reviewed':True}).status_code==200
   check=client.get('/api/revisions/'+r['id']+'/release-check').json();assert check['can_release'],check
   assert client.post('/api/revisions/'+r['id']+'/release',headers=h).status_code==200;assert client.get('/api/parts/'+part['id']+'/assets/drawing.pdf').status_code==409;assert run_once();rev=client.get('/api/revisions/'+r['id']).json();assert rev['status']=='released',rev
   assert client.get('/api/parts/'+part['id']+'/assets/drawing.pdf').status_code==200

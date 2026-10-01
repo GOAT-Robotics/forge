@@ -1,26 +1,36 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Box, Plus, ArrowUpRight, Upload, Folder, ChevronDown, ChevronRight, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
+  MoreHorizontal, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
   FileText, Layers, Link, LogOut, Settings, ShieldCheck, MessageSquare, ClipboardCheck, GitBranch, LoaderCircle, ExternalLink, X, Eye,
-  Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files,
+  Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files, Flame,
 } from 'lucide-react';
 import Viewer from './Viewer';
+import DrawingEditor from './DrawingEditor';
 import type { PartAppearance } from './Viewer';
 import { api, asset, download, vendorId, headers } from './api';
-import { Badge, Modal, DocumentPreview, FlatPattern, SpecEditor, Swatch, ProductionChecklist, GroupPanel, GroupSpecEditor, ExcludeDialog } from './components';
+import { Badge, Modal, DocumentPreview, FlatPattern, SpecEditor, Swatch, ProductionChecklist, GroupPanel, GroupSpecEditor, ExcludeDialog, ask, DialogHost } from './components';
+import { Sidebar, TopBar, PageHeader, initTheme, LogoMark, Progress, type Page } from './shell';
+import { Dashboard, JobOrdersPage, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, ConfiguredWelds, StatusBadge } from './pages';
 import { categories, categoryColors, date, fmt } from './constants';
 import type { Any } from './constants';
 import { Select } from './controls';
+import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams } from './welding';
+import { ReadinessWizard } from './readiness';
 import './style.css';
+import './cad.css';
 
 type ViewMode = '3d' | 'flat3d' | 'flat2d';
-const TABS = ['parts', 'rules', 'assembly', 'production', 'review', 'qc', 'audit'];
+const TABS = ['parts', 'rules', 'assembly', 'joborders', 'production', 'review', 'qc', 'audit'];
+initTheme();
 /** Read a deep link: /projects/{pid}/revisions/{rid}/{tab}?part={id} or /vendor/{rid}?tab=&part= */
 function parseRoute() {
   const q = new URLSearchParams(location.search);
+  const top = location.pathname.match(/^\/(dashboard|projects|job-orders|templates|admin)\/?(?:([a-f0-9]+))?$/);
+  const jo = location.pathname.match(/^\/job-orders\/([a-f0-9]+)/);
   const m = location.pathname.match(/^\/projects\/([a-f0-9]+)(?:\/revisions\/([a-f0-9]+))?(?:\/([a-z]+))?/);
-  return { project: m?.[1] || null, revision: m?.[2] || null, tab: (m?.[3] && TABS.includes(m[3]) ? m[3] : q.get('tab') && TABS.includes(q.get('tab')!) ? q.get('tab')! : null), part: q.get('part') };
+  const page: Page = m ? 'project' : jo ? 'joborder' : top ? ({ dashboard: 'dashboard', projects: 'projects', 'job-orders': 'joborders', templates: 'templates', admin: 'admin' } as Record<string, Page>)[top[1]] : 'dashboard';
+  return { page, jo: jo?.[1] || null, project: m?.[1] || null, revision: m?.[2] || null, tab: (m?.[3] && TABS.includes(m[3]) ? m[3] : q.get('tab') && TABS.includes(q.get('tab')!) ? q.get('tab')! : null), part: q.get('part') };
 }
 const joinList = (v: Any) => (Array.isArray(v) ? v.join(', ') : String(v ?? ''));
 const splitList = (v: Any) => (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x: string) => x.trim()).filter(Boolean);
@@ -36,6 +46,8 @@ function App() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [isolate, setIsolate] = useState(false);
+  const [solo, setSolo] = useState<number | null>(null);
+  const lastOccurrence = useRef<number | undefined>(undefined);
   const [mode, setMode] = useState<ViewMode>('3d');
   const [modal, setModal] = useState('');
   const [error, setError] = useState('');
@@ -50,36 +62,84 @@ function App() {
   const [editing, setEditing] = useState<Any>(null);
   const [comparison, setComparison] = useState<Any>(null);
   const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [drawingPart, setDrawingPart] = useState<string | null>(null);
+  const [readyFor, setReadyFor] = useState<string | null>(null);
+  const [partMenu, setPartMenu] = useState(false);
   const [preview, setPreview] = useState<{ blob: Blob; name: string; title: string } | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const [overview, setOverview] = useState(false);
+  const [layout, setLayoutState] = useState<{ left: boolean; right: boolean; focus: boolean }>(() => { try { return { left: true, right: true, ...JSON.parse(localStorage.getItem('forge-layout') || '{}'), focus: false }; } catch { return { left: true, right: true, focus: false }; } });
+  const setLayout = (patch: Partial<typeof layout>) => setLayoutState(l => { const n = { ...l, ...patch }; try { localStorage.setItem('forge-layout', JSON.stringify({ left: n.left, right: n.right })); } catch { /* ignore */ } return n; });
+  const [treeView, setTreeView] = useState(() => { try { return localStorage.getItem('forge-nav-tree') !== 'list'; } catch { return true; } });
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [colorBy, setColorBy] = useState<'coating' | 'type'>(() => { try { return localStorage.getItem('forge-color-by') === 'type' ? 'type' : 'coating'; } catch { return 'coating'; } });
   const [multi, setMulti] = useState<string[]>([]);
   const route = useRef(parseRoute());
   const [settings, setSettings] = useState<Any>(null);
   const [feature, setFeature] = useState<Any>(null);
   const [excluding, setExcluding] = useState<Any[] | null>(null);
   const anchor = useRef<string | null>(null);
+  const [page, setPage] = useState<Page>(route.current.page);
+  const [joId, setJoId] = useState<string | null>(route.current.jo);
+  const [jointDraft, setJointDraft] = useState<Any>(null);
+  const [weldListOpen, setWeldListOpen] = useState(false);
+  const [weldPreviewStatus, setWeldPreviewStatus] = useState<{ valid: boolean; message: string } | null>(null);
+  const [hoverGeometry, setHoverGeometry] = useState<Any>(null);
+  const hoverRequest = useRef(0);
+  const [pickMode, setPickMode] = useState<'face' | 'edge' | 'point' | null>(null);
+  const [seamCandidates, setSeamCandidates] = useState<Any[]>([]);
+  const [seamSide, setSeamSide] = useState('all');
+  const weldOpen = !!jointDraft;
+  useEffect(() => { if (!weldOpen) setSeamSide('all'); }, [weldOpen]);
+  const [detecting, setDetecting] = useState(false);
+  const [detectMessage, setDetectMessage] = useState('');
+  const [hoverSeam, setHoverSeam] = useState<string | null>(null);
+  const [addingParts, setAddingParts] = useState(false);
+  /** Faces picked for the next seam (face A, then face B). */
+  const [pairPick, setPairPick] = useState<Any[]>([]);
+  const detectRequest = useRef(0);
+  const [jointOptions, setJointOptions] = useState<Any>(null);
+  const [templates, setTemplates] = useState<Any[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const fail = (e: Any) => setError(e.message || String(e));
+  const fail = (e: Any) => {
+    const msg = e?.message || String(e);
+    // Safari says "Load failed", Chrome "Failed to fetch": the request never reached Forge (connection or server restart)
+    setError(/^(load failed|failed to fetch|networkerror)/i.test(msg) ? 'Couldn’t reach the Forge server — check your connection and try again.' : msg);
+  };
   const notify = (s: string) => { setToast(s); setTimeout(() => setToast(''), 5000); };
   const action = async (fn: () => Promise<void>) => { setBusy(true); try { await fn(); } catch (e) { fail(e); } finally { setBusy(false); } };
 
-  const loadProjects = async () => setProjects(await api('/projects'));
-  const loadRevision = useCallback(async (id: string) => { const r = await api('/revisions/' + id); setRev(r); return r; }, []);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const loadProjects = async () => { setProjects(await api('/projects')); setProjectsLoaded(true); };
+  const [revLoading, setRevLoading] = useState(false);
+  const loadRevision = useCallback(async (id: string) => { setRevLoading(true); try { const r = await api('/revisions/' + id); setRev(r); return r; } finally { setRevLoading(false); } }, []);
+  /** Joints only: fast refresh after a weld is saved or removed (a full revision reload evaluates every part). */
+  const refreshJoints = useCallback(async (id: string) => { const joints = await api(`/revisions/${id}/joints`); setRev((r: Any) => r && r.id === id ? { ...r, joints } : r); }, []);
   /** Open whatever the URL points at (after sign-in). */
   const openRoute = async () => {
     const r = route.current;
     if (!r.project) return;
     const d = await api('/projects/' + r.project);
-    setProject(d); setComparison(null);
+    setProject(d); setComparison(null); setPage('project');
     const target = (r.revision && d.revisions.find((x: Any) => x.id === r.revision)) || d.revisions.find((x: Any) => x.state === 'active') || d.revisions[0];
     if (target) await loadRevision(target.id);
     if (r.tab) setTab(r.tab);
     if (r.part) { setSelected(r.part); setMulti([r.part]); anchor.current = r.part; }
   };
+  const afterSignIn = async () => {
+    await loadProjects();
+    api('/settings').then(setSettings).catch(() => {});
+    api('/joint-options').then(setJointOptions).catch(() => {});
+    api('/templates').then(setTemplates).catch(() => {});
+    if (route.current.page === 'project') await openRoute();
+  };
+  const go = (p: Page) => { setPage(p); if (p === 'projects') loadProjects().catch(fail); if (p !== 'project') { setJointDraft(null); setPickMode(null); } };
+  const openJobOrder = (id: string) => { setJoId(id); setPage('joborder'); };
+  const openProjectId = (id: string, t?: string) => action(async () => { await openProject({ id }); if (t) setTab(t); });
   const openProject = async (p: Any) => {
     const d = await api('/projects/' + p.id);
-    setProject(d); setRev(null); setSelected(null); setMode('3d'); setIsolate(false); setComparison(null); setTab('parts');
+    setProject(d); setRev(null); setSelected(null); setMode('3d'); setIsolate(false); setComparison(null); setTab('parts'); setPage('project'); setJointDraft(null); setPickMode(null);
     const active = d.revisions.find((r: Any) => r.state === 'active') || d.revisions[0];
     if (active) await loadRevision(active.id);
   };
@@ -87,7 +147,7 @@ function App() {
   useEffect(() => {
     api('/config').then(setConfig).catch(fail);
     if (vendorId) { loadRevision(vendorId).catch(fail); setAuth({ user: { name: 'Vendor', role: 'vendor' } }); if (route.current.tab) setTab(route.current.tab); if (route.current.part) setSelected(route.current.part); }
-    else api('/auth/status').then(a => { setAuth(a); if (a.user) { loadProjects().catch(fail); api('/settings').then(setSettings).catch(() => {}); openRoute().catch(fail); } }).catch(fail);
+    else api('/auth/status').then(a => { setAuth(a); if (a.user) afterSignIn().catch(fail); }).catch(fail);
   }, []);
 
   // Track project imports even while an older revision or upload dialog is open.
@@ -142,36 +202,118 @@ function App() {
   const parts: Any[] = rev?.parts || [];
   const part = parts.find((p: Any) => p.id === selected);
   const vendor = !!vendorId;
-  const editable = !vendor && ['owner', 'engineer'].includes(auth?.user?.role) && rev?.state === 'active' && rev?.status === 'ready';
+  const perms = useMemo(() => new Set<string>(auth?.user?.permissions || []), [auth?.user?.permissions?.join(',')]);
+  const revPerms = useMemo(() => new Set<string>(rev?.permissions || []), [rev?.permissions?.join(',')]);
+  const can = (p: string) => revPerms.has(p);
+  const editable = !vendor && can('part.edit') && rev?.state === 'active' && rev?.status === 'ready';
   const filtered = parts.filter((p: Any) => (category === 'all' ? (showHidden || !p.hidden) : category === 'hidden' ? p.hidden : category === 'excluded' ? p.excluded : p.category === category && (showHidden || !p.hidden)) && p.name.toLowerCase().includes(query.toLowerCase()));
+  const hasTree = parts.some((p: Any) => (p.assembly_path || []).length);
+  const tree = useMemo(() => buildTree(filtered), [filtered.map((p: Any) => p.id + (p.assembly_path || []).join('/')).join('|')]);
+  if (treeView && hasTree) { const order = new Map(flattenTree(tree).map((p: Any, i: number) => [p.id, i])); filtered.sort((a: Any, b: Any) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0)); }
   const hiddenIds = parts.filter((p: Any) => p.hidden).map((p: Any) => p.id);
+  const purchasedIds = parts.filter((p: Any) => p.category === 'purchased').map((p: Any) => p.id);
+  const suppressedIds = [...new Set([...hiddenIds, ...purchasedIds])];
+  const categoryFilteredOut = category === 'all' ? [] : parts.filter((p: Any) => category === 'hidden' ? !p.hidden : category === 'excluded' ? !p.excluded : p.category !== category).map((p: Any) => p.id);
+  const canvasHiddenIds = [...new Set([...(showHidden ? [] : suppressedIds), ...categoryFilteredOut])];
+  const weldFaceCount = jointDraft?.kind === 'weld' ? (jointDraft.faces || []).filter((f: Any) => f.selection !== 'edge').length : 0;
+  const weldEdgeCount = jointDraft?.kind === 'weld' ? (jointDraft.faces || []).filter((f: Any) => f.selection === 'edge').length : 0;
+  const weldType = jointDraft?.kind === 'weld' ? jointDraft.weld?.type || 'linear' : null;
+  // Keep the complete assembly available until enough geometry identifies the weld components.
+  // A weld opened from an existing multi-selection can isolate those components immediately.
+  // While welding, show only the components being joined (the rest of the assembly stays reachable
+  // while adding components).
+  const weldFocusIds: string[] = jointDraft?.kind === 'weld' && !addingParts && pickMode !== 'face' && (jointDraft.parts || []).length >= 2
+    ? Array.from(new Set<string>([...(jointDraft.parts || []), ...(jointDraft.faces || []).map((f: Any) => f.other_part).filter(Boolean)].map((id: Any) => String(id))))
+    : [];
+  // A single-component weld (e.g. the closing seam of a bent part) shows one representative of a Qty > 1 part.
+  const weldRepresentatives: Record<string, number> = weldFocusIds.length === 1 && weldType && !seamCandidates.length
+    ? { [weldFocusIds[0]]: Number((jointDraft.faces || []).find((face: Any) => face.part === weldFocusIds[0])?.occurrence || 0) } : {};
+  const seamView = useMemo(() => {
+    const chosen = new Set((jointDraft?.faces || []).filter((f: Any) => f.selection === 'edge').map(seamKey));
+    const both = seamCandidates.some(s => s.side === 'inside') && seamCandidates.some(s => s.side === 'outside');
+    return seamCandidates.map(s => ({ ...s, label: s.id, chosen: chosen.has(seamKey(s)) }))
+      .filter(s => seamSide === 'all' || !both || s.chosen || s.side === seamSide);
+  }, [seamCandidates, jointDraft?.faces, seamSide]);
+  const savedWelds = useMemo(() => (rev?.joints || []).filter((j: Any) => j.kind === 'weld' && j.id !== jointDraft?.id).map((j: Any, i: number) => ({
+    id: j.id, faces: j.data.faces || [], weld: j.data.weld,
+    label: `W${j.data.sequence || i + 1}${j.data.weld?.size || j.data.weld?.thickness ? ` · a${j.data.weld.size || j.data.weld.thickness}` : ''}`,
+  })), [rev?.joints, jointDraft?.id]);
+  /** Seams already welded by another configured weld (seam key → weld label). */
+  const weldedSeams = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const w of savedWelds) for (const f of w.faces) if (f.selection === 'edge') m.set(seamKey(f), w.label.split(' ')[0]);
+    return m;
+  }, [savedWelds]);
+  const seamsTagged = useMemo(() => seamCandidates.map(s => weldedSeams.has(seamKey(s)) ? { ...s, welded_by: weldedSeams.get(seamKey(s)) } : s), [seamCandidates, weldedSeams]);
+  /** Ask the server for the seams where the weld's components touch; propose the main fillets on a new weld. */
+  const detectSeams = async (draft: Any, propose: boolean) => {
+    const ids = draft?.parts || [];
+    if (!rev || !ids.length) return;
+    const request = ++detectRequest.current;
+    setDetecting(true); setDetectMessage('');
+    try {
+      const r = await api(`/revisions/${rev.id}/weld-seams`, 'POST', { parts: ids });
+      if (request !== detectRequest.current) return;
+      setSeamCandidates(r.seams || []); setDetectMessage(r.message || '');
+      const open = (r.seams || []).filter((s: Any) => !s.minor && !weldedSeams.has(seamKey(s)));
+      // propose the inside fillets; where parts only meet across a gap, propose the gap seams
+      const fillets = open.filter((s: Any) => s.joint === 'fillet');
+      const main = fillets.length ? fillets : open.filter((s: Any) => s.joint === 'gap');
+      if (propose && main.length) setJointDraft((d: Any) => d && !(d.faces || []).some((f: Any) => f.selection === 'edge') ? chooseSeams(d, main) : d);
+      if (r.seams?.length) setAddingParts(false);
+    } catch (err) { if (request === detectRequest.current) setDetectMessage(err instanceof Error ? err.message : String(err)); }
+    finally { if (request === detectRequest.current) setDetecting(false); }
+  };
+  const startWeld = (ids: string[], extra: Any = {}) => {
+    const draft = { kind: 'weld', parts: ids, faces: [], weld: { type: 'linear', process: 'MIG/MAG (135)', sides: 'one' }, sequence: (rev?.joints?.length || 0) + 1, ...extra };
+    setJointDraft(draft); setPickMode('face'); setPairPick([]); setSeamCandidates([]); setDetectMessage(''); setHoverSeam(null); setWeldPreviewStatus(null);
+    // One component: Forge looks for the gaps it closes on itself (bent box corners) and keeps
+    // "add from 3D" on so the mating parts can be clicked.
+    setAddingParts(false);
+    if (ids.length >= 1) detectSeams(draft, true);
+  };
+  const editWeld = (j: Any) => {
+    const draft = { id: j.id, kind: j.kind, ...j.data };
+    setJointDraft(draft); setPickMode('face'); setPairPick([]); setAddingParts(false); setSeamCandidates([]); setHoverSeam(null); setWeldPreviewStatus(null);
+    if (j.kind === 'weld' && (j.data.parts || []).length) detectSeams(draft, false);
+  };
+  const endWeld = () => { setPairPick([]); setJointDraft(null); setPickMode(null); setSeamCandidates([]); setHoverSeam(null); setAddingParts(false); setWeldPreviewStatus(null); detectRequest.current++; };
+  const weldDraftPreview = useMemo(() => jointDraft ? { faces: [...jointDraft.faces, ...pairPick], weld: jointDraft.weld } : null, [jointDraft?.faces, jointDraft?.weld, pairPick]);
   const holes = parts.reduce((n: number, p: Any) => n + p.geometry.holes.length, 0);
   const findings = parts.flatMap((p: Any) => (p.category === 'purchased' || p.excluded ? [] : p.findings));
   const selectedFindings = part?.findings || [];
+  /** A part is production ready when its spec has no open blocker, its design review and its drawing review are done.
+   *  Purchased and not-for-production parts need nothing. */
+  const partReady = (p: Any) => p.excluded || p.category === 'purchased' || (!!p.reviewed && !!p.doc_reviewed
+    && !(p.findings || []).some((f: Any) => f.severity === 'blocker' && (!f.waiver || ['GEO001', 'FLAT001'].includes(f.code))));
+  const releaseParts = (rev?.parts || []).filter((p: Any) => !p.excluded && p.category !== 'purchased');
+  const readyCount = releaseParts.filter(partReady).length;
   const blocking = findings.filter((f: Any) => f.severity === 'blocker' && !f.waiver).length;
   const job = rev?.jobs?.find((j: Any) => ['queued', 'running'].includes(j.status));
   const appearance = useMemo<Record<string, PartAppearance>>(() => {
     const out: Record<string, PartAppearance> = {};
-    for (const p of parts) out[p.id] = { color: p.spec.coating_hex || categoryColors[p.category] || categoryColors.other, category: p.category, name: p.name };
+    for (const p of parts) out[p.id] = { color: (colorBy === 'coating' && p.spec.coating_hex) || categoryColors[p.category] || categoryColors.other, category: p.category, name: p.name };
     return out;
-  }, [rev?.id, parts.map((p: Any) => p.spec.coating_hex + p.category).join('|')]);
+  }, [rev?.id, colorBy, parts.map((p: Any) => p.spec.coating_hex + p.category).join('|')]);
 
   // Keep the address bar in sync so any view can be copied and opened by a colleague or vendor.
   useEffect(() => {
     if (!auth?.user) return;
-    let path = vendor ? location.pathname : '/';
-    if (!vendor && project) { path = `/projects/${project.id}`; if (rev) path += `/revisions/${rev.id}/${tab}`; }
+    let path = vendor ? location.pathname : ({ dashboard: '/dashboard', projects: '/projects', joborders: '/job-orders', joborder: '/job-orders/' + joId, templates: '/templates', admin: '/admin', project: '/projects' } as Record<string, string>)[page];
+    if (!vendor && page === 'project' && project) { path = `/projects/${project.id}`; if (rev) path += `/revisions/${rev.id}/${tab}`; }
     const q = new URLSearchParams();
     if (vendor && tab !== 'parts') q.set('tab', tab);
-    if (rev && selected && parts.some((p: Any) => p.id === selected)) q.set('part', selected);
+    if (page === 'project' && rev && selected && parts.some((p: Any) => p.id === selected)) q.set('part', selected);
     const next = path + (q.toString() ? '?' + q.toString() : '');
     if (next !== location.pathname + location.search) history.replaceState(null, '', next);
-  }, [auth?.user, project?.id, rev?.id, tab, selected, vendor, parts.length]);
+  }, [auth?.user, project?.id, rev?.id, tab, selected, vendor, parts.length, page, joId]);
   const copyLink = () => action(async () => { await navigator.clipboard.writeText(location.href); notify(vendor ? 'Link copied. The vendor token stays in this browser; share the original vendor link for access.' : 'Link copied — opens this exact view for signed-in team members.'); });
 
   const refreshRelated = async (endpoint: string) => setRelated(await api(`/revisions/${rev.id}/${endpoint}`));
   /** PDFs open in a preview first; other formats download directly. */
   const doc = (path: string, name: string, title = name) => action(async () => {
+    const drawingMatch = path.match(/^\/parts\/([^/]+)\/assets\/drawing\.pdf$/);
+    if (drawingMatch) { setDrawingPart(drawingMatch[1]); return; }
     if (name.toLowerCase().endsWith('.pdf')) setPreview({ blob: await asset(path), name, title });
     else await download(path, name);
   });
@@ -181,7 +323,23 @@ function App() {
     notify('Drawing generation queued. You can keep reviewing.');
   });
   const setFlags = (pid: string, flags: Any) => action(async () => { await api('/parts/' + pid + '/flags', 'PATCH', flags); await loadRevision(rev.id); });
-  const choosePart = (id: string | null) => { setSelected(id); setMulti(id ? [id] : []); anchor.current = id; if (id) setDetail(d => (d === 'documents' ? d : 'details')); if (!id) { setIsolate(false); } if (mode !== '3d') setMode('3d'); };
+  const choosePart = (id: string | null) => { setSelected(id); setMulti(id ? [id] : []); anchor.current = id; if (id) setDetail(d => (d === 'documents' ? d : 'details')); if (!id) { setIsolate(false); } setSolo(null); if (mode !== '3d') setMode('3d'); };
+  const stepPart = useCallback((delta: number) => {
+    if (!filtered.length) return;
+    const current = filtered.findIndex((p: Any) => p.id === selected);
+    const next = current < 0 ? (delta > 0 ? 0 : filtered.length - 1) : (current + delta + filtered.length) % filtered.length;
+    choosePart(filtered[next].id); setIsolate(true);
+  }, [filtered.map((p: Any) => p.id).join('|'), selected, mode]);
+  useEffect(() => {
+    const onArrow = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (tab !== 'parts' || modal || preview || target?.matches('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); stepPart(event.key === 'ArrowDown' ? 1 : -1); }
+      else if ((event.key === 'f' || event.key === 'F') && !event.metaKey && !event.ctrlKey && !event.altKey) setLayoutState(l => ({ ...l, focus: !l.focus }));
+      else if (event.key === 'Escape') { if (layout.focus) setLayoutState(l => ({ ...l, focus: false })); else if (!jointDraft) choosePart(null); }
+    };
+    window.addEventListener('keydown', onArrow); return () => window.removeEventListener('keydown', onArrow);
+  }, [stepPart, tab, modal, preview, layout.focus, !!jointDraft]);
   /** Navigator click: plain = select, shift = range from the anchor, ctrl/cmd = toggle. */
   const clickRow = (id: string, ev: React.MouseEvent) => {
     if (ev.shiftKey && anchor.current) {
@@ -194,6 +352,44 @@ function App() {
     }
     choosePart(id);
   };
+  const renderRow = (p: Any) => (
+                          <div key={p.id} data-part={p.id} className={'part-row ' + (p.id === selected ? 'chosen' : multi.includes(p.id) ? 'multi' : '') + (p.hidden ? ' is-hidden' : '') + (p.excluded ? ' is-excluded' : '')}>
+                            <button type="button" className="row-main" onClick={ev => clickRow(p.id, ev)}>
+                              <span className={'part-glyph ' + p.category} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers size={17} /> : <Box size={17} />}</span>
+                              <span><strong>{p.name}</strong><small>{p.excluded ? <b className="excluded-tag">Not for production</b> : categories[p.category]} <span>· Qty {p.quantity}</span>{p.spec.material && !p.excluded && <span> · {p.spec.material}</span>}</small></span>
+                              {jointDraft?.kind === 'weld' && (() => { const check = weldability(p); return <span className={'weld-candidate ' + check.level} title={`${check.label}: ${check.reason}`}><Flame size={12} /></span>; })()}
+                              {p.excluded || p.category === 'purchased' ? <span className="ready-mark na" title={p.excluded ? 'Not for production' : 'Purchased — no release needed'} />
+                                : partReady(p) ? <CheckCircle2 size={15} className="green" aria-label="Production ready" />
+                                : <span className={'ready-mark ' + (p.reviewed || p.doc_reviewed ? 'half' : '')} title={[!p.reviewed && 'design review', !p.doc_reviewed && 'drawing review', p.reviewed && p.doc_reviewed && 'open specification items'].filter(Boolean).join(' + ') + ' still to do'} />}
+                            </button>
+                            {!vendor && <button type="button" className="icon row-eye" title={p.hidden ? 'Show in viewer' : 'Hide in viewer'} onClick={() => setFlags(p.id, { hidden: !p.hidden })}>{p.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}
+                          </div>
+                        );
+  /** STEP assembly tree: sub-assemblies first, then the parts directly in this level. */
+  const renderTree = (node: Any, depth: number): React.ReactNode => (
+    <React.Fragment key={'n:' + node.key}>
+      {node.groups.map((g: Any) => {
+        const open = !collapsed.has(g.key);
+        const ids = flattenTree(g).map((p: Any) => p.id);
+        const cats = [...new Set(flattenTree(g).map((p: Any) => p.category))];
+        const allHidden = flattenTree(g).every((p: Any) => p.hidden);
+        const chosen = ids.length > 0 && ids.every((id: string) => multi.includes(id));
+        return (
+          <div key={g.key} className="asm-node" style={{ ['--depth' as Any]: depth }}>
+            <div className={'asm-row' + (chosen ? ' chosen' : '')}>
+              <button type="button" className="icon asm-toggle" aria-label={open ? 'Collapse' : 'Expand'} onClick={() => setCollapsed(c => { const n = new Set(c); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
+              <button type="button" className="asm-name" title="Select the whole sub-assembly" onClick={() => { setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; if (mode !== '3d') setMode('3d'); }}>
+                <Folder size={15} /><strong>{g.name}</strong><small>{ids.length} part{ids.length === 1 ? '' : 's'} · {cats.length === 1 ? categories[cats[0]] : 'mixed'}</small>
+              </button>
+              {!vendor && <button type="button" className="icon row-eye" title={allHidden ? 'Show sub-assembly in viewer' : 'Hide sub-assembly in viewer'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids, hidden: !allHidden }); await loadRevision(rev.id); })}>{allHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}
+            </div>
+            {open && <div className="asm-children">{renderTree(g, depth + 1)}</div>}
+          </div>
+        );
+      })}
+      {node.parts.map(renderRow)}
+    </React.Fragment>
+  );
   const bulk = (body: Any) => action(async () => { const r = await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: multi, ...body }); await loadRevision(rev.id); notify(`${r.updated} parts updated`); });
 
   const uploadFile = (file: File, notes: string) => new Promise<void>((resolve, reject) => {
@@ -231,122 +427,193 @@ function App() {
 
   if (!auth) return <div className="boot"><div className="brand-mark">F</div><span className="spinner" />Opening Forge…{error && <p>{error}</p>}</div>;
 
-  if (!auth.user && !vendor) return (
-    <div className="auth">
-      <div className="auth-story">
-        <div className="wordmark"><div className="brand-mark">F</div>forge<span>MANUFACTURING</span></div>
-        <div>
-          <span className="eyebrow">FROM GEOMETRY TO THE SHOP FLOOR</span>
-          <h1>One part.<br />Every detail.<br /><em>Ready to make.</em></h1>
-          <p>Your CAD, engineering decisions, suppliers and quality records. Connected by revision.</p>
+  if (!auth.user && !vendor) {
+    const providers = auth.providers || { local: true, entra: false, domains: [] };
+    const signinError = new URLSearchParams(location.search).get('signin_error');
+    const reasons: Record<string, string> = { DomainNotAllowed: `Only ${(providers.domains || []).join(', ')} accounts can use Forge.`, GuestsNotAllowed: 'Guest accounts cannot use Forge.', WrongTenant: 'That account belongs to another organisation.', AccessDisabled: 'Your Forge access is disabled. Ask an administrator.', AccountConflict: 'This e-mail is linked to a different Microsoft account.', SessionExpired: 'The sign-in took too long. Try again.', StateMismatch: 'The sign-in could not be verified. Try again.', TokenInvalid: 'Microsoft sign-in could not be verified. Try again.', EntraError: 'Microsoft sign-in was cancelled or failed.', NoEmail: 'Your Microsoft account has no e-mail address.' };
+    return (
+      <div className="v-signin">
+        <div className="v-signin-card">
+          <div className="v-brand big"><LogoMark size={36} /><span><b>Forge</b><small>GOAT Robotics · CAD to shop floor</small></span></div>
+          <h1>{auth.configured || providers.entra ? 'Sign in' : 'Set up your workspace'}</h1>
+          <p className="muted">Drawings, design reviews, job orders and quality records — one revision-controlled workspace.</p>
+          {signinError && <p className="error-text">{reasons[signinError] || 'Sign-in failed.'}</p>}
+          {providers.entra && (
+            <a className="button primary full ms" href={'/api/auth/entra/login?next=' + encodeURIComponent(location.pathname === '/' ? '/dashboard' : location.pathname + location.search)}>
+              <svg width="16" height="16" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022" /><rect x="11" y="1" width="9" height="9" fill="#7fba00" /><rect x="1" y="11" width="9" height="9" fill="#00a4ef" /><rect x="11" y="11" width="9" height="9" fill="#ffb900" /></svg>
+              Sign in with Microsoft
+            </a>
+          )}
+          {providers.entra && <small className="center">{(providers.domains || []).join(', ')} accounts only</small>}
+          {providers.local && (
+            <form onSubmit={e => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              action(async () => {
+                const a = Object.fromEntries(f);
+                if (!auth.configured) await api('/auth/setup', 'POST', a);
+                await api('/auth/login', 'POST', a);
+                setAuth(await api('/auth/status'));
+                await afterSignIn();
+              });
+            }}>
+              {providers.entra && <div className="v-or"><span>or local account</span></div>}
+              {!auth.configured && <label>Your name<input name="name" required autoComplete="name" /></label>}
+              <label>E-mail<input type="email" name="email" required autoComplete="username" /></label>
+              <label>Password<input name="password" type="password" required minLength={auth.configured ? 1 : 12} autoComplete={auth.configured ? 'current-password' : 'new-password'} /></label>
+              {error && <p className="error-text">{error}</p>}
+              <button className={providers.entra ? 'full' : 'primary full'} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <ArrowUpRight size={16} />} {auth.configured ? 'Sign in' : 'Create workspace'}</button>
+            </form>
+          )}
         </div>
-        <span>PROJECTS / DRAWINGS / ASSEMBLY / QUALITY</span>
       </div>
-      <section className="auth-form">
-        <div className="eyebrow">YOUR MANUFACTURING WORKSPACE</div>
-        <h2>{auth.configured ? 'Welcome back.' : 'Set up your workspace.'}</h2>
-        <p>{auth.configured ? 'Sign in to continue your projects.' : 'Create the owner account. Project files stay in your Docker storage.'}</p>
-        <form onSubmit={e => {
-          e.preventDefault();
-          const f = new FormData(e.currentTarget);
-          action(async () => {
-            const a = Object.fromEntries(f);
-            if (!auth.configured) await api('/auth/setup', 'POST', a);
-            await api('/auth/login', 'POST', a);
-            setAuth(await api('/auth/status'));
-            await loadProjects();
-            api('/settings').then(setSettings).catch(() => {});
-            await openRoute();
-          });
-        }}>
-          {!auth.configured && <label>Your name<input name="name" required autoComplete="name" /></label>}
-          <label>Email<input type="email" name="email" required autoComplete="username" /></label>
-          <label>Password<input name="password" type="password" required minLength={auth.configured ? 1 : 12} autoComplete={auth.configured ? 'current-password' : 'new-password'} /></label>
-          {error && <p className="error-text">{error}</p>}
-          <button className="primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <ArrowUpRight size={17} />} {auth.configured ? 'Sign in' : 'Create workspace'}</button>
-        </form>
-        <small>Self-hosted. No external CAD upload service.</small>
-      </section>
-    </div>
-  );
+    );
+  }
 
-  const goHome = () => { if (vendor) return; setProject(null); setRev(null); loadProjects().catch(fail); };
-  const workspaceTab = tab === 'parts' && !!rev && rev.status !== 'processing';
+  const goHome = () => { if (vendor) return; setProject(null); setRev(null); go('projects'); };
+  // ---- CAD workspace chrome: heads-up info and the floating tool palette ------------------------
+  const weldTotal = (rev?.joints || []).filter((j: Any) => j.kind === 'weld').length;
+  const inspectorContent = !!(jointDraft || weldListOpen || multi.length > 1 || part || overview);
+  const canvasHud = !rev ? null : jointDraft ? (
+    <div className="hud-card"><Flame size={15} className="weld-title-icon" /><span><b>{jointDraft.id ? 'Edit weld' : 'Weld setup'}</b><small>{(jointDraft.parts || []).length} component{(jointDraft.parts || []).length === 1 ? '' : 's'} · {(jointDraft.faces || []).filter((f: Any) => f.selection === 'edge').length} seam(s)</small></span></div>
+  ) : multi.length > 1 ? (
+    <div className="hud-card"><Layers size={15} /><span><b>{multi.length} parts selected</b><small>Shift-click a range · Ctrl/Cmd-click to toggle</small></span><button type="button" className="icon" title="Clear selection" onClick={() => choosePart(null)}><X size={14} /></button></div>
+  ) : part ? (
+    <div className="hud-card">
+      <Swatch hex={part.spec.coating_hex || categoryColors[part.category]} title={part.spec.coating_color || categories[part.category]} size={12} />
+      <span><b title={part.name}>{part.name}</b><small>{categories[part.category]} · Qty {part.quantity}{part.spec.material ? ` · ${part.spec.material}` : ''}</small></span>
+      <span className="hud-actions">
+        <button type="button" className={isolate ? 'selected' : ''} title="Isolate (or double-click the part)" onClick={() => { const on = !isolate; setIsolate(on); setSolo(on && part.quantity > 1 ? (lastOccurrence.current ?? 0) : null); setMode('3d'); }}><Target size={14} />Isolate</button>
+        {isolate && part.quantity > 1 && mode === '3d' && <span className="solo-step" title="This part is used more than once. Inspect one instance at a time; the view orbits around it.">
+          <button type="button" className="icon" aria-label="Previous instance" onClick={() => setSolo(v => ((v ?? 0) - 1 + part.quantity) % part.quantity)}><ChevronLeft size={14} /></button>
+          <button type="button" className={'solo-label' + (solo === null ? ' all' : '')} onClick={() => setSolo(v => v === null ? (lastOccurrence.current ?? 0) : null)}>{solo === null ? `All ${part.quantity}` : `${solo + 1} of ${part.quantity}`}</button>
+          <button type="button" className="icon" aria-label="Next instance" onClick={() => setSolo(v => ((v ?? -1) + 1) % part.quantity)}><ChevronRight size={14} /></button>
+        </span>}
+        {part.category === 'sheet_metal' && <>
+          <button type="button" className={mode === 'flat2d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern (2D)'} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 size={14} />Flat</button>
+          <button type="button" className={mode === 'flat3d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern in 3D'} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan size={14} />Flat 3D</button>
+        </>}
+        <button type="button" className="icon" title="Clear selection (Esc)" onClick={() => choosePart(null)}><X size={14} /></button>
+      </span>
+    </div>
+  ) : (
+    <div className="hud-card quiet"><Box size={15} /><span><b>{project?.name || rev.filename}</b><small>{parts.length} parts · {rev.manifest?.occurrences || 0} instances{blocking ? ` · ${blocking} release blockers` : ''}</small></span></div>
+  );
+  const canvasToolsStart = !rev || vendor ? null : <>
+    {editable && <button type="button" className={jointDraft ? 'selected' : ''} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame size={16} /><span>Weld</span></button>}
+    <button type="button" className={weldListOpen ? 'selected' : ''} disabled={!!jointDraft} title="Configured welds" onClick={() => setWeldListOpen(v => !v)}><ListChecks size={16} /><span>Welds{weldTotal ? ` ${weldTotal}` : ''}</span></button>
+    <button type="button" className={colorBy === 'type' ? 'selected' : ''} title={colorBy === 'type' ? 'Colour by coating' : 'Colour by part type'} onClick={() => { const v = colorBy === 'type' ? 'coating' : 'type'; setColorBy(v); try { localStorage.setItem('forge-color-by', v); } catch { /* ignore */ } }}><Palette size={16} /><span>Types</span></button>
+  </>;
+  const canvasToolsEnd = !rev ? null : <>
+    <button type="button" className={overview && !part && multi.length < 2 && !jointDraft ? 'selected' : ''} title="Revision overview: drawing sets, readiness, part types" onClick={() => { setOverview(o => !o); if (part || multi.length > 1) choosePart(null); setLayout({ right: true, focus: false }); }}><PanelRight size={16} /><span>Overview</span></button>
+    <button type="button" className="icon-only" title={layout.left && !layout.focus ? 'Hide model tree' : 'Show model tree'} onClick={() => setLayout({ left: !(layout.left && !layout.focus), focus: false })}>{layout.left && !layout.focus ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button>
+    <button type="button" className={'icon-only' + (layout.focus ? ' selected' : '')} title={layout.focus ? 'Exit full canvas (Esc)' : 'Full canvas (F)'} onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
+  </>;
+  const workspaceTab = page === 'project' && tab === 'parts' && !!rev && rev.status !== 'processing';
+  const ctx = { busy, action, notify };
+  const activeJobs = projects.reduce((n: number, p: Any) => n + (p.open_job_orders || 0), 0);
+  const signOut = () => action(async () => { await api('/auth/logout', 'POST'); setAuth(await api('/auth/status')); });
 
   return (
-    <div className="app">
-      <aside className="rail">
-        <button className="brand-mark" title="All projects" disabled={vendor} onClick={goHome}>F</button>
-        <button className={!project ? 'rail-active' : ''} title="Projects" disabled={vendor} onClick={goHome}><Folder size={22} /></button>
-        {!vendor && <>
-          <button title="Team" onClick={() => { setModal('team'); api('/users').then(setModalRows).catch(fail); }}><Users size={21} /></button>
-          <button title="Rules & standards" onClick={() => setModal('rules')}><SlidersHorizontal size={21} /></button>
-          <button title="Workspace settings" onClick={() => { setModal('settings'); api('/settings').then(setSettings).catch(fail); }}><Settings size={21} /></button>
-        </>}
-        <div className="rail-spacer" />
-        <span className="avatar" title={auth.user.name}>{auth.user.name[0]}</span>
-        {!vendor && <button title="Sign out" onClick={() => action(async () => { await api('/auth/logout', 'POST'); setAuth(await api('/auth/status')); })}><LogOut size={20} /></button>}
-      </aside>
+    <div className={'app' + (vendor ? ' vendor' : '')}>
+      {!vendor && <Sidebar page={page} go={go} user={auth.user} perms={perms} badges={{ joborders: activeJobs }} onSignOut={signOut} />}
 
-      <main className={workspaceTab ? 'fixed' : ''}>
-        <header className="topbar">
-          <div className="crumb">
-            <span className="logo-text">forge</span>
-            <span className="slash">/</span>
-            <button onClick={goHome}>{vendor ? 'Vendor workspace' : 'Projects'}</button>
-            {(project || vendor) && <><ChevronRight size={15} /><strong>{project?.name || 'Shared revision'}</strong></>}
-            {rev && <><ChevronRight size={15} /><span className="crumb-rev">Rev {rev.number} · {rev.filename}</span></>}
+      <main className={(workspaceTab ? 'fixed' : '') + (layout.focus && tab === 'parts' && page === 'project' ? ' canvas-focus' : '')}>
+        {vendor && (
+          <header className="v-header">
+            <div className="v-crumbs"><LogoMark size={22} /><b>Forge</b><ChevronRight size={14} /><span>Vendor workspace · read only</span>{rev && <><ChevronRight size={14} /><span className="crumb-rev">Rev {rev.number} · {rev.filename}</span></>}</div>
+            <div className="v-header-right">{rev && <button type="button" className="mini" onClick={copyLink}><Link size={13} />Copy link</button>}</div>
+          </header>
+        )}
+        {!vendor && page === 'dashboard' ? <Dashboard ctx={ctx} openJobOrder={openJobOrder} openProject={openProjectId} />
+        : !vendor && page === 'joborders' ? <JobOrdersPage projects={projects} ctx={ctx} perms={perms} openJobOrder={openJobOrder} />
+        : !vendor && page === 'joborder' && joId ? <JobOrderDetail id={joId} ctx={ctx} back={() => go('joborders')} openProject={openProjectId} />
+        : !vendor && page === 'templates' ? <TemplatesPage ctx={ctx} perms={perms} />
+        : !vendor && page === 'admin' ? <AdminPage ctx={ctx} me={auth.user} />
+        : !vendor && (page === 'projects' || !project) ? (
+          <div className="v-page">
+            <PageHeader title="Projects" description="From the first CAD upload to the final quality check." actions={<>
+              {perms.has('users.manage') && <button onClick={() => { setModal('settings'); api('/settings').then(setSettings).catch(fail); }}><Settings size={15} />Workspace defaults</button>}
+              {perms.has('project.create') && <button className="primary" onClick={() => setModal('project')}><Plus size={15} />New project</button>}
+            </>} />
+            <div className="v-body">
+              {!projectsLoaded ? (
+                <div className="empty-page loading-page"><LoaderCircle size={30} className="spin" /><p>Loading projects…</p></div>
+              ) : projects.length ? (
+                <div className="v-card flush">
+                  <table className="v-table">
+                    <thead><tr><th>Project</th><th>Active revision</th><th>Status</th><th>Job orders</th><th>Created</th></tr></thead>
+                    <tbody>{projects.map(p => (
+                      <tr key={p.id} className="click" onClick={() => action(() => openProject(p))}>
+                        <td><span className="flex"><span className="project-icon sm"><Box size={16} /></span><span><b>{p.code ? p.code + ' · ' : ''}{p.name}</b><small>{p.description || 'CAD, drawings and manufacturing records'}</small></span></span></td>
+                        <td>{p.active_revision ? 'Rev ' + p.active_revision : '—'}<small>{p.revision_count} revisions</small></td>
+                        <td>{p.active_status ? <Badge kind={p.active_status === 'released' ? 'success' : p.active_status === 'failed' ? 'danger' : 'warning'}>{p.active_status === 'released' ? 'Production ready' : p.active_status === 'ready' ? 'In design review' : p.active_status.replace('_', ' ')}</Badge> : <Badge kind="neutral">No CAD</Badge>}</td>
+                        <td className="tabular">{p.open_job_orders || 0} open</td>
+                        <td>{date(p.created)}<small>{p.created_by}</small></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="v-empty">
+                  <Upload />
+                  <h3>Start with your CAD</h3>
+                  <p>Create a project, set its naming, title block and templates, then upload a STEP assembly.</p>
+                  {perms.has('project.create') && <button className="primary" onClick={() => setModal('project')}><Plus size={15} />New project</button>}
+                </div>
+              )}
+              <div className="workflow-strip">
+                {[['01', 'Upload & analyze', 'STEP in; parts, features, materials and bends out.'], ['02', 'Check & review', 'Design checks and drawing review, part by part.'], ['03', 'Production ready', 'Release locks the documents for the shop floor.'], ['04', 'Job orders', 'Process checklists with counts and timestamps.']].map(([n, t, sub]) => (
+                  <div key={n}><span>{n}</span><h3>{t}</h3><p>{sub}</p></div>
+                ))}
+              </div>
+            </div>
           </div>
-          <div className="topright">
-            {rev && <button type="button" className="mini" title="Copy a link to this view" onClick={copyLink}><Link size={13} />Copy link</button>}
-            {rev && <Badge kind={rev.status === 'released' ? 'success' : rev.state === 'archived' ? 'neutral' : 'warning'}>{rev.state === 'archived' ? 'Archived' : rev.status.replace('_', ' ')}</Badge>}
-            <span className="live-dot" />Local workspace
-            <Badge kind="neutral">{auth.user.role}</Badge>
-          </div>
-        </header>
-
-        {!project && !vendor ? (
-          <section className="projects">
-            <div className="section-heading">
-              <div><span className="eyebrow">MANUFACTURING OPERATIONS</span><h1>Your projects</h1><p>From the first CAD upload to the final quality check.</p></div>
-              <button className="primary" onClick={() => setModal('project')}><Plus size={17} />New project</button>
-            </div>
-            <div className="project-grid">
-              {projects.map(p => (
-                <button className="project-card" key={p.id} onClick={() => action(() => openProject(p))}>
-                  <div className="project-icon"><Box size={30} /></div>
-                  <div><h2>{p.name}</h2><p>{p.description || 'CAD, drawings and manufacturing records'}</p></div>
-                  <footer><span>{p.revision_count} revisions</span><span>{date(p.created)} <ArrowUpRight size={15} /></span></footer>
-                </button>
-              ))}
-              <button className="project-card add-project" onClick={() => setModal('project')}>
-                <div className="dashed-icon"><Plus size={27} /></div>
-                <h3>Start with your CAD</h3><p>Create a project. Upload a part or an assembly.</p>
-              </button>
-            </div>
-            <div className="workflow-strip">
-              {[['01', 'Upload & version', 'Preserve your design history.'], ['02', 'Analyze & specify', 'Features, processes, rules and fits.'], ['03', 'Review & release', 'Vendor access and controlled documents.'], ['04', 'Assemble & inspect', 'Mating records and feature-level QC.']].map(([n, t, s]) => (
-                <div key={n}><span>{n}</span><h3>{t}</h3><p>{s}</p></div>
-              ))}
-            </div>
-          </section>
         ) : (
           <>
-            <section className="project-head">
-              <div className="project-title">
-                <h1>{project?.name || rev?.filename || 'Shared design'}</h1>
-                <span className="project-sub">{vendor ? 'Supplier review portal' : rev ? `${parts.length} parts · ${rev.manifest?.occurrences || 0} body instances · ${holes} named bores` : 'Upload your first CAD file to begin'}</span>
+            <header className="doc-bar">
+              <div className="doc-id">
+                {!vendor && <><button type="button" className="doc-crumb" onClick={goHome}>Projects</button><ChevronRight size={13} className="doc-sep" /></>}
+                <span className="doc-name" title={project?.name || rev?.filename}>{project?.code && <em>{project.code}</em>}{project?.name || rev?.filename || 'Shared design'}</span>
+                {rev && <div className="revision-picker doc-rev">
+                  <button type="button" onClick={() => setRevisionOpen(!revisionOpen)} title="Switch revision"><GitBranch size={13} />Rev {rev.number}{!vendor && <ChevronDown size={13} />}</button>
+                  {revisionOpen && !vendor && (
+                    <div className="dropdown">
+                      {project?.revisions.map((r: Any) => <button key={r.id} onClick={() => { setRevisionOpen(false); choosePart(null); loadRevision(r.id).catch(fail); }}>Rev {r.number}<Badge>{r.state}</Badge></button>)}
+                      {project?.revisions.length > 1 && <button onClick={() => action(async () => { const other = project.revisions.find((r: Any) => r.id !== rev.id); setComparison(await api(`/revisions/${rev.id}/compare/${other.id}`)); setModal('compare'); setRevisionOpen(false); })}>Compare with previous</button>}
+                    </div>
+                  )}
+                </div>}
+                {rev && (() => {
+                  const allReady = rev.status === 'ready' && releaseParts.length > 0 && readyCount === releaseParts.length;
+                  const label = rev.state === 'archived' ? 'Archived' : rev.status === 'released' ? 'Released' : rev.status === 'ready' ? (allReady ? 'Ready to release' : 'In design review') : rev.status.replace('_', ' ');
+                  const tone = rev.state === 'archived' ? 'neutral' : rev.status === 'released' || allReady ? 'success' : rev.status === 'failed' ? 'danger' : 'warning';
+                  const openRelease = () => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); });
+                  if (allReady && !vendor && rev.state === 'active') return <span className="doc-release">
+                    <span className="doc-status success" title={`All ${releaseParts.length} part${releaseParts.length === 1 ? '' : 's'} production ready — release the revision to start job orders.`}><i />Ready to release</span>
+                    <button type="button" className="primary" disabled={!!job || !can('revision.release')} title={can('revision.release') ? 'Final check, then release this revision for production' : 'You need the release permission'} onClick={openRelease}><ShieldCheck size={14} />Release revision</button>
+                  </span>;
+                  return <button type="button" className={'doc-status ' + tone} onClick={() => { choosePart(null); setOverview(true); setLayout({ right: true, focus: false }); }}
+                    title={rev.status === 'released' ? 'This revision is released for production.' : `Revision status — ${readyCount} of ${releaseParts.length} parts production ready. The revision leaves design review when every part is ready and it is released from Overview.`}>
+                    <i />{label}{rev.status === 'ready' && !allReady && <small>{readyCount}/{releaseParts.length} ready</small>}</button>;
+                })()}
               </div>
-              <div className="project-actions">
-                {!vendor && <button onClick={() => importingRevision ? showImport() : setModal('upload')}>{importingRevision ? <LoaderCircle size={16} className="spin" /> : <Upload size={16} />}{importingRevision ? 'View import progress' : 'Upload revision'}</button>}
-                {rev && <>
-                  <button onClick={() => doc(`/revisions/${rev.id}/assets/manufacturing-pack.zip`, 'manufacturing-pack.zip')} disabled={!rev.assets?.includes('manufacturing-pack.zip')} title="Generate the manufacturing pack in the revision overview"><Download size={16} />Package</button>
-                  {!vendor && <button className="primary" disabled={!['ready', 'released'].includes(rev.status)} onClick={() => { setSharePath(''); setModal('share'); }}><Link size={16} />Share with vendor</button>}
-                </>}
+              {rev && <nav className="doc-tabs" aria-label="Revision views">
+                {[['parts', 'Model', Box], ['rules', 'Checks', ShieldCheck], ['assembly', 'Assembly', Layers], ...(vendor ? [['production', 'Drawings', Factory]] : [['joborders', 'Jobs', Factory]]), ['review', 'Review', MessageSquare], ['qc', 'Quality', ClipboardCheck], ...(!vendor ? [['audit', 'History', Clock]] : [])].map(([id, label, Icon]: Any) => (
+                  <button type="button" className={tab === id ? 'active' : ''} key={id} onClick={() => setTab(id)}><Icon size={15} />{label}{id === 'rules' && blocking > 0 && <b>{blocking}</b>}</button>
+                ))}
+              </nav>}
+              <div className="doc-actions">
+                {vendor && <span className="doc-note">Supplier review · read only</span>}
+                {!vendor && rev && <button type="button" className="icon" onClick={copyLink} title="Copy a link to this view"><Link size={15} /></button>}
+                {!vendor && project && (project.permissions || []).includes('project.settings') && <button type="button" className="icon" title="Project settings" onClick={() => setModal('project-settings')}><Settings size={15} /></button>}
+                {!vendor && (project?.permissions || []).includes('revision.upload') && <button type="button" className={importingRevision ? '' : 'icon'} title={importingRevision ? 'View import progress' : 'Upload a new revision'} onClick={() => importingRevision ? showImport() : setModal('upload')}>{importingRevision ? <><LoaderCircle size={15} className="spin" />{importingRevision.progress || 0}%</> : <Upload size={15} />}</button>}
+                {rev && can('cad.download') && <button type="button" className="icon" onClick={() => doc(`/revisions/${rev.id}/assets/manufacturing-pack.zip`, 'manufacturing-pack.zip')} disabled={!rev.assets?.includes('manufacturing-pack.zip')} title={rev.assets?.includes('manufacturing-pack.zip') ? 'Download the manufacturing pack' : 'Generate the manufacturing pack first (Overview)'}><Download size={15} /></button>}
+                {rev && !vendor && can('share.manage') && <button type="button" className="primary" disabled={!['ready', 'released'].includes(rev.status)} onClick={() => { setSharePath(''); setModal('share'); }}><Send size={14} />Share</button>}
               </div>
-            </section>
+            </header>
 
-            {importingRevision && <div className="progress-banner" role="status" aria-live="polite">
+            {importingRevision && <div className="job-pill" role="status" aria-live="polite">
               <LoaderCircle size={16} className="spin" />
               <span>Revision {importingRevision.number} · {importingRevision.message || 'Import queued'}</span>
               <progress aria-label="CAD import progress" max="100" value={importingRevision.progress || 0} />
@@ -356,94 +623,163 @@ function App() {
 
             {!rev && vendor ? (
               <div className="empty-page"><LoaderCircle className="spin" /><p>Loading shared revision…</p></div>
+            ) : !rev && (project?.revisions?.length || project?.active_revision || revLoading) ? (
+              <div className="empty-page loading-page"><LoaderCircle size={34} className="spin" /><h2>Opening {project?.name || 'project'}…</h2><p>Loading the latest revision, parts and drawings. Large assemblies take a few seconds.</p></div>
             ) : !rev ? (
               <div className="empty-page"><Upload size={42} /><h2>Every part starts here.</h2><p>Upload STEP, IGES or BREP. Assemblies and multi-body parts stay connected.</p><button className="primary" onClick={() => setModal('upload')}>Upload CAD file</button></div>
             ) : (
               <>
-                <div className="tabs-bar">
-                  <nav>
-                    {[['parts', 'Parts & drawings', Box], ['rules', 'Design checks', ShieldCheck], ['assembly', 'Assembly & fits', Layers], ['production', 'Production', Factory], ['review', 'Review', MessageSquare], ['qc', 'Quality control', ClipboardCheck], ...(!vendor ? [['audit', 'History', Clock]] : [])].map(([id, label, Icon]: Any) => (
-                      <button className={tab === id ? 'active' : ''} key={id} onClick={() => setTab(id)}><Icon size={16} />{label}{id === 'rules' && blocking > 0 && <b>{blocking}</b>}</button>
-                    ))}
-                  </nav>
-                  <div className="revision-picker">
-                    <button onClick={() => setRevisionOpen(!revisionOpen)}><GitBranch size={15} />Revision {rev.number}<ChevronDown size={14} /></button>
-                    {revisionOpen && !vendor && (
-                      <div className="dropdown">
-                        {project?.revisions.map((r: Any) => <button key={r.id} onClick={() => { setRevisionOpen(false); choosePart(null); loadRevision(r.id).catch(fail); }}>Rev {r.number}<Badge>{r.state}</Badge></button>)}
-                        {project?.revisions.length > 1 && <button onClick={() => action(async () => { const other = project.revisions.find((r: Any) => r.id !== rev.id); setComparison(await api(`/revisions/${rev.id}/compare/${other.id}`)); setModal('compare'); setRevisionOpen(false); })}>Compare with previous</button>}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {job && !importingRevision && <div className="progress-banner"><LoaderCircle size={16} className="spin" /><span>{rev.message || 'Job queued'}</span><progress max="100" value={rev.progress} /><b>{rev.progress}%</b></div>}
+                {job && !importingRevision && <div className="job-pill" role="status" aria-live="polite">{rev.progress >= 100 ? <CheckCircle2 size={15} /> : <LoaderCircle size={15} className="spin" />}<span>{rev.message || 'Job queued'}</span><progress max="100" value={rev.progress} /><b>{rev.progress}%</b></div>}
                 {rev.status === 'failed' && <div className="error-banner">Import failed: {rev.message}. The previous active revision is preserved.</div>}
                 {rev.state === 'archived' && <div className="notice"><Archive size={15} />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
 
                 {tab === 'parts' && (
-                  <div className="workspace">
+                  <div className={'workspace cad' + (layout.left && !layout.focus ? '' : ' no-left') + (layout.right && !layout.focus && inspectorContent ? '' : ' no-right')}>
                     <aside className="part-list">
-                      <div className="list-heading"><h3>{multi.length > 1 ? `${multi.length} selected` : 'Part navigator'}</h3><div className="flex">{multi.length > 1 && <button type="button" className="mini" onClick={() => choosePart(null)}><X size={12} />Clear</button>}{hiddenIds.length > 0 && <button type="button" className={'mini' + (showHidden ? ' selected' : '')} title={showHidden ? 'Hide the parts marked hidden' : 'Show the parts marked hidden'} onClick={() => setShowHidden(!showHidden)}>{showHidden ? <Eye size={13} /> : <EyeOff size={13} />}{hiddenIds.length}</button>}<span>{parts.length}</span></div></div>
+                      <div className="list-heading"><h3>{multi.length > 1 ? `${multi.length} selected` : 'Part navigator'}</h3><div className="flex">{multi.length > 1 && <button type="button" className="mini" onClick={() => choosePart(null)}><X size={12} />Clear</button>}{suppressedIds.length > 0 && <button type="button" className={'mini' + (showHidden ? ' selected' : '')} title={showHidden ? 'Hide purchased and hidden parts' : 'Override: show purchased and hidden parts'} onClick={() => setShowHidden(!showHidden)}>{showHidden ? <Eye size={13} /> : <EyeOff size={13} />}{suppressedIds.length}</button>}{hasTree && <button type="button" className={'mini' + (treeView ? ' selected' : '')} title={treeView ? 'Show a flat list' : 'Show the CAD assembly tree'} onClick={() => { const v = !treeView; setTreeView(v); try { localStorage.setItem('forge-nav-tree', v ? 'tree' : 'list'); } catch { /* ignore */ } }}><ListTree size={13} /></button>}<span>{parts.length}</span></div></div>
                       <div className="search"><Search size={16} /><input aria-label="Search parts" placeholder="Find a part…" value={query} onChange={e => setQuery(e.target.value)} /></div>
-                      <div className="nav-filter"><Select size="sm" aria-label="Filter part type" value={category} onChange={setCategory} options={[
+                      <div className="nav-filter"><div className="nav-filter-select"><Select size="sm" aria-label="Filter part type" value={category} onChange={value => { setCategory(value); choosePart(null); }} options={[
                         { value: 'all', label: 'All part types', hint: String(parts.length) },
                         ...Object.entries(categories).map(([k, v]) => ({ value: k, label: v, hint: String(parts.filter((p: Any) => p.category === k).length) })),
                         { value: 'hidden', label: 'Hidden in viewer', hint: String(hiddenIds.length) },
                         { value: 'excluded', label: 'Not for production', hint: String(parts.filter((p: Any) => p.excluded).length) },
                       ]} /></div>
+                        <button type="button" className="icon" onClick={() => stepPart(-1)} disabled={!filtered.length} title="Previous part (↑)"><ArrowUp size={14} /></button><button type="button" className="icon" onClick={() => stepPart(1)} disabled={!filtered.length} title="Next part (↓)"><ArrowDown size={14} /></button></div>
                       <button className={'assembly-root ' + (!selected ? 'chosen' : '')} onClick={() => choosePart(null)}>
                         <Layers size={18} /><span>Complete assembly<small>{rev.manifest.occurrences || 0} body instances</small></span>
                       </button>
                       <div className="part-scroll" ref={listRef}>
-                        {filtered.map((p: Any) => (
-                          <div key={p.id} data-part={p.id} className={'part-row ' + (p.id === selected ? 'chosen' : multi.includes(p.id) ? 'multi' : '') + (p.hidden ? ' is-hidden' : '') + (p.excluded ? ' is-excluded' : '')}>
-                            <button type="button" className="row-main" onClick={ev => clickRow(p.id, ev)}>
-                              <span className={'part-glyph ' + p.category} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers size={17} /> : <Box size={17} />}</span>
-                              <span><strong>{p.name}</strong><small>{p.excluded ? <b className="excluded-tag">Not for production</b> : categories[p.category]} <span>· Qty {p.quantity}</span>{p.spec.material && !p.excluded && <span> · {p.spec.material}</span>}</small></span>
-                              {p.reviewed ? <CheckCircle2 size={15} className="green" /> : <span className="pending-dot" title="Not reviewed" />}
-                            </button>
-                            {!vendor && <button type="button" className="icon row-eye" title={p.hidden ? 'Show in viewer' : 'Hide in viewer'} onClick={() => setFlags(p.id, { hidden: !p.hidden })}>{p.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}
-                          </div>
-                        ))}
+                        {treeView && hasTree ? renderTree(tree, 0) : filtered.map(renderRow)}
                         {!filtered.length && <p className="muted padded">{job ? 'Analyzing components…' : 'No matching parts.'}</p>}
                       </div>
-                      <div className="list-footer"><span title="Shift-click selects a range, Ctrl/Cmd-click toggles">{hiddenIds.length ? `${hiddenIds.length} hidden` : `${holes} named bores`} · ⇧ range</span><span>{parts.filter((p: Any) => p.reviewed && !p.excluded).length}/{parts.filter((p: Any) => !p.excluded).length} reviewed</span></div>
+                      <div className="list-footer"><span title="Shift-click selects a range, Ctrl/Cmd-click toggles">{hiddenIds.length ? `${hiddenIds.length} hidden` : `${holes} named bores`} · ⇧ range</span><span title="Parts production ready (design review + drawing review + specification complete)">{readyCount}/{releaseParts.length} ready</span></div>
                     </aside>
 
                     <div className="canvas-panel">
-                      <div className="canvas-header">
-                        <div className="canvas-title">
-                          {part && <Swatch hex={part.spec.coating_hex} title={part.spec.coating_color} size={12} />}
-                          <strong>{multi.length > 1 ? `${multi.length} parts selected` : part?.name || 'Complete assembly'}</strong>
-                          <small>{part ? (mode === '3d' ? (isolate ? 'Isolated · assembly placement' : 'Highlighted in assembly') : 'Part definition coordinates') : 'Assembly placements from CAD'}</small>
-                        </div>
-                        <div className="canvas-actions">
-                          {part && <>
-                            <button className={isolate ? 'selected' : ''} onClick={() => { setIsolate(!isolate); setMode('3d'); }}><Target size={15} />Isolate</button>
-                            {part.category === 'sheet_metal' && <>
-                              <button className={mode === 'flat2d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 size={15} />Flat pattern</button>
-                              <button className={mode === 'flat3d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan size={15} />Flat 3D</button>
-                            </>}
-                            <button onClick={() => choosePart(null)} title="Clear selection"><X size={15} />Clear</button>
-                          </>}
-                        </div>
-                      </div>
                       {rev.status !== 'processing' && rev.status !== 'failed' ? (
                         mode === 'flat2d' && part ? (
                           <FlatPattern partId={part.id} thickness={part.geometry.thickness} kFactor={part.spec.k_factor} approved={!!part.spec.k_factor_approved} name={part.name} />
                         ) : (
                           <Viewer
-                            url={mode === 'flat3d' && part ? `/parts/${part.id}/assets/flat.glb` : `/revisions/${rev.id}/assets/assembly.glb`}
-                            selected={mode === 'flat3d' ? null : selected}
+                            url={mode === 'flat3d' && part ? `${rev.id}:flat.glb:${part.id}` : `${rev.id}:assembly.glb`}
+                            hud={canvasHud}
+                            toolbarStart={canvasToolsStart}
+                            toolbarEnd={canvasToolsEnd}
+                            pickMode={jointDraft && !addingParts ? pickMode : null}
+                            jointPreview={weldDraftPreview}
+                            welds={mode === '3d' ? savedWelds : []}
+                            onWeldClick={id => { const j = (rev.joints || []).find((x: Any) => x.id === id); if (!j || jointDraft) return; if (editable) editWeld(j); else setWeldListOpen(true); }}
+                            seamCandidates={jointDraft ? seamView : []}
+                            hoverSeam={hoverSeam}
+                            onSeamHover={setHoverSeam}
+                            onSeamToggle={(id, wholeSide) => {
+                              const s = seamCandidates.find(x => x.id === id); if (!s) return;
+                              if (wholeSide) { const list = sameSide(seamsTagged, s).filter((t: Any) => !t.welded_by); setJointDraft((d: Any) => d && addSeams(d, list)); notify(`${list.length} ${s.side || ''} seam${list.length === 1 ? '' : 's'} added`); }
+                              else setJointDraft((d: Any) => d && toggleSeamOn(d, s));
+                            }}
+                            hoverGeometry={hoverGeometry}
+                            onWeldPreviewStatus={(valid, message) => setWeldPreviewStatus(current => current?.valid === valid && current.message === message ? current : { valid, message })}
+                            onGeometryHover={(pid, point, selection, occurrence) => {
+                              const request = ++hoverRequest.current;
+                              if (!pid || !jointDraft || !point.length) { setHoverGeometry(null); return; }
+                              api(`/parts/${pid}/${selection}-at`, 'POST', { point })
+                                .then(f => { if (hoverRequest.current === request) setHoverGeometry({ part: pid, selection, occurrence, ...f }); })
+                                .catch(() => { if (hoverRequest.current === request) setHoverGeometry(null); });
+                            }}
+                            onGeometryPick={(pid, point, selection, occurrence) => {
+                              if (!jointDraft) return;
+                              hoverRequest.current++;
+                              setWeldPreviewStatus(null);
+                              setHoverGeometry(null);
+                              if (jointDraft.kind === 'weld') {
+                                const candidate = parts.find((p: Any) => p.id === pid);
+                                const check = weldability(candidate);
+                                if (check.level === 'blocked') { notify(`${candidate?.name || 'This component'}: ${check.reason}`); return; }
+                                if (jointDraft.scopeLocked && !(jointDraft.parts || []).includes(pid)) { notify('This weld is locked to the selected component. Cancel and start from another selection to change scope.'); return; }
+                              }
+                              if (selection === 'point') {
+                                setJointDraft((d: Any) => d && ({ ...d, weld: { ...d.weld, placement: { part: pid, point, occurrence } } }));
+                                setPickMode(null); return;
+                              }
+                              const weldType = jointDraft.weld?.type || 'linear';
+                              if (jointDraft.kind === 'weld' && selection === 'face' && (weldType === 'linear' || weldType === 'stitch')) {
+                                // Face pair → seam. Works for any two faces: two parts, one part closing on itself, or
+                                // several parts picked pair by pair.
+                                action(async () => {
+                                  const f = await api(`/parts/${pid}/face-at`, 'POST', { point });
+                                  const pick = { part: pid, occurrence, selection: 'face', ...f };
+                                  const first = pairPick[0];
+                                  if (!first) { setPairPick([pick]); setWeldPreviewStatus({ valid: false, message: 'Face A picked — now click face B, the face it is welded to.' }); return; }
+                                  if (first.part === pid && first.occurrence === occurrence && first.index === f.index) { setPairPick([]); setWeldPreviewStatus(null); return; }
+                                  setPairPick([first, pick]);
+                                  const r = await api(`/revisions/${rev.id}/weld-seams`, 'POST', { parts: [...new Set([first.part, pid])], faces: [first, pick].map(x => ({ part: x.part, occurrence: x.occurrence || 0, index: x.index })) });
+                                  setPairPick([]);
+                                  if (!r.seams?.length) { setWeldPreviewStatus({ valid: false, message: r.message || 'No seam between these faces.' }); notify(r.message || 'No seam between these faces.'); return; }
+                                  const offset = seamCandidates.length;
+                                  const labelled = r.seams.map((x: Any, i: number) => ({ ...x, id: `S${offset + i + 1}` }));
+                                  setSeamCandidates(c => [...c.filter(x => !labelled.some((y: Any) => seamKey(y) === seamKey(x))), ...labelled]);
+                                  setJointDraft((d: Any) => {
+                                    if (!d) return d;
+                                    const have = new Set(d.faces.filter((x: Any) => x.selection === 'edge').map(seamKey));
+                                    return labelled.filter((x: Any) => !have.has(seamKey(x))).reduce((acc: Any, x: Any) => toggleSeamOn(acc, x), { ...d, faces: d.faces.filter((x: Any) => x.selection === 'edge') });
+                                  });
+                                  const g = labelled[0];
+                                  notify(`${labelled.length} seam${labelled.length === 1 ? '' : 's'} added · ${g.joint === 'gap' ? `bridges a ${fmt(g.gap)} mm gap` : g.joint === 'fillet' ? `fillet${g.angle ? ` at ${Math.round(g.angle)}°` : ''}` : g.joint} · ${Math.round(labelled.reduce((n: number, x: Any) => n + x.length, 0))} mm. Pick the next pair or save.`);
+                                });
+                                return;
+                              }
+                              action(async () => {
+                                const f = await api(`/parts/${pid}/${selection}-at`, 'POST', { point });
+                                setJointDraft((d: Any) => {
+                                  if (!d) return d;
+                                  const exists = d.faces.some((x: Any) => x.part === pid && x.occurrence === occurrence && x.selection === selection && x.index === f.index);
+                                  if (exists) return { ...d, faces: d.faces.filter((x: Any) => !(x.part === pid && x.occurrence === occurrence && x.selection === selection && x.index === f.index)), weld: { ...d.weld, placement: null } };
+                                  const type = d.weld?.type || 'linear';
+                                  const added = [...d.faces, { part: pid, occurrence, selection, ...f }];
+                                  // A continuous/stitch seam may follow several connected B-rep edges.
+                                  // Face-pair inference and tack welds remain intentionally limited to 2 faces.
+                                  const faces = type === 'patch' ? added.filter((x: Any) => x.selection !== 'edge')
+                                    : selection === 'edge' && ['linear', 'stitch'].includes(type) ? added.filter((x: Any) => x.selection === 'edge').slice(-32)
+                                      : added.filter((x: Any) => x.selection !== 'edge').slice(-2);
+                                  const partIds = [...new Set([...(d.parts || []), ...faces.map((x: Any) => x.part)])];
+                                  return { ...d, parts: partIds, faces, weld: { ...d.weld, placement: null } };
+                                });
+                              });
+                            }}
+                            selected={mode === 'flat3d' || jointDraft ? null : selected}
                             isolated={isolate}
                             flat={mode === 'flat3d'}
                             appearance={appearance}
-                            hidden={showHidden ? [] : hiddenIds}
-                            multi={multi}
+                            hidden={canvasHiddenIds}
+                            multi={jointDraft ? (jointDraft.parts || []) : multi}
+                            focusIds={weldFocusIds}
+                            representativeOccurrences={isolate && selected && solo !== null && !jointDraft ? { ...weldRepresentatives, [selected]: solo } : weldRepresentatives}
                             feature={mode === '3d' ? feature : null}
-                            onPick={id => { if (mode === 'flat3d') return; if (!id) choosePart(null); else if (parts.some((p: Any) => p.id === id)) choosePart(id); }}
-                            onIsolateToggle={() => setIsolate(v => !v)}
+                            onPick={(id, additive, occurrence) => {
+                              lastOccurrence.current = occurrence;
+                              if (mode === 'flat3d') return;
+                              if (jointDraft?.kind === 'weld' && addingParts) {
+                                if (!id || !parts.some((p: Any) => p.id === id)) return;
+                                const check = weldability(parts.find((p: Any) => p.id === id));
+                                if (check.level === 'blocked') { notify(check.reason); return; }
+                                const has = (jointDraft.parts || []).includes(id);
+                                const next = { ...jointDraft, parts: has ? jointDraft.parts.filter((x: string) => x !== id) : [...(jointDraft.parts || []), id], faces: has ? jointDraft.faces.filter((f: Any) => f.part !== id && f.other_part !== id) : jointDraft.faces };
+                                setJointDraft(next); setSeamCandidates(c => c.filter(s => next.parts.includes(s.part) && next.parts.includes(s.other_part)));
+                                if (next.parts.length >= 2) detectSeams(next, true);
+                                return;
+                              }
+                              if (jointDraft) return; // seams / faces are picked while a weld is open
+                              if (!id) { if (!additive) choosePart(null); return; }
+                              if (!parts.some((p: Any) => p.id === id)) return;
+                              if (additive) { const next = multi.includes(id) ? multi.filter(x => x !== id) : [...(multi.length ? multi : selected ? [selected] : []), id]; setMulti(next); setSelected(next.includes(id) ? id : next[next.length - 1] || null); anchor.current = id; }
+                              else choosePart(id);
+                            }}
+                            onIsolateToggle={occurrence => {
+                              const many = (part?.quantity || 1) > 1 && occurrence !== undefined;
+                              if (!isolate) { setIsolate(true); setSolo(many ? occurrence! : null); }
+                              else if (many && solo === null) setSolo(occurrence!);
+                              else { setIsolate(false); setSolo(null); }
+                            }}
                           />
                         )
                       ) : (
@@ -454,107 +790,160 @@ function App() {
                           <small>Geometry processing runs independently of the website.</small>
                         </div>
                       )}
-                      <div className="canvas-footer">
-                        <span><span className="live-dot" />Source geometry preserved</span>
-                        <span>{mode === 'flat2d' ? 'Developed blank from the approved bend graph · scroll to zoom · drag to pan' : 'Drag to orbit · Scroll to zoom · Click a part to select · Double-click to isolate · Click empty space to clear'}</span>
-                        <Badge>STEP → GLB</Badge>
-                      </div>
                     </div>
 
                     <aside className="inspector">
-                      {multi.length > 1 ? (
-                        <GroupPanel parts={parts.filter((p: Any) => multi.includes(p.id))} vendor={vendor} editable={editable} busy={busy}
+                      {jointDraft ? (
+                        <JointPanel draft={jointDraft} setDraft={d => { setWeldPreviewStatus(null); setJointDraft(d); }} parts={parts} options={jointOptions} pickMode={pickMode} setPickMode={setPickMode} busy={busy} previewStatus={weldPreviewStatus}
+                          studio={{ seams: seamsTagged, detecting, detectMessage, onDetect: () => detectSeams(jointDraft, !(jointDraft.faces || []).length), hoverSeam, setHoverSeam, addingParts, setAddingParts, seamSide, setSeamSide }}
+                          onCancel={endWeld}
+                          onSave={() => action(async () => {
+                            const body = { kind: jointDraft.kind, parts: jointDraft.parts, faces: jointDraft.faces, weld: jointDraft.kind === 'weld' ? jointDraft.weld : {}, fasteners: jointDraft.fasteners || '', torque: jointDraft.torque || '', sequence: Number(jointDraft.sequence || 0), notes: jointDraft.notes || '', name: jointDraft.name || '' };
+                            if (jointDraft.id) await api('/joints/' + jointDraft.id, 'PUT', body); else await api(`/revisions/${rev.id}/joints`, 'POST', body);
+                            endWeld(); setWeldListOpen(true); await refreshJoints(rev.id); notify('Weld saved — it now shows on the model.');
+                          })} />
+                      ) : weldListOpen ? (
+                        <ConfiguredWelds joints={rev.joints || []} parts={parts} editable={editable} onClose={() => setWeldListOpen(false)} onEdit={editWeld} onDelete={async j => {
+                          if (await ask({ title: `Remove ${j.data.name || 'weld ' + (j.data.sequence || '')}?`, message: 'Its production step is removed from new job orders too.', confirm: 'Remove weld', danger: true }) === null) return;
+                          // Remove it from the list at once; only the joints are re-read (not the whole revision).
+                          setRev((r: Any) => r && { ...r, joints: (r.joints || []).filter((x: Any) => x.id !== j.id) });
+                          api('/joints/' + j.id, 'DELETE').then(() => notify('Configured weld removed.')).catch(fail).finally(() => refreshJoints(rev.id).catch(fail));
+                        }} />
+                      ) : multi.length > 1 ? (
+                        <GroupPanel templates={templates.filter((t: Any) => t.kind === 'process')} onProcess={tid => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: multi, template_id: tid }); await loadRevision(rev.id); notify('Process template applied'); })}
+                          onJoint={() => startWeld([...multi])} parts={parts.filter((p: Any) => multi.includes(p.id))} vendor={vendor} editable={editable} busy={busy}
                           onEdit={() => { setEditing({ group: parts.filter((p: Any) => multi.includes(p.id)) }); setModal('group-spec'); }}
                           onBulk={bulk} onExclude={() => setExcluding(parts.filter((p: Any) => multi.includes(p.id)))} onRemove={id => { const next = multi.filter(x => x !== id); setMulti(next); if (selected === id) setSelected(next[next.length - 1] || null); }}
                           onFocus={id => setSelected(id)} onClear={() => choosePart(null)} />
-                      ) : part ? (
-                        <>
-                          <div className="inspector-top">
-                            <div className="flex"><Badge kind={part.category}>{categories[part.category]}</Badge>{part.excluded ? <Badge kind="danger">Not for production</Badge> : part.reviewed ? <Badge kind="success">Reviewed</Badge> : <Badge kind="warning">Review pending</Badge>}{part.geometry.carried_from && <Badge kind="neutral" >From rev {part.geometry.carried_from.revision}</Badge>}</div>
-                            <h2>{part.name}</h2>
-                            <span className="muted">{part.id.slice(-10).toUpperCase()} · Qty {part.quantity}</span>
-                            {!vendor && (
-                              <div className="part-actions">
-                                {part.excluded
-                                  ? <button type="button" disabled={!editable} title={editable ? 'Put this part back into production' : 'Only on an active, ready revision (owner/engineer)'} onClick={() => setFlags(part.id, { excluded: false })}><Undo2 size={14} />Restore to production</button>
-                                  : <button type="button" className="danger-ghost" disabled={!editable} title={editable ? 'Exclude from release checks, drawing sets and the vendor checklist' : 'Only on an active, ready revision (owner/engineer)'} onClick={() => setExcluding([part])}><Ban size={14} />Not for production</button>}
-                                <button type="button" title={part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'} onClick={() => setFlags(part.id, { hidden: !part.hidden })}>{part.hidden ? <Eye size={14} /> : <EyeOff size={14} />}{part.hidden ? 'Show' : 'Hide'}</button>
+                      ) : part ? (() => {
+                        const openFindings = selectedFindings.filter((f: Any) => f.severity === 'blocker' && !f.waiver);
+                        const specDone = openFindings.length === 0;
+                        const ready = partReady(part);
+                        const path = part.assembly_path || [];
+                        const asmKey = path.join(' / ');
+                        const siblings = path.length ? parts.filter((p: Any) => (p.assembly_path || []).slice(0, path.length).join(' / ') === asmKey) : [];
+                        const differ = siblings.filter((p: Any) => p.category !== part.category);
+                        const missing = (k: string) => <button type="button" className="pi-add" onClick={() => setReadyFor(part.id)}>Add</button>;
+                        const row = (label: string, value: Any, opt = false) => (opt && !value) ? null : <div className="pi-kv" key={label}><span>{label}</span><b>{value || missing(label)}</b></div>;
+                        return (
+                        <div className="pi">
+                          <header className="pi-head">
+                            <div className="pi-title">
+                              <span className={'pi-type ' + part.category}><span className={'part-glyph ' + part.category} style={part.spec.coating_hex ? { background: part.spec.coating_hex, color: '#fff' } : undefined}>{part.category === 'sheet_metal' ? <Layers size={14} /> : <Box size={14} />}</span>{categories[part.category]}{part.geometry.carried_from && <em title="Carried over from an earlier revision">rev {part.geometry.carried_from.revision}</em>}</span>
+                              <h2 title={part.name}>{part.name}</h2>
+                              <small>{part.id.slice(-10).toUpperCase()} · Qty {part.quantity}{part.geometry.mass_kg !== undefined ? ` · ${fmt(part.geometry.mass_kg)} kg` : ''}</small>
+                            </div>
+                            {!vendor && <div className="pi-menu">
+                              <button type="button" className="icon" aria-label="More actions" onClick={() => setPartMenu(v => !v)}><MoreHorizontal size={18} /></button>
+                              {partMenu && <div className="pi-scrim" onClick={() => setPartMenu(false)} />}
+                              {partMenu && <div className="dropdown pi-dropdown">
+                                <button type="button" onClick={() => { setPartMenu(false); setFlags(part.id, { hidden: !part.hidden }); }}>{part.hidden ? <Eye size={14} /> : <EyeOff size={14} />}{part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'}</button>
+                                {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings size={14} />All manufacturing details</button>}
+                                {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); startWeld([part.id]); }}><Flame size={14} />Weld this component</button>}
+                                {editable && (part.excluded
+                                  ? <button type="button" onClick={() => { setPartMenu(false); setFlags(part.id, { excluded: false }); }}><Undo2 size={14} />Restore to production</button>
+                                  : <button type="button" className="danger" onClick={() => { setPartMenu(false); setExcluding([part]); }}><Ban size={14} />Not for production…</button>)}
+                              </div>}
+                            </div>}
+                          </header>
+
+                          {part.excluded ? (
+                            <div className="pi-card muted-card"><Ban size={16} /><div><b>Not for production</b><p>{(part.exclusion_reason || 'Excluded from this revision').replace(/[.]?$/, '.')} Skipped in release checks, drawing packs and the vendor checklist.</p>{editable && <button type="button" className="mini" onClick={() => setFlags(part.id, { excluded: false })}><Undo2 size={13} />Restore</button>}</div></div>
+                          ) : part.category === 'purchased' ? (
+                            <div className="pi-card muted-card"><Box size={16} /><div><b>Purchased part</b><p>Bought complete — no drawing release needed.</p>
+                              <label className="pi-switch"><input type="checkbox" checked={!!part.drawing_options?.assembly_show} disabled={busy || !editable} onChange={e => { const show = e.target.checked; action(async () => { await api(`/revisions/${rev.id}/parts/assembly-drawing`, 'POST', { ids: [part.id], show }); await loadRevision(rev.id); }); }} /><span />Show on the assembly drawing</label></div></div>
+                          ) : (
+                            <div className={'pi-card ready-card' + (ready ? ' ok' : '')}>
+                              <div className="pi-steps">
+                                <span className={specDone ? 'done' : ''} title={specDone ? 'Specification complete' : `${openFindings.length} open specification items`}><i>{specDone ? <Check size={11} /> : openFindings.length}</i>Spec</span>
+                                <span className={part.reviewed ? 'done' : ''}><i>{part.reviewed ? <Check size={11} /> : '2'}</i>Design</span>
+                                <span className={part.doc_reviewed ? 'done' : ''}><i>{part.doc_reviewed ? <Check size={11} /> : '3'}</i>Drawing</span>
                               </div>
-                            )}
-                          </div>
-                          <div className="mini-tabs">{['details', 'features', 'documents'].map(t => <button key={t} className={detail === t ? 'active' : ''} onClick={() => setDetail(t)}>{t}</button>)}</div>
-                          <div className="inspector-body">
+                              <button type="button" className={ready ? '' : 'primary'} onClick={() => setReadyFor(part.id)}>{ready ? <><CheckCircle2 size={15} />Production ready</> : <><Sparkles size={15} />Make production ready</>}</button>
+                            </div>
+                          )}
+
+                          {editable && !part.excluded && <div className="pi-props">
+                            <label><span>Type</span><Select size="sm" value={part.category} disabled={busy} onChange={v => action(async () => { if (v === part.category) return; await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: [part.id], category: v }); await loadRevision(rev.id); notify(`${part.name} is now ${categories[v]}`); })} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} /></label>
+                            <label><span>Process</span><Select size="sm" value={part.process_template_id || ''} disabled={busy} onChange={v => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: [part.id], template_id: v }); await loadRevision(rev.id); })} options={[{ value: '', label: 'Custom' }, ...templates.filter((t: Any) => t.kind === 'process').map((t: Any) => ({ value: t.id, label: t.name }))]} /></label>
+                            {siblings.length > 1 && <div className="pi-asm"><span>Assembly</span><div><Folder size={13} /><b title={asmKey}>{path[path.length - 1]}</b><small>{siblings.length} parts</small>
+                              <button type="button" className="link" onClick={() => { setMulti(siblings.map((p: Any) => p.id)); setSelected(part.id); }}>Select</button>
+                              {differ.length > 0 && <button type="button" className="link" disabled={busy} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: siblings.map((p: Any) => p.id), category: part.category }); await loadRevision(rev.id); notify(`${path[path.length - 1]}: ${siblings.length} parts are now ${categories[part.category]}`); })}>Make all {categories[part.category].toLowerCase()}</button>}</div></div>}
+                          </div>}
+
+                          <nav className="pi-tabs" role="tablist">{[['details', 'Details'], ['features', `Features${part.geometry.holes.length + part.geometry.bends.length ? ' ' + (part.geometry.holes.length + part.geometry.bends.length) : ''}`], ['documents', 'Documents']].map(([t, l]) => <button type="button" role="tab" aria-selected={detail === t} key={t} className={detail === t ? 'active' : ''} onClick={() => setDetail(t)}>{l}</button>)}</nav>
+
+                          <div className="pi-body">
                             {detail === 'details' ? (
                               <>
-                                <div className="metric-trio">{['X', 'Y', 'Z'].map((a, i) => <div key={a}><span>{a} / mm</span><b>{fmt(part.geometry.dimensions[i])}</b></div>)}</div>
-                                <h4>Manufacturing</h4>
-                                <div className="property-list">
-                                  <div><span>Geometry</span><b className={part.geometry.valid ? 'green' : 'red'}>{part.geometry.valid ? 'Valid solid' : 'Invalid'}</b></div>
-                                  <div><span>Classification</span><b>{part.geometry.classification_confidence}</b></div>
-                                  {part.geometry.thickness > 0 && <div><span>Thickness</span><b>{fmt(part.geometry.thickness)} mm · inferred</b></div>}
-                                  <div><span>Material</span><b>{part.spec.material || <em>Not specified</em>}</b></div>
-                                  {part.spec.stock && <div><span>Raw stock</span><b>{part.spec.stock}</b></div>}
-                                  <div><span>Process</span><b>{part.spec.process || <em>Not specified</em>}</b></div>
-                                  {part.spec.heat_treatment && <div><span>Heat treatment</span><b>{part.spec.heat_treatment}{part.spec.hardness && ' · ' + part.spec.hardness}</b></div>}
-                                  <div><span>Finish</span><b>{part.spec.finish || <em>Not specified</em>}</b></div>
-                                  <div><span>Coating</span><b>{part.spec.paint || <em>Not specified</em>}</b></div>
-                                  <div><span>Colour</span><b className="flex end">{part.spec.coating_hex && <Swatch hex={part.spec.coating_hex} />}{part.spec.coating_color || part.spec.coating_hex || <em>Not specified</em>}</b></div>
-                                  {part.spec.coating_thickness && <div><span>Film thickness</span><b>{part.spec.coating_thickness}</b></div>}
-                                  {part.spec.masking && <div><span>Masking</span><b>{part.spec.masking}</b></div>}
-                                  <div><span>Tolerance</span><b>{part.spec.general_tolerance || <em>Not specified</em>}</b></div>
-                                  {part.spec.roughness && <div><span>Roughness</span><b>{part.spec.roughness}</b></div>}
-                                  {part.spec.datums && <div><span>Datums</span><b>{part.spec.datums}</b></div>}
-                                  {part.spec.edge_treatment && <div><span>Edges</span><b>{part.spec.edge_treatment}</b></div>}
-                                  {part.spec.marking && <div><span>Marking</span><b>{part.spec.marking}</b></div>}
-                                  {part.spec.packaging && <div><span>Packaging</span><b>{part.spec.packaging}</b></div>}
-                                </div>
-                                {part.spec.operations?.length > 0 && (
-                                  <>
-                                    <h4>Process sequence</h4>
-                                    <ol className="ops-view">{part.spec.operations.map((o: Any, i: number) => <li key={i}><b>{typeof o === 'string' ? o : o.name}</b>{o.detail && <small>{o.detail}</small>}</li>)}</ol>
-                                  </>
-                                )}
-                                {part.spec.notes && <><h4>Notes</h4><p className="note-text">{part.spec.notes}</p></>}
-                                {part.category === 'sheet_metal' && (
-                                  <div className="info-card"><Layers size={18} /><div><strong>{part.geometry.flat_status === 'supported' ? 'Developed pattern available' : 'Unfold review required'}</strong><p>{part.geometry.flat_message}</p></div></div>
-                                )}
-                                <h4>Engineering status</h4>
-                                {part.excluded ? (
-                                  <div className="status-card excluded"><Ban size={17} /><div><b>Not for production</b><p>{(part.exclusion_reason || 'Excluded from this revision').replace(/[.]?$/, '.')}{part.excluded_by && ` Marked by ${part.excluded_by}${part.excluded_at ? ' on ' + new Date(part.excluded_at).toLocaleString() : ''}.`} Skipped in release checks, drawing packs and the vendor checklist.</p></div></div>
-                                ) : (
-                                  <div className="status-card"><AlertTriangle size={17} /><div><b>{selectedFindings.filter((f: Any) => !f.waiver).length} open checks</b><p>Review manufacturing specifications before release.</p></div></div>
-                                )}
-                                {editable && !part.excluded && <button className="full primary" onClick={() => { setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings size={15} />Edit manufacturing details</button>}
-                                {part.geometry.carried_from && (
-                                  <div className="info-card"><GitBranch size={18} /><div><strong>Carried over from revision {part.geometry.carried_from.revision}</strong><p>{part.geometry.carried_from.same_shape ? 'Identical shape: specification, feature limits and verification notes were copied. Review and re-approve for this revision.' : 'Shape changed: material, process, finish and coating were copied; feature limits, verification notes and dispositions were reset.'}</p></div></div>
-                                )}
+                                <div className="pi-dims">{['X', 'Y', 'Z'].map((a, i) => <div key={a}><span>{a}</span><b>{fmt(part.geometry.dimensions[i])}<small> mm</small></b></div>)}</div>
+                                <section className="pi-section">
+                                  <h4>Specification{editable && !part.excluded && <button type="button" className="link" onClick={() => { setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}>Edit</button>}</h4>
+                                  {row('Material', part.spec.material)}
+                                  {row('Process', part.spec.process)}
+                                  {row('Finish', part.spec.finish)}
+                                  {(part.spec.coating_color || part.spec.coating_hex) && <div className="pi-kv"><span>Colour</span><b className="flex end">{part.spec.coating_hex && <Swatch hex={part.spec.coating_hex} />}{part.spec.coating_color || part.spec.coating_hex}</b></div>}
+                                  {row('Coating', part.spec.paint, true)}
+                                  {row('Tolerance', part.spec.general_tolerance)}
+                                  {row('Datums', part.spec.datums)}
+                                  {row('Stock', part.spec.stock, true)}
+                                  {row('Heat treatment', part.spec.heat_treatment && (part.spec.heat_treatment + (part.spec.hardness ? ' · ' + part.spec.hardness : '')), true)}
+                                  {row('Roughness', part.spec.roughness, true)}
+                                  {row('Edges', part.spec.edge_treatment, true)}
+                                  {row('Masking', part.spec.masking, true)}
+                                  {row('Marking', part.spec.marking, true)}
+                                </section>
+                                <section className="pi-section">
+                                  <h4>Geometry</h4>
+                                  <div className="pi-kv"><span>Solid</span><b className={part.geometry.valid ? 'green' : 'red'}>{part.geometry.valid ? 'Valid' : 'Invalid — repair in CAD'}</b></div>
+                                  {part.geometry.thickness > 0 && <div className="pi-kv"><span>Thickness</span><b>{fmt(part.geometry.thickness)} mm</b></div>}
+                                  {part.geometry.mass_kg !== undefined && <div className="pi-kv"><span>Mass</span><b>{fmt(part.geometry.mass_kg)} kg <small>{part.geometry.mass_basis}</small></b></div>}
+                                  {part.geometry.step && Object.keys(part.geometry.step).length > 0 && <div className="pi-kv"><span>From STEP</span><b className="flex end">{part.geometry.step.color && <Swatch hex={part.geometry.step.color} title="CAD appearance" />}{[part.geometry.step.material, part.geometry.step.density && part.geometry.step.density + ' g/cm³'].filter(Boolean).join(' · ') || 'appearance only'}</b></div>}
+                                  <div className="pi-kv"><span>Classified by</span><b>{part.geometry.classification_confidence}</b></div>
+                                  {part.category === 'sheet_metal' && <div className="pi-kv"><span>Flat pattern</span><b className={part.geometry.flat_status === 'supported' ? 'green' : 'red'}>{part.geometry.flat_status === 'supported' ? 'Available' : 'Needs review'}</b></div>}
+                                </section>
+                                {part.spec.operations?.length > 0 && <section className="pi-section"><h4>Process steps</h4><ol className="pi-ops">{part.spec.operations.map((o: Any, i: number) => <li key={i}><b>{typeof o === 'string' ? o : o.name}</b>{o.detail && <small>{o.detail}</small>}</li>)}</ol></section>}
+                                {part.spec.notes && <section className="pi-section"><h4>Notes</h4><p className="note-text">{part.spec.notes}</p></section>}
+                                {part.geometry.carried_from && <p className="pi-foot">{part.geometry.carried_from.same_shape ? `Carried over from rev ${part.geometry.carried_from.revision} (identical shape) — re-approve for this revision.` : `Carried over from rev ${part.geometry.carried_from.revision}; shape changed, feature limits were reset.`}</p>}
                               </>
                             ) : detail === 'features' ? (
                               <>
-                                <h4>{part.geometry.holes.length} named bores</h4>
-                                {part.geometry.holes.map((h: Any) => (
-                                  <div className={'feature' + (feature?.id === h.id ? ' hot' : '')} key={h.id} onMouseEnter={() => setFeature({ kind: 'hole', partId: part.id, ...h })} onMouseLeave={() => setFeature(null)}><Badge kind="neutral">{h.id}</Badge><div><strong>Ø {fmt(h.diameter)} mm</strong><small>Axial length {fmt(h.depth)} mm</small><small>{part.spec.feature_specs?.[h.id]?.designation || 'Thread / bore designation pending'}</small></div></div>
-                                ))}
-                                <h4>{part.geometry.bends.length} bends</h4>
-                                {part.geometry.bends.map((b: Any) => (
-                                  <div className={'feature' + (feature?.id === b.id ? ' hot' : '')} key={b.id} onMouseEnter={() => setFeature({ kind: 'bend', partId: part.id, ...b })} onMouseLeave={() => setFeature(null)}><Badge>{b.id}</Badge><div><strong>{fmt(b.angle)}° · R{fmt(b.radius)}</strong><small>Length {fmt(b.length)} mm</small></div></div>
-                                ))}
-                                <p className="muted">Geometric features carry stable labels within this revision. Renamed or changed features require reconciliation on a new revision.</p>
+                                {part.geometry.holes.length > 0 && <section className="pi-section"><h4>Bores · {part.geometry.holes.length}</h4>{part.geometry.holes.map((h: Any) => (
+                                  <div className={'pi-feature' + (feature?.id === h.id ? ' hot' : '')} key={h.id} onMouseEnter={() => setFeature({ kind: 'hole', partId: part.id, ...h })} onMouseLeave={() => setFeature(null)}><em>{h.id}</em><span><b>Ø {fmt(h.diameter)}</b><small>{fmt(h.depth)} mm deep · {part.spec.feature_specs?.[h.id]?.designation || 'designation pending'}</small></span></div>
+                                ))}</section>}
+                                {part.geometry.bends.length > 0 && <section className="pi-section"><h4>Bends · {part.geometry.bends.length}</h4>{part.geometry.bends.map((b: Any) => (
+                                  <div className={'pi-feature' + (feature?.id === b.id ? ' hot' : '')} key={b.id} onMouseEnter={() => setFeature({ kind: 'bend', partId: part.id, ...b })} onMouseLeave={() => setFeature(null)}><em>{b.id}</em><span><b>{fmt(b.angle)}° · R{fmt(b.radius)}</b><small>{fmt(b.length)} mm long</small></span></div>
+                                ))}</section>}
+                                {!part.geometry.holes.length && !part.geometry.bends.length && <p className="pi-foot">No bores or bends recognised on this part.</p>}
+                                <p className="pi-foot">Hover a feature to find it on the model.</p>
                               </>
                             ) : (
                               <>
-                                <h4>Part documents</h4>
-                                {[['drawing.pdf', 'Drawing sheet', 'PDF · views, feature labels & specs', true], ['drawing.dxf', 'Drawing geometry', 'DXF · layers and named holes', false], ['flat.dxf', 'Developed pattern', 'DXF · contour and bend lines', false], ['part.step', 'Individual part', 'STEP · exact solid geometry', false]].map(([file, title, sub, previewable]: Any) => (
-                                  <button className="document" key={file} disabled={!part.assets.includes(file)} onClick={() => doc(`/parts/${part.id}/assets/${file}`, part.name + '_' + file, title + ' — ' + part.name)}>
-                                    <FileText size={22} /><span><strong>{title}</strong><small>{part.assets.includes(file) ? sub : 'Not generated'}</small></span>{previewable ? <Eye size={16} /> : <Download size={16} />}
-                                  </button>
-                                ))}
-                                {!vendor && <button className="primary full" disabled={!!job || rev.status !== 'ready'} onClick={() => generate(part.id)}><RefreshCw size={15} />Generate documents</button>}
-                                <p className="muted">PDFs open in a preview; download from there. Unsupported developments are never exported as flat blanks.</p>
+                                <div className="pi-drawing">
+                                  <div><FileText size={18} /><span><b>Drawing</b><small className={part.doc_reviewed ? 'green' : ''}>{part.doc_reviewed ? `Reviewed by ${part.doc_reviewed_by}` : part.assets.includes('drawing.pdf') ? 'Not reviewed yet' : 'Not generated yet'}</small></span></div>
+                                  {part.assets.includes('drawing.pdf') && <button type="button" className="primary" onClick={() => setDrawingPart(part.id)}>Open editor</button>}
+                                </div>
+                                {editable && can('drawing.edit') && <div className="pi-props compact"><label><span>Sheet</span><Select size="sm" value={part.drawing_options?.template_id || part.drawing_options?.size || ''} disabled={busy || !!job} onChange={v => action(async () => {
+                                  const isTpl = templates.some((t: Any) => t.id === v);
+                                  await api(`/revisions/${rev.id}/parts/drawing-options`, 'POST', { ids: [part.id], template_id: isTpl ? v : '', size: isTpl ? '' : v });
+                                  await loadRevision(rev.id); notify('Regenerating the drawing with the new sheet…');
+                                })} options={[{ value: '', label: 'Project default' }, { value: 'A4', label: 'A4' }, { value: 'A3', label: 'A3' }, { value: 'A2', label: 'A2' }, ...templates.filter((t: Any) => t.kind === 'drawing').map((t: Any) => ({ value: t.id, label: t.name, hint: 'template' }))]} /></label></div>}
+                                <section className="pi-section">
+                                  <h4>Files</h4>
+                                  <div className="pi-files">{[['drawing.pdf', 'Drawing', 'PDF', true], ['drawing.dxf', 'Drawing', 'DXF · editable', false], ['review.pdf', 'Engineering review', 'PDF', true], ['flat.dxf', 'Flat pattern', 'DXF', false], ['part.step', 'Part model', 'STEP', false]].filter(([file]: Any) => !['drawing.dxf', 'flat.dxf', 'part.step'].includes(file) || can('cad.download')).filter(([file]: Any) => file !== 'flat.dxf' || part.category === 'sheet_metal').map(([file, title, sub, previewable]: Any) => {
+                                    const has = part.assets.includes(file);
+                                    return <button type="button" className="pi-file" key={file} disabled={!has} onClick={() => doc(`/parts/${part.id}/assets/${file}`, part.name + '_' + file, title + ' — ' + part.name)}>
+                                      <span className="ext">{String(file).split('.').pop()}</span><span><b>{title}</b><small>{has ? sub : 'Not generated'}</small></span>{has && (previewable ? <Eye size={15} /> : <Download size={15} />)}
+                                    </button>;
+                                  })}</div>
+                                </section>
+                                {!vendor && <button type="button" className="pi-generate" disabled={!!job || rev.status !== 'ready'} onClick={() => generate(part.id)}><RefreshCw size={14} className={job ? 'spin' : ''} />{job ? 'Generating…' : 'Regenerate documents'}</button>}
                               </>
                             )}
                           </div>
-                        </>
+                        </div>
+                        );
+                      })(
                       ) : (
                         <>
                           <div className="inspector-top"><span className="eyebrow">REVISION OVERVIEW</span><h2>Design to delivery</h2><p className="muted">Every manufacturing decision stays with this revision.</p></div>
@@ -568,7 +957,7 @@ function App() {
                             ))}
                             {!vendor && <>
                               <button className="primary full" disabled={!!job || rev.status !== 'ready'} onClick={() => generate()}><FileText size={16} />Generate manufacturing pack</button>
-                              <button className="full" disabled={rev.status !== 'ready' || !!job} onClick={() => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); })}><ShieldCheck size={16} />Review release readiness</button>
+                              <button className="full" disabled={rev.status !== 'ready' || !!job} onClick={() => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); })}><ShieldCheck size={16} />Production readiness</button>
                               {editable && <button className="full" title="Re-run make/buy name rules and hide small bought-in items on parts you have not classified yet" onClick={() => action(async () => { const r = await api(`/revisions/${rev.id}/reclassify`, 'POST'); await loadRevision(rev.id); notify(`Re-classified ${r.recategorised} parts, hid ${r.hidden} bought-in items. Reviewed parts were left alone.`); })}><RefreshCw size={16} />Re-run classification</button>}
                             </>}
                             <div className="info-card"><Palette size={18} /><p>Parts are coloured by their specified coating colour; uncoated parts use a neutral tone per category. Pick a part in the viewer or navigator to inspect it.</p></div>
@@ -579,30 +968,12 @@ function App() {
                   </div>
                 )}
 
-                {tab === 'rules' && (
-                  <section className="content-page">
-                    <div className="page-title"><div><h2>Design checks</h2><p>Explicit coverage. Configurable shop rules. Recorded engineering decisions.</p></div><button onClick={() => setModal('rules')}><Settings size={16} />Rule library</button></div>
-                    <div className="summary-cards">
-                      <div><span>OPEN BLOCKERS</span><b>{blocking}</b></div>
-                      <div><span>WARNINGS</span><b>{findings.filter((f: Any) => f.severity === 'warning' && !f.waiver).length}</b></div>
-                      <div><span>REVIEWED PARTS</span><b>{parts.filter((p: Any) => p.reviewed).length}<small> / {parts.length}</small></b></div>
-                      <div><span>RULE COVERAGE</span><b className="text-stat">Geometry + manual</b></div>
-                    </div>
-                    <div className="notice"><ShieldCheck size={18} />A passing CAD check does not certify strength, fatigue, fits or compliance. The library lists what the tool checks and what an engineer must verify.</div>
-                    <div className="table-wrap">
-                      <table>
-                        <thead><tr><th>Part</th><th>Rule</th><th>Finding</th><th>Feature</th><th>Status</th></tr></thead>
-                        <tbody>
-                          {parts.filter((p: Any) => p.category !== 'purchased' && !p.excluded).flatMap((p: Any) => p.findings.map((f: Any, i: number) => (
-                            <tr key={p.id + i} onClick={() => { choosePart(p.id); setTab('parts'); }}>
-                              <td>{p.name}</td><td><code>{f.code}</code></td><td><strong>{f.title}</strong><small>{f.detail}</small></td><td>{f.feature || '—'}</td>
-                              <td><Badge kind={f.waiver ? 'success' : f.severity === 'blocker' ? 'danger' : 'warning'}>{f.waiver ? 'Disposition recorded' : f.severity}</Badge></td>
-                            </tr>
-                          )))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
+                {tab === 'rules' && <DesignChecks parts={parts} onWizard={id => setReadyFor(id)} onOpen={id => { choosePart(id); setTab('parts'); }} onRules={() => setModal(project && (project.permissions || []).includes('project.settings') ? 'project-settings' : 'rules')} />}
+
+                {tab === 'joborders' && !vendor && project && (
+                  rev.status !== 'released' && !project.revisions.some((r: Any) => r.status === 'released')
+                    ? <section className="content-page"><div className="notice"><ShieldCheck size={17} />Job orders open once a revision is production ready: every part design-reviewed and drawing-reviewed, all design checks covered, then <b>Release</b> in the revision overview.</div><JobOrdersPage projects={projects} projectId={project.id} ctx={{ busy, action, notify }} perms={new Set(project.permissions || [])} openJobOrder={openJobOrder} /></section>
+                    : <JobOrdersPage projects={projects} projectId={project.id} ctx={{ busy, action, notify }} perms={new Set(project.permissions || [])} openJobOrder={openJobOrder} />
                 )}
 
                 {tab === 'assembly' && (
@@ -611,9 +982,14 @@ function App() {
                       <div><h2>Assembly & mating</h2><p>From geometric candidates to toleranced, approved interfaces.</p></div>
                       <div className="flex">
                         <button onClick={() => doc(`/revisions/${rev.id}/assets/assembly.pdf`, 'assembly.pdf', 'Assembly & mating record')}><Eye size={16} />Assembly document</button>
+                        {editable && <button onClick={() => { setTab('parts'); startWeld(multi.length ? [...multi] : []); notify('Click the components to weld in the 3D view — Forge finds the seams where they touch.'); }}><Plus size={16} />Add joint / weld</button>}
                         {editable && <button className="primary" onClick={() => { setEditing({ data: { label: 'New interface', part_a: parts[0]?.id, part_b: parts[1]?.id || parts[0]?.id, feature_a: '', feature_b: '', fit: '', instructions: '', torque: '' }, approved: false }); setModal('fit'); }}><Plus size={16} />Add interface</button>}
                       </div>
                     </div>
+                    <JointCards joints={rev.joints || []} parts={parts} editable={editable}
+                      onEdit={j => { setTab('parts'); editWeld(j); }}
+                      onDelete={async j => { if (await ask({ title: 'Delete this joint?', confirm: 'Delete', danger: true }) === null) return; setRev((r: Any) => r && { ...r, joints: (r.joints || []).filter((x: Any) => x.id !== j.id) }); api('/joints/' + j.id, 'DELETE').catch(fail).finally(() => refreshJoints(rev.id).catch(fail)); }} />
+                    <h3 className="section-sub"><Target size={15} />Fits & interfaces</h3>
                     <div className="notice"><Target size={17} />Automatic candidates use coaxial cylindrical surfaces and axial overlap. They do not recover mates, interference intent or tolerance classes from STEP.</div>
                     <div className="fit-grid">
                       {related.filter(f => f && f.data).map(f => (
@@ -643,7 +1019,7 @@ function App() {
                       </div>
                     </div>
                     {rev.status !== 'released' && <div className="notice"><ShieldCheck size={17} />This revision is not released yet — quantities recorded here are for planning; manufacture only from released documents.</div>}
-                    <ProductionChecklist parts={parts} rows={related} busy={busy} canEdit={['owner', 'engineer', 'qc', 'vendor'].includes(auth.user.role)}
+                    <ProductionChecklist parts={parts} rows={related} busy={busy} canEdit={!vendor && can('joborder.update')}
                       onPreview={p => doc(`/parts/${p.id}/assets/drawing.pdf`, p.name + '_drawing.pdf', 'Drawing sheet — ' + p.name)}
                       onSave={async (pid, r) => { await action(async () => { await api(`/revisions/${rev.id}/production/${pid}`, 'PUT', r); await refreshRelated('production'); }); }} />
                   </section>
@@ -652,7 +1028,7 @@ function App() {
                 {tab === 'review' && (
                   <section className="content-page review-page">
                     <div className="page-title"><div><h2>Review together</h2><p>Questions and decisions tied to parts, features and this exact revision.</p></div><Badge>{related.filter(r => !r.resolved).length} open threads</Badge></div>
-                    <form className="comment-form" onSubmit={e => {
+                    {!vendor && <form className="comment-form" onSubmit={e => {
                       e.preventDefault();
                       const f = new FormData(e.currentTarget); const form = e.currentTarget;
                       action(async () => { await api(`/revisions/${rev.id}/comments`, 'POST', { body: f.get('body'), part_id: f.get('part_id') || null, feature: f.get('feature') || '' }); form.reset(); await refreshRelated('comments'); });
@@ -663,7 +1039,7 @@ function App() {
                       </div>
                       <textarea name="body" required placeholder="Ask a question, request a change, or record a review decision…" />
                       <button className="primary" disabled={busy}><Send size={15} />Post review</button>
-                    </form>
+                    </form>}
                     <div className="comment-list">
                       {related.map(c => (
                         <article key={c.id} className="comment">
@@ -672,7 +1048,7 @@ function App() {
                             <header><strong>{c.author}</strong><span>{date(c.created)}</span><Badge kind={c.resolved ? 'success' : 'warning'}>{c.resolved ? 'Resolved' : 'Open'}</Badge></header>
                             <small>{parts.find((p: Any) => p.id === c.part_id)?.name || 'Assembly'} {c.feature && ' / ' + c.feature}</small>
                             <p>{c.body}</p>
-                            {!vendor && !c.resolved && editable && <button onClick={() => action(async () => { await api('/comments/' + c.id + '/resolve', 'POST'); await refreshRelated('comments'); })}><Check size={14} />Resolve</button>}
+                            {!vendor && !c.resolved && can('design.review') && <button onClick={() => action(async () => { await api('/comments/' + c.id + '/resolve', 'POST'); await refreshRelated('comments'); })}><Check size={14} />Resolve</button>}
                           </div>
                         </article>
                       ))}
@@ -686,7 +1062,7 @@ function App() {
                       <div><h2>Quality control</h2><p>Feature-level measurements against approved limits, with serial and instrument traceability.</p></div>
                       <div className="flex">
                         <button onClick={() => doc(`/revisions/${rev.id}/qc.csv`, 'qc-revision-' + rev.number + '.csv')}><Download size={16} />Export QC</button>
-                        {!vendor && <button className="primary" disabled={rev.status !== 'released'} onClick={() => setModal('qc')}><Plus size={16} />Record inspection</button>}
+                        {!vendor && can('qc.record') && <button className="primary" disabled={rev.status !== 'released'} onClick={() => setModal('qc')}><Plus size={16} />Record inspection</button>}
                       </div>
                     </div>
                     {rev.status !== 'released' && <div className="notice"><ShieldCheck size={17} />Production inspection opens after this revision is released. Set feature limits in the part specifications first.</div>}
@@ -736,23 +1112,31 @@ function App() {
       </main>
 
       {error && <div className="error-toast" role="alert"><AlertTriangle size={18} /><span>{error}</span><button onClick={() => setError('')}><X size={17} /></button></div>}
+      <DialogHost />
       {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}
       {excluding && <ExcludeDialog parts={excluding} busy={busy} close={() => setExcluding(null)} onConfirm={reason => action(async () => {
         if (excluding.length === 1) await api('/parts/' + excluding[0].id + '/flags', 'PATCH', { excluded: true, exclusion_reason: reason });
         else await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: excluding.map((p: Any) => p.id), excluded: true, exclusion_reason: reason });
         await loadRevision(rev.id); setExcluding(null); notify(excluding.length === 1 ? `${excluding[0].name} marked not for production` : `${excluding.length} parts marked not for production`);
       })} />}
+      {drawingPart && <DrawingEditor partId={drawingPart} close={() => setDrawingPart(null)} onSaved={() => loadRevision(rev.id)} />}
+      {readyFor && !drawingPart && rev && (() => {
+        const rp = parts.find((p: Any) => p.id === readyFor);
+        if (!rp) return null;
+        return <ReadinessWizard key={rp.id} part={rp} settings={project?.effective_settings} editable={editable} canReview={can('design.review')}
+          onClose={() => setReadyFor(null)}
+          onOpenDrawing={() => setDrawingPart(rp.id)}
+          onSave={async (spec, category, reviewed) => {
+            const ops = (spec.operations || []).map((o: Any) => (typeof o === 'string' ? { name: o, detail: '' } : o)).filter((o: Any) => o.name?.trim());
+            await api('/parts/' + rp.id, 'PATCH', { category, spec: { ...spec, operations: ops }, reviewed });
+            loadRevision(rev.id).catch(fail);
+          }}
+          onDocReview={async () => { await api('/parts/' + rp.id + '/doc-review', 'POST', { reviewed: true }); await loadRevision(rev.id); notify('Drawing marked reviewed.'); }} />;
+      })()}
       {preview && <DocumentPreview blob={preview.blob} name={preview.name} title={preview.title} close={() => setPreview(null)} />}
 
-      {modal === 'project' && (
-        <Modal title="New manufacturing project" close={() => setModal('')}>
-          <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); action(async () => { const p = await api('/projects', 'POST', Object.fromEntries(f)); await loadProjects(); await openProject(p); setModal('upload'); }); }}>
-            <label>Project name<input name="name" placeholder="e.g. OMNI 1.5T — Chassis" required /></label>
-            <label>Description<textarea name="description" placeholder="Product, customer, or manufacturing context" /></label>
-            <button className="primary full" disabled={busy}>Create project <ArrowUpRight size={16} /></button>
-          </form>
-        </Modal>
-      )}
+      {modal === 'project' && <ProjectSettingsDialog create workspace={settings || {}} config={config} ctx={{ busy, action, notify }} close={() => setModal('')} onSaved={p => action(async () => { await loadProjects(); await openProject(p); setModal('upload'); })} />}
+      {modal === 'project-settings' && project && <ProjectSettingsDialog project={project} workspace={settings || {}} config={config} ctx={{ busy, action, notify }} close={() => setModal('')} onSaved={p => { setProject(p); setModal(''); notify('Project settings saved. They apply to the next upload and drawing generation; use Re-run classification for the current revision.'); }} />}
 
       {modal === 'upload' && (
         <Modal title="Upload a CAD revision" close={() => !busy && setModal('')}>
@@ -793,7 +1177,7 @@ function App() {
 
       {modal === 'share' && (
         <Modal title="Share this revision with a vendor" close={() => setModal('')}>
-          <p>Give your vendor scoped access to the 3D model, part details, generated documents and review discussions.</p>
+          <p>Read-only access for a vendor: 3D view, part details, drawings and the review thread of this revision. Vendors cannot edit, comment or record production.</p>
           {sharePath ? (
             <>
               <label>Vendor review link<input readOnly value={location.origin + sharePath} onFocus={e => e.target.select()} /></label>
@@ -801,10 +1185,11 @@ function App() {
               <p className="muted">This link stays pinned to revision {rev.number}. Treat it as a password.</p>
             </>
           ) : (
-            <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); action(async () => { const s = await api(`/revisions/${rev.id}/shares`, 'POST', { label: f.get('label'), days: Number(f.get('days')) }); setSharePath(s.path); }); }}>
+            <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); action(async () => { const s = await api(`/revisions/${rev.id}/shares`, 'POST', { label: f.get('label'), days: Number(f.get('days')), allow_cad: f.get('allow_cad') === 'on' }); setSharePath(s.path); }); }}>
               <label>Vendor name<input name="label" required placeholder="Vendor / reviewer" /></label>
               <label>Expires in<Select name="days" defaultValue="14" options={[{ value: '7', label: '7 days' }, { value: '14', label: '14 days' }, { value: '30', label: '30 days' }]} /></label>
-              <button className="primary full" disabled={busy}><Link size={16} />Create review link</button>
+              <label className="check"><input type="checkbox" name="allow_cad" />Allow DXF / STEP downloads (laser and CNC programming). 3D models are never downloadable.</label>
+              <button className="primary full" disabled={busy}><Link size={16} />Create read-only link</button>
             </form>
           )}
           <button className="full" onClick={() => action(async () => { setModalRows(await api(`/revisions/${rev.id}/shares`)); setModal('shares'); })}>Manage existing links</button>
@@ -815,7 +1200,7 @@ function App() {
         <Modal title="Vendor access links" close={() => setModal('')}>
           {modalRows.map(s => (
             <div className="document" key={s.id}>
-              <div><strong>{s.label}</strong><small>Expires {date(s.expires)}</small></div>
+              <div><strong>{s.label}</strong><small>Expires {date(s.expires)}{s.allow_cad ? ' · CAD downloads' : ' · view only'}</small></div>
               <Badge>{s.revoked ? 'Revoked' : 'Active'}</Badge>
               {!s.revoked && <button onClick={() => action(async () => { await api('/shares/' + s.id, 'DELETE'); setModalRows(await api(`/revisions/${rev.id}/shares`)); })}>Revoke</button>}
             </div>
@@ -844,11 +1229,11 @@ function App() {
       )}
 
       {modal === 'release' && (
-        <Modal title="Release readiness" close={() => setModal('')}>
+        <Modal title="Production readiness" close={() => setModal('')}>
           {release?.can_release ? (
             <>
-              <div className="release-ready"><ShieldCheck size={35} /><h3>Recorded checks are complete</h3><p>Releasing locks this revision and generates the final document pack. Engineering approval remains your responsibility.</p></div>
-              <button className="primary full" onClick={() => action(async () => { await api(`/revisions/${rev.id}/release`, 'POST'); await loadRevision(rev.id); setModal(''); })}>Release & generate locked documents</button>
+              <div className="release-ready"><ShieldCheck size={35} /><h3>Every part is reviewed and every check is covered</h3><p>Marking the revision production ready locks it, generates the final document pack and opens job orders. Engineering approval remains your responsibility.</p></div>
+              <button className="primary full" disabled={!can('revision.release')} title={can('revision.release') ? '' : 'You need the release permission'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/release`, 'POST'); await loadRevision(rev.id); setModal(''); })}>Release revision</button>
             </>
           ) : (
             <><p>{release?.reasons.length} unresolved release requirements.</p><ul className="release-list">{release?.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}</ul></>
@@ -873,7 +1258,7 @@ function App() {
       )}
 
       {modal === 'settings' && (
-        <Modal title="Workspace settings" subtitle="Naming convention and import behaviour for every project" close={() => setModal('')}>
+        <Modal title="Workspace defaults" subtitle="Starting values for new projects (each project keeps its own settings)" close={() => setModal('')}>
           {!settings ? <p className="muted">Loading…</p> : (
             <form onSubmit={e => { e.preventDefault(); action(async () => { const body = { ...settings, sheet_prefixes: splitList(settings.sheet_prefixes), machining_prefixes: splitList(settings.machining_prefixes), purchased_prefixes: splitList(settings.purchased_prefixes) }; setSettings(await api('/settings', 'PUT', body)); notify('Settings saved. Applies to new uploads; use Re-run classification for the current revision.'); setModal(''); }); }}>
               <h3>Part-number prefixes</h3>
@@ -887,8 +1272,15 @@ function App() {
               <h3>Import behaviour</h3>
               <label className="check"><input type="checkbox" checked={!!settings.hide_purchased_by_default} onChange={e => setSettings({ ...settings, hide_purchased_by_default: e.target.checked })} />Hide small bought-in items (terminals, lidars, connectors, fasteners, multi-body supplier models) in the viewer by default</label>
               <label className="check"><input type="checkbox" checked={!!settings.carry_over_specs} onChange={e => setSettings({ ...settings, carry_over_specs: e.target.checked })} />Carry manufacturing specifications from the active revision into new uploads (matched by part name, then shape). Approvals and review status are never carried.</label>
+              <h3>Drawing title block</h3>
+              <p className="muted">Printed on every drawing sheet (GOAT A4/A3 template). Use <b>Generate documents</b> to refresh existing drawings.</p>
+              <div className="form-grid">
+                {[['company', 'Company'], ['drawn_by', 'Drawn by (DRN)'], ['checked_by', 'Checked by (CHK)'], ['approved_by', 'Approved by (APD)'], ['module', 'Module'], ['master', 'Master'], ['note', 'General note'], ['surface_finish', 'Surface finish'], ['tol_1dec', 'Tolerance · 1 decimal'], ['tol_2dec', 'Tolerance · 2 decimals'], ['tol_3dec', 'Tolerance · 3 decimals'], ['hole_fit', 'Fit for holes'], ['shaft_fit', 'Fit for shafts'], ['position_tol', 'Diametric position tolerance']].map(([k, label]) => (
+                  <label key={k}>{label}<input value={settings.drawing?.[k] ?? ''} maxLength={80} onChange={e => setSettings({ ...settings, drawing: { ...(settings.drawing || {}), [k]: e.target.value } })} /></label>
+                ))}
+              </div>
               <p className="muted">Prefix rules apply on the next upload. For a revision already imported, use <b>Re-run classification</b> in its overview; parts you classified or reviewed by hand are left untouched.</p>
-              <div className="modal-actions"><button className="primary" disabled={busy || !['owner', 'engineer'].includes(auth.user.role)}><Check size={16} />Save settings</button></div>
+              <div className="modal-actions"><button className="primary" disabled={busy || !perms.has('users.manage')}><Check size={16} />Save defaults</button></div>
             </form>
           )}
         </Modal>
@@ -950,3 +1342,22 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   }
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><ErrorBoundary><App /></ErrorBoundary></React.StrictMode>);
+
+/** Group navigator parts by their STEP sub-assembly path. */
+function buildTree(list: Any[]) {
+  const root: Any = { key: '', name: '', groups: [], parts: [], index: new Map() };
+  for (const p of list) {
+    let node = root;
+    for (const seg of p.assembly_path || []) {
+      const key = node.key + '/' + seg;
+      let child = node.index.get(seg);
+      if (!child) { child = { key, name: seg, groups: [], parts: [], index: new Map() }; node.index.set(seg, child); node.groups.push(child); }
+      node = child;
+    }
+    node.parts.push(p);
+  }
+  const sort = (n: Any) => { n.groups.sort((a: Any, b: Any) => a.name.localeCompare(b.name, undefined, { numeric: true })); n.groups.forEach(sort); };
+  sort(root);
+  return root;
+}
+function flattenTree(node: Any): Any[] { return [...node.groups.flatMap(flattenTree), ...node.parts]; }

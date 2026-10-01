@@ -96,6 +96,11 @@ def _apply_result(job,result):
   folder=stage/'revisions'/job['revision_id']
   if not folder.exists():raise ValueError('Remote result has no revision artifacts')
   shutil.copytree(folder,db.revdir(job['revision_id']),dirs_exist_ok=True)
+  if job['kind']=='documents' and remote_job.get('status')=='complete':
+   if not json.loads(job['payload']).get('part_id'):(db.revdir(job['revision_id'])/'.documents-stale').unlink(missing_ok=True)
+   for part in parts:
+    local_part=db.revdir(job['revision_id'])/'parts'/part['id'];remote_part=folder/'parts'/part['id']
+    if (remote_part/'drawing-scene.json').exists() and not (remote_part/'.drawing-invalid').exists():(local_part/'.drawing-invalid').unlink(missing_ok=True)
   with db.connect() as c:
    c.execute('BEGIN IMMEDIATE');c.execute('DELETE FROM parts WHERE revision_id=?',(job['revision_id'],));c.execute('DELETE FROM fits WHERE revision_id=?',(job['revision_id'],))
    fields=['id','revision_id','name','category','quantity','geometry','spec','reviewed','hidden','excluded','exclusion_reason','excluded_by','excluded_at']

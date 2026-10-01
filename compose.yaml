@@ -10,6 +10,17 @@ services:
     environment:
       DATA_DIR: /data
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      PUBLIC_URLS: ${PUBLIC_URLS:-}
+      FORGE_SECRET: ${FORGE_SECRET:-}
+      AUTH_MICROSOFT_ENTRA_ID_ID: ${AUTH_MICROSOFT_ENTRA_ID_ID:-}
+      AUTH_MICROSOFT_ENTRA_ID_SECRET: ${AUTH_MICROSOFT_ENTRA_ID_SECRET:-}
+      AUTH_MICROSOFT_ENTRA_ID_ISSUER: ${AUTH_MICROSOFT_ENTRA_ID_ISSUER:-}
+      AUTH_MICROSOFT_ENTRA_ID_TENANT: ${AUTH_MICROSOFT_ENTRA_ID_TENANT:-}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-goat-robotics.com}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      DEFAULT_ROLE: ${DEFAULT_ROLE:-viewer}
+      FORGE_ALLOW_LOCAL_LOGIN: ${FORGE_ALLOW_LOCAL_LOGIN:-false}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_ENDPOINT: ${S3_ENDPOINT:-https://sfo3.digitaloceanspaces.com}
@@ -28,12 +39,27 @@ services:
       retries: 5
       start_period: 40s
     mem_limit: 768m
+  local-proxy:
+    profiles: [local-domain]
+    image: caddy:2.8.4
+    ports:
+      - "127.0.0.1:8443:443"
+    volumes:
+      - ./deploy/local/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./local-certs/naveen.local.pem:/etc/caddy/certs/naveen.local.pem:ro
+      - ./local-certs/naveen.local-key.pem:/etc/caddy/certs/naveen.local-key.pem:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
   worker:
     image: forge-manufacturing:local
     command: [sh, -ec, 'if [ "$$CAD_EXECUTION_MODE" = ephemeral ]; then exec python -m app.dispatcher; else exec python -m app.worker; fi']
     environment:
       DATA_DIR: /data
-      OMP_NUM_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      FORGE_DRAWING_WORKERS: ${FORGE_DRAWING_WORKERS:-3}
+      FORGE_SECRET: ${FORGE_SECRET:-}
       CAD_EXECUTION_MODE: ${CAD_EXECUTION_MODE:-local}
       DO_TOKEN: ${DO_TOKEN:-}
       DO_WORKER_REGION: ${DO_WORKER_REGION:-}

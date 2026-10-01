@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import trimesh,ezdxf
 from . import db,storage
-from .cad import import_model,explore,analyze,mesh,BRepTools,TopAbs_SOLID,bounds,classify_name,hidden_by_default,classify_prefix
+from .cad import import_model,explore,analyze,mesh,BRepTools,TopAbs_SOLID,bounds,classify_name,hidden_by_default,classify_prefix,step_materials,step_header,density_for
 from .unfold import unfold
 from .drawings import make_part,assembly_pdf,render_meshes,combined_canvas,thumb_color
 
@@ -49,11 +49,23 @@ def detect_fits(parts,instances):
     if not any(r['part_a']==data['part_a'] and r['part_b']==data['part_b'] and r['feature_a']==data['feature_a'] for r in result):result.append(data)
  return result
 
+def apply_defaults(spec,g,settings,carried):
+ """Project defaults per category: the process template (routing) and drawing template."""
+ cat=g['category']
+ tid=(settings.get('process_templates') or {}).get(cat)
+ if tid and not carried and not spec.get('operations'):
+  t=db.row("SELECT * FROM templates WHERE id=? AND kind='process' AND archived=0",(tid,))
+  if t:spec['operations']=[{'name':x['name'],'detail':x.get('detail','')} for x in json.loads(t['data']).get('steps',[])];g['_process_template']=tid
+ did=(settings.get('drawing_templates') or {}).get(cat)
+ if did:
+  t=db.row("SELECT * FROM templates WHERE id=? AND kind='drawing' AND archived=0",(did,))
+  if t:g['_drawing_options']={'template_id':did,**{k:v for k,v in json.loads(t['data']).items() if k in ('size','hole_table')}}
+
 def process_import(rid):
  rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));folder=db.revdir(rid);project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));source=folder/('source'+Path(rev['filename']).suffix.lower())
  progress(rid,3,'Reading CAD assembly and preserving component placements');leaves=import_model(source)
  if source.suffix in ('.brep','.brp','.igs','.iges') and len(leaves)==1:leaves[0]['name']=Path(rev['filename']).stem
- scene=trimesh.Scene();parts=[];instances={};assembly_meshes=[];warnings=[];num=0;settings=db.settings()
+ scene=trimesh.Scene();parts=[];instances={};assembly_meshes=[];warnings=[];num=0;settings=db.project_settings(rev['project_id'])
  # Engineering data from the current active revision is carried into the new one (by name, then by shape),
  # so specifications only need editing where the design changed. Approvals are never carried.
  previous={};prev_rev=db.row('SELECT * FROM revisions WHERE project_id=? AND state="active" AND id!=?',(rev['project_id'],rid))
@@ -64,6 +76,9 @@ def process_import(rid):
  carried=0
  with db.connect() as c:c.execute('DELETE FROM fits WHERE revision_id=?',(rid,));c.execute('DELETE FROM parts WHERE revision_id=?',(rid,))
  for i,leaf in enumerate(leaves):
+  if i==0 and source.suffix.lower() in ('.step','.stp'):
+   progress(rid,5,'Reading materials and properties from STEP');step_mat=step_materials(source);header=step_header(source)
+  elif i==0:step_mat={};header={}
   progress(rid,5+int(65*i/max(len(leaves),1)),f"Analyzing {i+1}/{len(leaves)}: {leaf['name'][:80]}")
   solids=list(explore(leaf['shape'],TopAbs_SOLID))
   if not solids:
@@ -97,6 +112,13 @@ def process_import(rid):
     excluded=int(old.get('excluded') or 0);exclusion_reason=old.get('exclusion_reason') or '';hidden_override=int(old.get('hidden') or 0);excluded_by=old.get('excluded_by') or '';excluded_at=old.get('excluded_at') or ''
     g['carried_from']={'revision':prev_rev['number'],'match':'name' if previous.get('name:'+name) is old else 'shape','same_shape':same_shape,'part':old['name']}
     g['recognition_notes'].append(f"Specification carried over from revision {prev_rev['number']} ({'identical shape' if same_shape else 'shape changed: feature limits, verification notes and dispositions were not carried'}). Review before release.")
+   # STEP product data (material, density, appearance) prefills what the engineer has not specified.
+   meta=dict(leaf.get('meta') or {});meta.update(step_mat.get(leaf['name']) or (step_mat.get('*') if len(leaves)==1 else None) or {})
+   if meta:g['step']=meta
+   if meta.get('material') and not spec.get('material'):spec['material']=meta['material'];g['recognition_notes'].append('Material read from the STEP file; confirm before release.')
+   apply_defaults(spec,g,settings,old is not None)
+   rho=(meta.get('density')*1000 if meta.get('density') and meta['density']<30 else meta.get('density')) or density_for(spec.get('material'))
+   if rho:g['mass_kg']=round(g['volume']*1e-9*rho,4);g['mass_basis']='STEP density' if meta.get('density') else 'material density'
    export_flat(solid,g,spec,pf)
    me=mesh(solid,rules['mesh_deflection']);me.export(pf/'model.glb');g['triangles']=len(me.faces)
    # Small bought-in items (terminal blocks, lidars, connectors, fasteners ...) clutter the viewer; hide them by default.
@@ -108,7 +130,9 @@ def process_import(rid):
    for j,inst in enumerate(leaf['instances']):
     T=np.array(inst['matrix']);scene.graph.update(frame_to=pid+'::'+str(j),matrix=T,geometry=pid)
     assembly_meshes.append((me,T))
-   with db.connect() as c:c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,reviewed,hidden,excluded,exclusion_reason,excluded_by,excluded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,rid,name,p['category'],p['quantity'],json.dumps(g),json.dumps(spec),0,hidden,excluded,exclusion_reason,excluded_by,excluded_at))
+   ptpl=(old or {}).get('process_template_id') or g.pop('_process_template','');dopt=(old or {}).get('drawing_options') or json.dumps(g.pop('_drawing_options',{}))
+   g.pop('_process_template',None);g.pop('_drawing_options',None)
+   with db.connect() as c:c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,reviewed,hidden,excluded,exclusion_reason,excluded_by,excluded_at,process_template_id,drawing_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,rid,name,p['category'],p['quantity'],json.dumps(g),json.dumps(spec),0,hidden,excluded,exclusion_reason,excluded_by,excluded_at,ptpl,dopt))
  if not parts:raise ValueError('No usable solid bodies found; export solids as STEP or BREP')
  progress(rid,73,'Writing lightweight assembly mesh');scene.export(folder/'assembly.glb');(folder/'instances.json').write_text(json.dumps(instances));progress(rid,78,'Detecting mating surfaces')
  fits=detect_fits(parts,instances)
@@ -116,16 +140,39 @@ def process_import(rid):
   for f in fits:c.execute('INSERT INTO fits VALUES(?,?,?,0)',(db.uid(),rid,json.dumps(f)))
  progress(rid,82,'Rendering assembly documentation')
  if assembly_meshes:render_meshes(assembly_meshes,folder/'assembly.png')
- manifest={'rules_snapshot':rules,'part_count':len(parts),'component_definitions':len(leaves),'occurrences':sum(p['quantity'] for p in parts),'triangles':sum(p['geometry']['triangles']*p['quantity'] for p in parts),'warnings':warnings,'units':'mm','mesh_deflection':rules['mesh_deflection'],'fit_candidates':len(fits),'carried_over':carried,'carried_from':prev_rev['number'] if prev_rev else None,'rule_coverage':'Configured geometry and workflow rules only; manual checks explicitly required','unsupported':['Native proprietary CAD formats','General double-curved sheet forming','Automatic structural certification','Automatic thread specification recovery'],'instances_file':'instances.json'}
+ manifest={'step_header':header,'rules_snapshot':rules,'part_count':len(parts),'component_definitions':len(leaves),'occurrences':sum(p['quantity'] for p in parts),'triangles':sum(p['geometry']['triangles']*p['quantity'] for p in parts),'warnings':warnings,'units':'mm','mesh_deflection':rules['mesh_deflection'],'fit_candidates':len(fits),'carried_over':carried,'carried_from':prev_rev['number'] if prev_rev else None,'rule_coverage':'Configured geometry and workflow rules only; manual checks explicitly required','unsupported':['Native proprietary CAD formats','General double-curved sheet forming','Automatic structural certification','Automatic thread specification recovery'],'instances_file':'instances.json'}
  # Only promote successful revisions; archive the prior active version atomically.
  with db.connect() as c:
   c.execute('UPDATE revisions SET state="archived" WHERE project_id=? AND state="active"',(rev['project_id'],));c.execute('UPDATE revisions SET state="active",status="ready",progress=100,message="Analysis complete",manifest=? WHERE id=?',(json.dumps(manifest),rid));db.audit(c,'worker','revision.activated',manifest,rid)
  rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));assembly_pdf(rev,parts,[{'id':str(i),'data':f,'approved':False} for i,f in enumerate(fits)],folder,detailed=False)
 
+def drawing_options(p):
+ opts=json.loads(p.get('drawing_options') or '{}') if isinstance(p.get('drawing_options'),str) else dict(p.get('drawing_options') or {})
+ if opts.get('template_id'):
+  t=db.row("SELECT data FROM templates WHERE id=? AND kind='drawing'",(opts['template_id'],))
+  if t:opts={**{k:v for k,v in json.loads(t['data']).items() if k in ('size','hole_table')},**{k:v for k,v in opts.items() if k!='template_id' and v not in (None,'')}}
+ return {k:v for k,v in opts.items() if k in ('size','hole_table')}
+
+def draw_part(p,rev,folder,rules,settings):
+ """One part's drawing set (runs in a worker process). Returns the updated geometry record."""
+ from .cad import read_brep
+ pf=Path(folder)/'parts'/p['id'];export_flat(read_brep(pf/'shape.brep'),p['geometry'],p['spec'],pf)
+ make_part(p,rev,pf,rules,settings=settings)
+ (pf/'.drawing-invalid').unlink(missing_ok=True)
+ if not (pf/'thumb.png').exists():
+  try:render_meshes([(trimesh.load(pf/'model.glb',force='mesh'),np.eye(4))],pf/'thumb.png',size=(640,420),colors=[thumb_color(p)])
+  except Exception:pass
+ return p['geometry']
+
 def process_documents(rid,payload):
- rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));folder=db.revdir(rid);project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));
+ rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));folder=db.revdir(rid);
+ if payload.get('assembly_only'):
+  progress(rid,40,'Updating the assembly drawing');fits=db.rows('SELECT * FROM fits WHERE revision_id=?',(rid,))
+  for f in fits:f['data']=json.loads(f['data'])
+  assembly_pdf(rev,parts_for(rid),fits,folder,detailed=False);progress(rid,100,'Assembly drawing updated');return
+ project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));
  if payload.get('release'):rev['status']='released'
- parts=parts_for(rid);full=not payload.get('part_id')
+ parts=parts_for(rid);full=not payload.get('part_id');settings=db.project_settings(rev['project_id'])
  selected=[p for p in parts if p['id']==payload.get('part_id')] if not full else [p for p in parts if p['category']!='purchased' and not p.get('excluded')]
  from .cad import read_brep
  # Whole-pack runs also produce one PDF per discipline: every machining sheet in one file, every sheet-metal sheet in another.
@@ -135,18 +182,45 @@ def process_documents(rid,payload):
   for key,group in groups.items():
    name='machining-drawings.pdf' if key=='machining' else 'sheet-metal-drawings.pdf'
    (folder/name).unlink(missing_ok=True)
-   if group:combined[key]=combined_canvas(folder/name,'Machining drawings' if key=='machining' else 'Sheet metal drawings',rev,group)
- for i,p in enumerate(selected):
-  progress(rid,int(85*i/max(len(selected),1)),f"Drawing {i+1}/{len(selected)}: {p['name'][:60]}");pf=folder/'parts'/p['id'];export_flat(read_brep(pf/'shape.brep'),p['geometry'],p['spec'],pf)
-  if payload.get('release'):
-   from .rules import evaluate
+   if group:combined[key]=combined_canvas(folder/name,'Machining drawings' if key=='machining' else 'Sheet metal drawings',rev,group,settings)
+ if payload.get('release'):
+  from .rules import evaluate
+  for p in selected:
    failures=[f for f in evaluate(p['geometry'],p['spec'],rules) if f['severity']=='blocker' and (not f['waiver'] or f['code'] in ('GEO001','FLAT001'))]
    if failures:raise ValueError('Release checks changed during regeneration: '+p['name']+' '+str([f['code'] for f in failures]))
-  make_part(p,rev,pf,rules,combined=combined.get('sheet_metal' if p['category']=='sheet_metal' else 'machining'))
-  if not (pf/'thumb.png').exists():
-   try:render_meshes([(trimesh.load(pf/'model.glb',force='mesh'),np.eye(4))],pf/'thumb.png',size=(640,420),colors=[thumb_color(p)])
-   except Exception:pass
-  with db.connect() as c:c.execute('UPDATE parts SET geometry=? WHERE id=?',(json.dumps(p['geometry']),p['id']))
+ for p in selected:
+  saved=db.row('SELECT * FROM drawing_edits WHERE part_id=?',(p['id'],))
+  if saved and saved['source_hash']==rev['sha256']:p['drawing_edits']=json.loads(saved['data'])
+  conv=settings.get('conventions') or {};p['drawing_options']={'size':conv.get('sheet_size','auto'),'hole_table':conv.get('hole_table','auto'),**drawing_options(p)}
+ # Parts are independent: draw them in parallel worker processes, then assemble the discipline PDFs in order.
+ workers=max(1,min(int(os.getenv('FORGE_DRAWING_WORKERS',str(min(4,os.cpu_count() or 1)))),len(selected)))
+ done=0
+ if workers>1:
+  import multiprocessing as mp
+  from concurrent.futures import ProcessPoolExecutor,as_completed
+  with ProcessPoolExecutor(workers,mp_context=mp.get_context('fork')) as pool:
+   futures={pool.submit(draw_part,p,rev,str(folder),rules,settings):p for p in selected}
+   for f in as_completed(futures):
+    futures[f]['geometry']=f.result();done+=1;progress(rid,int(80*done/len(selected)),f"Drawings {done}/{len(selected)}")
+ else:
+  for p in selected:
+   progress(rid,int(80*done/max(len(selected),1)),f"Drawing {done+1}/{len(selected)}: {p['name'][:60]}")
+   p['geometry']=draw_part(p,rev,str(folder),rules,settings);done+=1
+ from .drawing_scene import render_scene
+ from .drawings import attach_view_lines
+ for p in selected:
+  pf=folder/'parts'/p['id']
+  with db.connect() as c:
+   c.execute('UPDATE parts SET geometry=? WHERE id=?',(json.dumps(p['geometry']),p['id']))
+   # regenerated sheets must be looked at again (a release keeps the reviews it was checked against)
+   if not payload.get('release'):c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?",(p['id'],))
+  target=combined.get('sheet_metal' if p['category']=='sheet_metal' else 'machining')
+  if target is not None and (pf/'drawing-scene.json').exists():
+   from .drawing_scene import unique_group_ids
+   scene=unique_group_ids(json.loads((pf/'drawing-scene.json').read_text()))
+   from .drawings import full_scene
+   ed=attach_view_lines(p,pf,scene,p.get('drawing_edits') or {})
+   render_scene(full_scene(p,rev,settings,scene,ed),ed,c=target)
  for c in combined.values():c.save()
  progress(rid,88,'Generating assembly and mating drawings')
  fits=db.rows('SELECT * FROM fits WHERE revision_id=?',(rid,))
@@ -160,11 +234,12 @@ def process_documents(rid,payload):
     if (folder/extra).exists():z.write(folder/extra,extra)
    z.writestr('parts.json',json.dumps(parts,indent=2));z.writestr('fits.json',json.dumps(fits,indent=2));z.writestr('revision.json',json.dumps(rev,indent=2))
    for p in selected:
-    for fn in ['drawing.pdf','drawing.dxf','flat.dxf','flat.json','part.step']:
+    for fn in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','part.step','drawing-scene.json']:
      f=folder/'parts'/p['id']/fn
      if f.exists():z.write(f,f"parts/{p['id']}/{fn}")
  if payload.get('release'):
   with db.connect() as c:c.execute('UPDATE revisions SET status="released" WHERE id=?',(rid,));db.audit(c,'worker','revision.released',{},rid)
+ if full:(folder/'.documents-stale').unlink(missing_ok=True)
  progress(rid,100,'Documents generated')
 
 def run_once():
@@ -182,7 +257,7 @@ def run_once():
    # Never leave partial outputs stamped RELEASED after a failed release.
    folder=db.revdir(job['revision_id'])
    for artifact in folder.rglob('*'):
-    if artifact.suffix in ('.pdf','.dxf','.zip') or artifact.name in ('flat.json','flat.glb','projections.json'):artifact.unlink(missing_ok=True)
+    if artifact.suffix in ('.pdf','.dxf','.zip') or artifact.name in ('flat.json','flat.glb','projections.json','drawing-scene.json'):artifact.unlink(missing_ok=True)
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="failed",error=? WHERE id=?',(str(e)[:1000],job['id']))
    if json.loads(job['payload']).get('release'):c.execute('UPDATE revisions SET status="ready",release_by=NULL,release_at=NULL WHERE id=?',(job['revision_id'],))

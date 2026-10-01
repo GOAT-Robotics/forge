@@ -1,17 +1,34 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff } from 'lucide-react';
-import { headers } from './api';
+import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, Crosshair, Flame, CircleDashed } from 'lucide-react';
+import { loadSecureModel } from './api';
+import { beadGeometry, beadMaterial, labelSprite, pathLength, pathSection, pointAt, resample, type WeldShape, type WeldSelection } from './weld3d';
+
+export type SeamCandidate = WeldSelection & { id: string; label?: string; chosen?: boolean; minor?: boolean };
+
+const disposeGroup = (group: THREE.Object3D) => group.traverse(o => {
+  const m = o as THREE.Mesh;
+  m.geometry?.dispose();
+  (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []).forEach(mat => { (mat as THREE.SpriteMaterial).map?.dispose(); mat.dispose(); });
+});
 
 export type PartAppearance = { color: string; category: string; name?: string };
 
 type Props = {
+  /** "revisionId:file[:partId]" — loaded through a signed, encrypted model stream */
   url: string;
+  /** Face-picking mode (joint definition): clicks report the part and the picked point in part coordinates. */
+  pickMode?: 'face' | 'edge' | 'point' | null;
+  onGeometryPick?: (partId: string, point: number[], selection: 'face' | 'edge' | 'point', occurrence: number) => void;
+  onGeometryHover?: (partId: string, point: number[], selection: 'face' | 'edge', occurrence: number) => void;
+  hoverGeometry?: AnySelection | null;
+  onWeldPreviewStatus?: (valid: boolean, message: string) => void;
+  jointPreview?: { faces: AnySelection[]; weld?: Record<string, unknown> } | null;
   selected?: string | null;
-  onPick?: (id: string) => void;
-  onIsolateToggle?: () => void;
+  onPick?: (id: string, additive?: boolean, occurrence?: number) => void;
+  onIsolateToggle?: (occurrence?: number) => void;
   isolated?: boolean;
   flat?: boolean;
   appearance?: Record<string, PartAppearance>;
@@ -19,13 +36,32 @@ type Props = {
   hidden?: string[];
   /** Additional selected part ids (multi-select); highlighted and framed together with `selected`. */
   multi?: string[];
+  /** During weld setup, show and frame only the participating component definitions. */
+  focusIds?: string[];
+  /** In weld setup, show one representative occurrence per focused part definition. */
+  representativeOccurrences?: Record<string, number>;
   /** Feature to highlight in the scene (hovered in the sidebar): a bore or a bend in part-definition coordinates. */
   feature?: { kind: 'hole' | 'bend'; partId: string; center: number[]; axis: number[]; diameter?: number; depth?: number; length?: number; radius?: number; id: string } | null;
+  /** Configured welds drawn on the model (beads + labels). */
+  welds?: WeldShape[];
+  onWeldClick?: (id: string) => void;
+  /** Detected weld-seam candidates; click toggles one. */
+  seamCandidates?: SeamCandidate[];
+  hoverSeam?: string | null;
+  onSeamToggle?: (id: string, wholeSide?: boolean) => void;
+  onSeamHover?: (id: string | null) => void;
+  /** Heads-up content (selection / document info) shown top-left over the canvas. */
+  hud?: React.ReactNode;
+  /** Extra tool buttons placed at the start / end of the floating tool palette. */
+  toolbarStart?: React.ReactNode;
+  toolbarEnd?: React.ReactNode;
 };
+
+type AnySelection = { part: string; occurrence?: number; selection?: 'face' | 'edge'; type?: string; point?: number[]; normal?: number[]; start?: number[]; end?: number[]; center?: number[]; axis?: number[]; radius?: number; length?: number; boundaries?: number[][][]; preview_mesh?: { vertices: number[][]; triangles: number[][] } };
 
 const BACKGROUND = '#eaecef';
 const DEFAULT_COLOR = '#aeb4bc';
-const SELECT_COLOR = new THREE.Color('#ff6a1f');
+const SELECT_COLOR = new THREE.Color('#2563eb');
 const HOVER_EMISSIVE = new THREE.Color('#2a2f36');
 const GHOST_OPACITY = 0.14;
 const EXPLODE_SPREAD = 0.9; // multiple of assembly radius at 100 % explode
@@ -47,6 +83,12 @@ type Engine = {
   hovered: THREE.Mesh | null;
   grid: THREE.GridHelper | null;
   featureGroup: THREE.Group | null;
+  weldGroup: THREE.Group | null;
+  savedWeldGroup: THREE.Group | null;
+  seamGroup: THREE.Group | null;
+  references: THREE.Mesh[];
+  hoverGroup: THREE.Group | null;
+  edgeLines: THREE.LineSegments[];
   fit: (dir?: number[], ids?: string[] | null, animate?: boolean) => void;
   applyExplode: () => void;
   refresh?: () => void;
@@ -55,7 +97,37 @@ type Engine = {
 
 const ease = (t: number) => 1 - Math.pow(1 - t, 3);
 
-export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], feature = null }: Props) {
+function distanceToPath(point: THREE.Vector3, path: THREE.Vector3[]) {
+  let best = Infinity;
+  for (let i = 1; i < path.length; i++) {
+    const segment = path[i].clone().sub(path[i - 1]);
+    const length2 = segment.lengthSq();
+    const t = length2 ? THREE.MathUtils.clamp(point.clone().sub(path[i - 1]).dot(segment) / length2, 0, 1) : 0;
+    best = Math.min(best, point.distanceTo(path[i - 1].clone().addScaledVector(segment, t)));
+  }
+  return best;
+}
+
+function sameCadBoundary(a: THREE.Vector3[], b: THREE.Vector3[], tolerance: number) {
+  if (a.length < 2 || b.length < 2) return false;
+  const samples = (path: THREE.Vector3[]) => [path[0], path[Math.floor(path.length / 4)], path[Math.floor(path.length / 2)], path[Math.floor(path.length * 3 / 4)], path[path.length - 1]];
+  return samples(a).every(p => distanceToPath(p, b) <= tolerance) && samples(b).every(p => distanceToPath(p, a) <= tolerance);
+}
+
+
+export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd }: Props) {
+  const weldClick = useRef(onWeldClick); weldClick.current = onWeldClick;
+  const drafting = !!jointPreview || seamCandidates.length > 0;
+  const seamToggle = useRef(onSeamToggle); seamToggle.current = onSeamToggle;
+  const seamHover = useRef(onSeamHover); seamHover.current = onSeamHover;
+  const geometryPickRef = useRef<{ mode: Props['pickMode']; cb?: Props['onGeometryPick'] }>({ mode: null });
+  geometryPickRef.current = { mode: pickMode, cb: onGeometryPick };
+  const hoverCallback = useRef(onGeometryHover);
+  hoverCallback.current = onGeometryHover;
+  const statusCallback = useRef(onWeldPreviewStatus);
+  statusCallback.current = onWeldPreviewStatus;
+  const representativeRef = useRef(representativeOccurrences);
+  representativeRef.current = representativeOccurrences;
   const host = useRef<HTMLDivElement>(null);
   const engine = useRef<Engine | null>(null);
   const pick = useRef(onPick);
@@ -74,6 +146,10 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   const [ghost, setGhost] = useState(true);
   const [distance, setDistance] = useState<number | null>(null);
   const [hoverName, setHoverName] = useState('');
+  const [showWelds, setShowWelds] = useState(true);
+  const [popover, setPopover] = useState<'section' | 'explode' | null>(null);
+  const [showRefs, setShowRefs] = useState(false);
+  const [refCount, setRefCount] = useState(0);
   const measuring = useRef(false);
   measuring.current = measure;
   const appearanceRef = useRef(appearance);
@@ -92,8 +168,10 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const container = host.current;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(BACKGROUND);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    // Transparent canvas: the workspace gradient (light / dark) shows behind the model.
+    scene.background = null;
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
     renderer.localClippingEnabled = true;
     renderer.setSize(container.clientWidth, container.clientHeight);
@@ -126,7 +204,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const e: Engine = {
       scene, meshes, renderer, camera, controls, plane,
       center: new THREE.Vector3(), radius: 100, minZ: 0, maxZ: 100,
-      explodeCurrent: 0, explodeTarget: 0, fly: null, hovered: null, grid: null, featureGroup: null, loaded: false,
+      explodeCurrent: 0, explodeTarget: 0, fly: null, hovered: null, grid: null, featureGroup: null, weldGroup: null, savedWeldGroup: null, seamGroup: null, references: [], hoverGroup: null, edgeLines: [], loaded: false,
       fit: () => {}, applyExplode: () => {},
     };
     engine.current = e;
@@ -173,7 +251,10 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       for (const mesh of meshes) {
         if (mesh instanceof THREE.InstancedMesh) {
           const gc = mesh.geometry.boundingBox?.getCenter(new THREE.Vector3()) || new THREE.Vector3();
-          mesh.userData.matrices.forEach((base: THREE.Matrix4, i: number) => {
+          const bases = mesh.userData.matrices as THREE.Matrix4[];
+          const representative = representativeRef.current[String(mesh.userData.partId)];
+          const chosen = representative === undefined ? -1 : Math.min(Math.max(representative, 0), bases.length - 1);
+          const exploded = (base: THREE.Matrix4) => {
             const t = base.clone();
             if (k > 0) {
               const d = gc.clone().applyMatrix4(base).sub(e.center);
@@ -181,9 +262,15 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
               d.normalize().multiplyScalar(e.radius * EXPLODE_SPREAD * k);
               t.elements[12] += d.x; t.elements[13] += d.y; t.elements[14] += d.z;
             }
-            mesh.setMatrixAt(i, t);
+            return t;
+          };
+          const visibleMatrix = chosen >= 0 ? exploded(bases[chosen]) : null;
+          const collapsed = visibleMatrix ? new THREE.Matrix4().makeScale(0, 0, 0).setPosition(gc.clone().applyMatrix4(visibleMatrix)) : null;
+          bases.forEach((base, i) => {
+            mesh.setMatrixAt(i, collapsed && i !== chosen ? collapsed : exploded(base));
           });
           mesh.instanceMatrix.needsUpdate = true;
+          mesh.computeBoundingBox();
           mesh.computeBoundingSphere();
         } else {
           mesh.position.copy(mesh.userData.base);
@@ -200,9 +287,25 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       const rect = renderer.domElement.getBoundingClientRect();
       const mouse = new THREE.Vector2((clientX - rect.left) / rect.width * 2 - 1, -(clientY - rect.top) / rect.height * 2 + 1);
       ray.setFromCamera(mouse, camera);
-      const hits = ray.intersectObjects(meshes.filter(m => m.visible && (m.material as THREE.MeshStandardMaterial).opacity > 0.5), false);
+      if (geometryPickRef.current.mode === 'edge') {
+        const pixelSize = 2 * camera.position.distanceTo(controls.target) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.max(rect.height, 1);
+        ray.params.Line = { threshold: Math.max(0.08, Math.min(1.5, pixelSize * 6)) };
+        const edgeHits = ray.intersectObjects(e.edgeLines.filter(line => line.visible), false);
+        if (edgeHits.length) return edgeHits[0];
+      }
+      const hits = ray.intersectObjects(meshes.filter(m => m.visible && !!m.userData.partId && (m.material as THREE.MeshStandardMaterial).opacity > 0.5), false);
       // Ignore surfaces cut away by the section plane so clicks land on what the user sees.
       return hits.find(h => plane.distanceToPoint(h.point) >= -1e-6) || hits[0];
+    };
+    /** Seam candidates and saved weld beads sit on top of the parts and are picked first. */
+    const overlayAt = (clientX: number, clientY: number): { seamId?: string; weldId?: string } | null => {
+      const groups = [e.seamGroup, e.savedWeldGroup].filter(Boolean) as THREE.Group[];
+      if (!groups.length) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      ray.setFromCamera(new THREE.Vector2((clientX - rect.left) / rect.width * 2 - 1, -(clientY - rect.top) / rect.height * 2 + 1), camera);
+      const hits = ray.intersectObjects(groups, true);
+      for (const h of hits) { const d = h.object.userData; if (d.seamId || d.weldId) return { seamId: d.seamId, weldId: d.weldId }; }
+      return null;
     };
     let downAt: [number, number] | null = null;
     let lastClick = 0;
@@ -228,21 +331,64 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         }
         return;
       }
+      const overlay = overlayAt(ev.clientX, ev.clientY);
+      if (overlay?.seamId) { seamToggle.current?.(overlay.seamId, ev.shiftKey); return; }
+      if (overlay?.weldId && !geometryPickRef.current.mode && weldClick.current) { weldClick.current(overlay.weldId); return; }
       const id = hit ? String(hit.object.userData.partId || '') : '';
+      if (geometryPickRef.current.mode) {
+        if (!hit || !id) return;
+        // back to part-definition coordinates (the B-rep frame) through the instance / placement matrix
+        const obj = hit.object as THREE.Mesh;
+        const world = obj.matrixWorld.clone();
+        if ((obj as THREE.InstancedMesh).isInstancedMesh && hit.instanceId !== undefined) {
+          const inst = new THREE.Matrix4();
+          (obj as THREE.InstancedMesh).getMatrixAt(hit.instanceId, inst);
+          world.multiply(inst);
+        }
+        const local = hit.point.clone().applyMatrix4(world.clone().invert());
+        geometryPickRef.current.cb?.(id, [local.x, local.y, local.z], geometryPickRef.current.mode, hit.instanceId ?? Number(obj.userData.occurrence || 0));
+        return;
+      }
       const now = performance.now();
       const dbl = now - lastClick < 320 && id && id === selectedRef.current;
       lastClick = now;
-      if (dbl) { isolateRef.current?.(); return; }
-      pick.current?.(id);
+      const occurrence = hit && (hit.object as THREE.InstancedMesh).isInstancedMesh ? hit.instanceId : undefined;
+      if (dbl) { isolateRef.current?.(occurrence); return; }
+      pick.current?.(id, ev.ctrlKey || ev.metaKey || ev.shiftKey, occurrence);
     };
     let moveRaf = 0;
+    let hoveredSeam: string | null = null;
+    let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastHoverPoint: [number, number] | null = null;
     const onMove = (ev: PointerEvent) => {
       if (moveRaf) return;
       moveRaf = requestAnimationFrame(() => {
         moveRaf = 0;
         if (!e.loaded) return;
+        if (e.seamGroup) {
+          const over = overlayAt(ev.clientX, ev.clientY)?.seamId || null;
+          if (over !== hoveredSeam) { hoveredSeam = over; seamHover.current?.(over); renderer.domElement.style.cursor = over ? 'pointer' : ''; }
+          if (over) return;
+        }
         const hit = hitAt(ev.clientX, ev.clientY);
-        const mesh = (hit?.object as THREE.Mesh) || null;
+        const mesh = hit?.object && (hit.object as THREE.Mesh).isMesh ? hit.object as THREE.Mesh : null;
+        if (geometryPickRef.current.mode === 'face' || geometryPickRef.current.mode === 'edge') {
+          const moved = !lastHoverPoint || Math.hypot(ev.clientX - lastHoverPoint[0], ev.clientY - lastHoverPoint[1]) > 7;
+          if (moved) {
+            lastHoverPoint = [ev.clientX, ev.clientY];
+            if (hoverTimer) clearTimeout(hoverTimer);
+            if (!hit?.object.userData.partId) hoverCallback.current?.('', [], geometryPickRef.current.mode, 0);
+            else {
+              const object = hit.object as THREE.Mesh;
+              const transform = object.matrixWorld.clone();
+              if (object instanceof THREE.InstancedMesh && hit.instanceId !== undefined) { const instance = new THREE.Matrix4(); object.getMatrixAt(hit.instanceId, instance); transform.multiply(instance); }
+              const point = hit.point.clone().applyMatrix4(transform.invert());
+              const partId = String(object.userData.partId);
+              const mode = geometryPickRef.current.mode;
+              hoverTimer = setTimeout(() => hoverCallback.current?.(partId, [point.x, point.y, point.z], mode, hit.instanceId ?? Number(object.userData.occurrence || 0)), 240);
+            }
+          }
+        }
         if (mesh !== e.hovered) {
           e.hovered = mesh;
           renderer.domElement.style.cursor = mesh ? 'pointer' : '';
@@ -252,7 +398,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         }
       });
     };
-    const onLeave = () => { e.hovered = null; renderer.domElement.style.cursor = ''; setHoverName(''); e.refresh?.(); };
+    const onLeave = () => { if (hoverTimer) clearTimeout(hoverTimer); lastHoverPoint = null; hoverCallback.current?.('', [], 'face', 0); e.hovered = null; renderer.domElement.style.cursor = ''; setHoverName(''); e.refresh?.(); };
     renderer.domElement.addEventListener('pointerdown', onDown);
     renderer.domElement.addEventListener('pointerup', onUp);
     renderer.domElement.addEventListener('pointermove', onMove);
@@ -260,14 +406,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
 
     // ---- Load -------------------------------------------------------------------------------
     const abort = new AbortController();
-    fetch('/api' + url, { headers: headers(), signal: abort.signal })
-      .then(async r => {
-        if (!r.ok) {
-          const body = await r.json().catch(() => ({ detail: '3D mesh is not available yet' }));
-          throw new Error(body.detail || '3D mesh is not available yet');
-        }
-        return r.arrayBuffer();
-      })
+    loadSecureModel(url, abort.signal)
       .then(b => new GLTFLoader().parseAsync(b, ''))
       .then(gltf => {
         if (cancelled) return;
@@ -291,6 +430,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           grouped.set(k, group);
         });
         const model = new THREE.Group();
+        const edgeGroup = new THREE.Group();
         for (const g of grouped.values()) {
           if (!g.geometry.attributes.normal) g.geometry.computeVertexNormals();
           g.geometry.computeBoundingBox();
@@ -310,13 +450,29 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
             m = new THREE.Mesh(g.geometry, material);
             g.matrices[0].decompose(m.position, m.quaternion, m.scale);
           }
-          m.userData.partId = g.id;
           m.userData.base = m.position.clone();
+          if (!g.id) {
+            // Surface-only bodies (sketch circles, boundary / keep-out surfaces): reference geometry, off by default.
+            material.color.set('#8fb3d9'); material.opacity = 0.35; material.depthWrite = false;
+            m.userData.reference = true; m.visible = false; e.references.push(m); model.add(m);
+            continue;
+          }
+          m.userData.partId = g.id;
           meshes.push(m);
           model.add(m);
+          const edgeGeometry = new THREE.EdgesGeometry(g.geometry, 28);
+          const addEdges = (matrix: THREE.Matrix4, occurrence: number) => {
+            const line = new THREE.LineSegments(edgeGeometry.clone(), new THREE.LineBasicMaterial({ color: 0xb99b7f, transparent: true, opacity: 0.42, depthTest: true }));
+            line.applyMatrix4(matrix); line.userData.partId = g.id; line.userData.occurrence = occurrence; line.visible = false; line.renderOrder = 12; edgeGroup.add(line); e.edgeLines.push(line);
+          };
+          if (g.matrices.length > 1) g.matrices.forEach(addEdges); else addEdges(g.matrices[0], 0);
+          edgeGeometry.dispose();
         }
-        scene.add(model);
-        const bounds = new THREE.Box3().setFromObject(model);
+        scene.add(model); scene.add(edgeGroup);
+        const bounds = new THREE.Box3();
+        for (const m of meshes) bounds.expandByObject(m);
+        if (bounds.isEmpty()) bounds.setFromObject(model);
+        setRefCount(e.references.length);
         e.center = bounds.getCenter(new THREE.Vector3());
         e.radius = bounds.getSize(new THREE.Vector3()).length() / 2 || 100;
         e.minZ = bounds.min.z;
@@ -327,11 +483,12 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
           m.userData.explode = d.normalize().multiplyScalar(e.radius);
         }
-        const grid = new THREE.GridHelper(e.radius * 3.5, 24, 0xc3c7cc, 0xd9dce0);
+        const darkTheme = document.documentElement.classList.contains('dark');
+        const grid = new THREE.GridHelper(e.radius * 3.5, 24, darkTheme ? 0x3a4352 : 0xc3c7cc, darkTheme ? 0x283040 : 0xd9dce0);
         grid.rotation.x = Math.PI / 2;
         grid.position.set(e.center.x, e.center.y, e.minZ - e.radius * 0.04);
         (grid.material as THREE.Material).transparent = true;
-        (grid.material as THREE.Material).opacity = 0.7;
+        (grid.material as THREE.Material).opacity = darkTheme ? 0.55 : 0.7;
         scene.add(grid);
         e.grid = grid;
         setCount(meshes.reduce((n, m) => n + (m.geometry.index?.count || m.geometry.attributes.position.count) / 3 * (m instanceof THREE.InstancedMesh ? m.count : 1), 0));
@@ -378,6 +535,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       abort.abort();
       cancelAnimationFrame(raf);
       cancelAnimationFrame(moveRaf);
+      if (hoverTimer) clearTimeout(hoverTimer);
       obs.disconnect();
       controls.dispose();
       renderer.domElement.removeEventListener('pointerdown', onDown);
@@ -399,6 +557,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   useEffect(() => {
     const hiddenSet = new Set(hidden);
     const multiSet = new Set(multi);
+    const focusSet = new Set(focusIds);
     const refresh = () => {
       const e = engine.current;
       if (!e) return;
@@ -408,7 +567,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         const active = (!!selected && id === selected) || multiSet.has(id);
         const hovered = e.hovered === mesh && !active;
         const look = appearance[id];
-        mesh.visible = (!isolated || !selected || active) && (active || !hiddenSet.has(id));
+        mesh.visible = focusSet.size ? focusSet.has(id) : (!isolated || !selected || active) && (active || !hiddenSet.has(id));
         const base = new THREE.Color(look?.color || DEFAULT_COLOR);
         if (active) {
           // Keep the part's own (coating) colour and add a warm accent glow so the selection reads on any colour.
@@ -426,11 +585,19 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         mesh.renderOrder = active ? 2 : mat.opacity < 1 ? 1 : 0;
         mat.needsUpdate = false;
       }
+      for (const line of e.edgeLines) {
+        const sourceVisible = e.meshes.some(m => m.userData.partId === line.userData.partId && m.visible);
+        const representative = representativeOccurrences[String(line.userData.partId)];
+        line.visible = pickMode === 'edge' && sourceVisible && (representative === undefined || line.userData.occurrence === representative);
+      }
       e.plane.constant = section >= 100 ? 1e9 : e.minZ + (e.maxZ - e.minZ) * section / 100;
     };
     if (engine.current) engine.current.refresh = refresh;
+    if (engine.current?.loaded) engine.current.applyExplode();
     refresh();
-  }, [selected, isolated, ghost, section, loading, appearance, hidden.join('|'), multi.join('|')]);
+  }, [selected, isolated, ghost, section, loading, appearance, hidden.join('|'), multi.join('|'), focusIds.join('|'), pickMode, Object.entries(representativeOccurrences).map(([id, occurrence]) => `${id}:${occurrence}`).join('|')]);
+
+  useEffect(() => { for (const m of engine.current?.references || []) m.visible = showRefs; }, [showRefs, loading]);
 
   // Fly the camera to a newly selected part (or the whole multi-selection); re-frame everything when cleared.
   const previousSelection = useRef<string | null | undefined>(undefined);
@@ -443,12 +610,48 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     previousSelection.current = selected;
   }, [selected, loading, multi.join('|')]);
 
+  // Showing a single instance of a multi-quantity part: re-frame (and orbit) around that one body.
+  const soloOccurrence = selected ? representativeOccurrences[selected] : undefined;
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded || !selected) return;
+    e.applyExplode();
+    e.fit(undefined, [selected], true);
+  }, [soloOccurrence]);
+
   // Isolation changes what is visible, so re-frame the remaining bodies.
   useEffect(() => {
     const e = engine.current;
     if (!e || !e.loaded || !selected) return;
     e.fit(undefined, isolated ? [selected] : [selected], true);
   }, [isolated]);
+
+  // Weld focus only changes visibility. Never move the camera after a face pick or a settings
+  // change: the engineer's carefully framed seam must remain exactly where they left it.
+
+  // Welding needs much closer navigation than assembly review. Zoom toward the cursor and lower
+  // the near plane so thin sheet edges do not disappear when inspecting the underside.
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded) return;
+    if (pickMode) {
+      e.controls.zoomToCursor = true;
+      e.controls.zoomSpeed = 1.45;
+      e.controls.rotateSpeed = 0.8;
+      e.controls.screenSpacePanning = true;
+      e.controls.minDistance = Math.max(e.radius * 0.00015, 0.05);
+      e.controls.maxDistance = e.radius * 30;
+      e.camera.near = Math.max(e.radius / 4000, 0.01);
+    } else {
+      e.controls.zoomToCursor = false;
+      e.controls.zoomSpeed = 1;
+      e.controls.rotateSpeed = 1;
+      e.controls.minDistance = 0;
+      e.controls.maxDistance = Infinity;
+      e.camera.near = Math.max(e.radius / 2000, 0.01);
+    }
+    e.camera.updateProjectionMatrix();
+  }, [pickMode, loading]);
 
   // Feature highlight: a ring (bore) or an axis line (bend) placed at every instance of the part.
   useEffect(() => {
@@ -486,6 +689,219 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     e.scene.add(group); e.featureGroup = group;
   }, [feature, loading, explode]);
 
+  /** Part-definition → world transform of one occurrence (follows explode). */
+  const occurrenceMatrix = (e: Engine, partId: string, occurrence = 0) => {
+    const mesh = e.meshes.find(m => m.userData.partId === partId);
+    if (!mesh) return null;
+    if (mesh instanceof THREE.InstancedMesh) { const t = new THREE.Matrix4(); mesh.getMatrixAt(Math.min(Math.max(occurrence, 0), mesh.count - 1), t); return mesh.matrixWorld.clone().multiply(t); }
+    mesh.updateMatrixWorld(true); return mesh.matrixWorld.clone();
+  };
+
+  /**
+   * Draw one weld (saved or draft) into a group: seam beads with a joint-shaped cross-section, stitch
+   * segments, tack, or a patch overlay. Returns how many seams were found so the panel can validate.
+   */
+  const drawWeld = (e: Engine, shape: WeldShape, group: THREE.Group, draft: boolean) => {
+    const w = shape.weld || {};
+    const weldType = String(w.type || 'linear');
+    const size = Number(String(w.size || w.thickness || '').match(/[\d.]+/)?.[0] || 3);
+    const minVisible = Math.max(e.radius * 0.0022, 0.25);
+    const material = beadMaterial(w.process, draft);
+    const world = (p: number[] | undefined, t: THREE.Matrix4) => new THREE.Vector3(...(p || [0, 0, 0])).applyMatrix4(t);
+    const worldDir = (d: number[] | undefined, t: THREE.Matrix4) => d ? new THREE.Vector3(...d).transformDirection(t) : null;
+    const seams: { path: THREE.Vector3[]; legs: [THREE.Vector3, THREE.Vector3] | null; normal: THREE.Vector3 | null; joint?: string }[] = [];
+    const faceBoundaries: THREE.Vector3[][][] = [];
+    for (const item of shape.faces || []) {
+      const t = occurrenceMatrix(e, item.part, item.occurrence); if (!t) continue;
+      const boundaries = (item.boundaries || []).map(path => path.map(point => world(point, t)));
+      if (item.selection === 'edge') {
+        const legs = item.legs?.length === 2 ? [worldDir(item.legs[0], t)!, worldDir(item.legs[1], t)!] as [THREE.Vector3, THREE.Vector3] : null;
+        for (const path of boundaries) if (path.length >= 2) seams.push({ path, legs, normal: worldDir(item.normal, t), joint: item.joint });
+      } else faceBoundaries.push(boundaries);
+      if (draft || weldType === 'patch') {
+        if (item.preview_mesh?.vertices?.length && item.preview_mesh.triangles?.length) {
+          const positions: number[] = [];
+          for (const tri of item.preview_mesh.triangles) for (const index of tri) { const p = world(item.preview_mesh.vertices[index], t); positions.push(p.x, p.y, p.z); }
+          const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.computeVertexNormals();
+          const overlay = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: weldType === 'patch' ? 0xd99a2b : 0xffa51f, transparent: true, opacity: weldType === 'patch' ? 0.55 : 0.2, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+          overlay.renderOrder = 12; group.add(overlay);
+        }
+      }
+    }
+    // Two mating faces: their shared CAD boundary is the seam.
+    if (!seams.length && faceBoundaries.length === 2) {
+      const tolerance = Math.max(0.2, Math.min(1.5, e.radius * 0.0005));
+      for (const path of faceBoundaries[0]) if (faceBoundaries[1].some(other => sameCadBoundary(path, other, tolerance))) seams.push({ path, legs: null, normal: null });
+    }
+    const addBead = (path: THREE.Vector3[], seam: typeof seams[number]) => {
+      if (path.length < 2 || pathLength(path) < 0.01) return;
+      const mesh = new THREE.Mesh(beadGeometry(path, { joint: seam.joint, legs: seam.legs, normal: seam.normal, size, minVisible, ripple: !String(w.process || '').startsWith('Laser') }), material);
+      mesh.userData.weldId = shape.id; mesh.renderOrder = 6; group.add(mesh);
+    };
+    if (weldType === 'linear' || weldType === 'stitch' || !['patch', 'tack'].includes(weldType)) for (const seam of seams) {
+      if (weldType === 'stitch') {
+        const pitch = Math.max(1, Number(w.pitch || 50)), segment = Math.min(pitch, Math.max(1, Number(w.length || 25)));
+        const total = pathLength(seam.path);
+        for (let start = 0; start < total; start += pitch) addBead(pathSection(seam.path, start, Math.min(total, start + segment)), seam);
+      } else addBead(seam.path, seam);
+    }
+    if (weldType === 'tack') {
+      const placement = w.placement as { part?: string; point?: number[]; occurrence?: number } | undefined;
+      const t = placement?.part ? occurrenceMatrix(e, placement.part, placement.occurrence) : null;
+      if (t && placement?.point) {
+        const p = world(placement.point, t), width = Math.max(1, Number(w.width || 2)), length = Math.max(1, Number(w.length || 2));
+        const tack = new THREE.Mesh(new THREE.CapsuleGeometry(Math.max(width / 2, minVisible), length, 8, 16), material); tack.position.copy(p); tack.rotation.z = Math.PI / 2; tack.userData.weldId = shape.id; tack.renderOrder = 6; group.add(tack);
+      }
+    }
+    // Label at the middle of the longest seam (or the first selection).
+    if (shape.label) {
+      const longestSeam = seams.slice().sort((x, y) => pathLength(y.path) - pathLength(x.path))[0];
+      const longest = longestSeam?.path;
+      let at: THREE.Vector3 | null = longest ? pointAt(longest, pathLength(longest) / 2) : null;
+      // lift the label out of the weld corner so it is hidden only when the weld itself is
+      if (at && longestSeam?.legs) at.addScaledVector(longestSeam.legs[0].clone().add(longestSeam.legs[1]).normalize(), Math.max(size, minVisible) * 3);
+      if (!at && shape.faces?.[0]) { const t = occurrenceMatrix(e, shape.faces[0].part, shape.faces[0].occurrence); if (t) at = world(shape.faces[0].point || shape.faces[0].start, t); }
+      if (at) { const sprite = labelSprite(shape.label, 0.02, shape.active ? '#2563eb' : '#b45309', true); sprite.position.copy(at); sprite.center.set(0.5, -0.35); sprite.userData.weldId = shape.id; group.add(sprite); }
+    }
+    return seams.length;
+  };
+
+  // Draft weld: selected faces / seams with the bead the configured settings would produce.
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded) return;
+    if (e.weldGroup) { e.scene.remove(e.weldGroup); disposeGroup(e.weldGroup); e.weldGroup = null; }
+    if (!jointPreview?.faces?.length) { statusCallback.current?.(false, 'Select a weld location to preview it.'); return; }
+    const group = new THREE.Group();
+    const weldType = String(jointPreview.weld?.type || 'linear');
+    for (const item of jointPreview.faces) {
+      const t = occurrenceMatrix(e, item.part, item.occurrence); if (!t) continue;
+      for (const path of item.boundaries || []) {
+        if (path.length < 2 || item.selection === 'edge') continue;
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(path.map(p => new THREE.Vector3(...p).applyMatrix4(t))), new THREE.LineBasicMaterial({ color: 0xffa51f, transparent: true, opacity: 0.75 }));
+        line.renderOrder = 15; group.add(line);
+      }
+    }
+    const count = drawWeld(e, { id: 'draft', faces: jointPreview.faces, weld: jointPreview.weld }, group, true);
+    if (weldType === 'tack') statusCallback.current?.(!!jointPreview.weld?.placement, jointPreview.weld?.placement ? 'Tack placed' : 'Place the tack on a selected face.');
+    else if (weldType === 'patch') statusCallback.current?.(true, 'Selected area preview');
+    else statusCallback.current?.(count > 0, count > 0 ? `${count} seam${count === 1 ? '' : 's'} ready` : 'These faces do not share a CAD seam. Detect seams, pick the seam edge, or pick another face pair.');
+    e.scene.add(group); e.weldGroup = group;
+  }, [jointPreview, loading, explode]);
+
+  // Saved welds stay visible on the model (toggle in the view tools); click a bead to open it.
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded) return;
+    if (e.savedWeldGroup) { e.scene.remove(e.savedWeldGroup); disposeGroup(e.savedWeldGroup); e.savedWeldGroup = null; }
+    if (!showWelds || !welds.length) return;
+    const group = new THREE.Group();
+    const visible = new Set(e.meshes.filter(m => m.visible).map(m => String(m.userData.partId)));
+    for (const weld of welds) {
+      if (!weld.faces?.some(f => visible.has(f.part))) continue;
+      drawWeld(e, drafting ? { ...weld, label: undefined } : weld, group, false);
+    }
+    // while another weld is being set up, existing welds stay visible as quiet context
+    if (drafting) group.traverse(o => { const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined; if (m && 'opacity' in m) { m.transparent = true; m.opacity = 0.35; m.depthWrite = false; } });
+    e.scene.add(group); e.savedWeldGroup = group;
+  }, [welds, showWelds, loading, explode, hidden.join('|'), isolated, selected, focusIds.join('|'), drafting]);
+
+  // New seam detection: look into the weld corners. The camera direction is the average opening of the
+  // detected fillets (so a wall in front of the seams never hides them) and the view frames all seams.
+  const framedSeams = useRef<unknown>(null);
+  useEffect(() => {
+    const e = engine.current;
+    const key = seamCandidates.map(s => `${s.id}:${s.part}:${s.occurrence || 0}`).join('|');
+    if (!e || !e.loaded || !seamCandidates.length || framedSeams.current === key) return;
+    framedSeams.current = key;
+    const box = new THREE.Box3(); const open = new THREE.Vector3(); let totalLength = 0;
+    for (const seam of seamCandidates) {
+      const t = occurrenceMatrix(e, seam.part, seam.occurrence); if (!t) continue;
+      const pts = (seam.boundaries || []).flat().map(p => new THREE.Vector3(...p).applyMatrix4(t));
+      pts.forEach(p => box.expandByPoint(p));
+      const len = pts.length > 1 ? pts[0].distanceTo(pts[pts.length - 1]) : 0;
+      if (!seam.minor) totalLength += len;
+      if (seam.opening?.length === 3 && !seam.minor) open.add(new THREE.Vector3(...seam.opening).transformDirection(t).multiplyScalar(Math.max(len, 1) * 1.4));
+      if (seam.legs?.length === 2 && !seam.minor) open.add(new THREE.Vector3(...seam.legs[0]).add(new THREE.Vector3(...seam.legs[1])).transformDirection(t).multiplyScalar(Math.max(len, 1)));
+    }
+    if (box.isEmpty()) return;
+    // Fillets on both sides of a plate cancel out: then keep the current side and look down at ~35°.
+    const current = e.camera.position.clone().sub(e.controls.target).normalize();
+    const raw = open.length() > totalLength * 0.3 ? open.normalize() : current.clone();
+    // Look from the side the fillets open to, at 20–50° elevation, swung ~25° so plates are not seen edge-on.
+    let horizontal = new THREE.Vector3(raw.x, raw.y, 0);
+    if (horizontal.length() < 0.35) horizontal = new THREE.Vector3(current.x, current.y, 0);
+    if (horizontal.length() < 1e-3) horizontal.set(1, -1, 0);
+    horizontal.normalize().applyAxisAngle(new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(25));
+    const elevation = THREE.MathUtils.degToRad(raw.z < -0.3 ? -35 : Math.min(50, Math.max(20, THREE.MathUtils.radToDeg(Math.asin(Math.min(1, Math.abs(raw.z)))))));
+    const dir = horizontal.multiplyScalar(Math.cos(elevation)).add(new THREE.Vector3(0, 0, Math.sin(elevation))).normalize();
+    const center = box.getCenter(new THREE.Vector3());
+    // keep the welded components in view around the seams (a corner seam alone is a close-up)
+    const partsBox = new THREE.Box3();
+    const ids = new Set(seamCandidates.flatMap(sc => [sc.part, sc.other_part]).filter(Boolean));
+    for (const m of e.meshes) if (ids.has(String(m.userData.partId))) partsBox.expandByObject(m);
+    const partsR = partsBox.isEmpty() ? 0 : partsBox.getSize(new THREE.Vector3()).length() / 2;
+    const r = Math.max(box.getSize(new THREE.Vector3()).length() / 2, partsR * 0.55, e.radius * 0.05);
+    const dist = r / Math.sin(THREE.MathUtils.degToRad(e.camera.fov) / 2) * 1.5;
+    e.fly = { from: e.camera.position.clone(), to: center.clone().addScaledVector(dir, dist), tFrom: e.controls.target.clone(), tTo: center, start: performance.now(), duration: 700 };
+  }, [seamCandidates, loading]);
+
+  // Detected seam candidates: thin cyan rods; amber once chosen (the draft bead is drawn on top).
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded) return;
+    if (e.seamGroup) { e.scene.remove(e.seamGroup); disposeGroup(e.seamGroup); e.seamGroup = null; }
+    if (!seamCandidates.length) return;
+    const group = new THREE.Group();
+    const r = Math.max(e.radius * 0.0016, 0.18);
+    for (const seam of seamCandidates) {
+      const t = occurrenceMatrix(e, seam.part, seam.occurrence); if (!t) continue;
+      for (const raw of seam.boundaries || []) {
+        const path = raw.map(p => new THREE.Vector3(...p).applyMatrix4(t));
+        if (path.length < 2) continue;
+        const hot = seam.id === hoverSeam;
+        const color = seam.chosen ? 0xf59e0b : hot ? 0x0ea5e9 : 0x22d3ee;
+        const rod = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(resample(path, Math.max(pathLength(path) / 60, 0.5)), false, 'centripetal'), Math.min(240, Math.max(4, path.length * 2)), hot ? r * 1.8 : r, 6, false),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: seam.chosen ? 0.35 : 0.95, depthTest: !hot }));
+        rod.userData.seamId = seam.id; rod.renderOrder = hot ? 30 : 20; group.add(rod);
+        // a wider invisible sleeve makes thin seams easy to click
+        const sleeve = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(path.length > 2 ? path : resample(path, pathLength(path) / 4), false), Math.max(4, path.length), r * 5, 4, false), new THREE.MeshBasicMaterial({ visible: false }));
+        sleeve.userData.seamId = seam.id; group.add(sleeve);
+      }
+      if (seam.label && seam.id === hoverSeam) { const mid = seam.boundaries?.[0]; if (mid?.length) { const path = mid.map(p => new THREE.Vector3(...p).applyMatrix4(t)); const sprite = labelSprite(seam.label, 0.022, seam.chosen ? '#d97706' : '#0891b2'); sprite.position.copy(pointAt(path, pathLength(path) / 2)); sprite.center.set(0.5, 1.4); sprite.userData.seamId = seam.id; group.add(sprite); } }
+    }
+    e.scene.add(group); e.seamGroup = group;
+  }, [seamCandidates, hoverSeam, loading, explode]);
+
+  // Exact B-rep target returned for the settled pointer position. Cyan is intentionally
+  // distinct from the amber saved selection and yellow weld bead.
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded) return;
+    if (e.hoverGroup) { e.scene.remove(e.hoverGroup); e.hoverGroup.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); (Array.isArray(m.material) ? m.material : [m.material]).filter(Boolean).forEach(a => (a as THREE.Material).dispose()); }); e.hoverGroup = null; }
+    if (!pickMode || !hoverGeometry?.part) return;
+    const mesh = e.meshes.find(m => m.userData.partId === hoverGeometry.part && m.visible);
+    if (!mesh) return;
+    const transform = mesh.matrixWorld.clone();
+    if (mesh instanceof THREE.InstancedMesh) { const instance = new THREE.Matrix4(); mesh.getMatrixAt(Math.min(Math.max(hoverGeometry.occurrence || 0, 0), mesh.count - 1), instance); transform.multiply(instance); }
+    const point = (coords: number[]) => new THREE.Vector3(...coords).applyMatrix4(transform);
+    const group = new THREE.Group();
+    if (hoverGeometry.preview_mesh?.vertices?.length && hoverGeometry.preview_mesh.triangles?.length) {
+      const coordinates: number[] = [];
+      for (const tri of hoverGeometry.preview_mesh.triangles) for (const index of tri) {
+        const p = point(hoverGeometry.preview_mesh.vertices[index]); coordinates.push(p.x, p.y, p.z);
+      }
+      const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(coordinates, 3));
+      const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: 0x15d9ed, transparent: true, opacity: 0.42, side: THREE.DoubleSide, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
+      fill.renderOrder = 25; group.add(fill);
+    }
+    for (const path of hoverGeometry.boundaries || []) if (path.length >= 2) {
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(path.map(point)), new THREE.LineBasicMaterial({ color: 0x12f3ff, linewidth: 3, depthTest: false, depthWrite: false }));
+      line.renderOrder = 26; group.add(line);
+    }
+    e.scene.add(group); e.hoverGroup = group;
+  }, [hoverGeometry, pickMode, loading, explode]);
+
   // Explode tweens in the render loop; the camera flies at the same time to the exploded bounds.
   useEffect(() => {
     const e = engine.current;
@@ -498,39 +914,85 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     e.explodeCurrent = current; e.applyExplode();
   }, [explode]);
 
+  const frameWeldSelection = (requestedDirection?: number[] | 'opposite') => {
+    const e = engine.current;
+    if (!e || !e.loaded || !jointPreview?.faces?.length) return;
+    const ids = focusIds.length ? focusIds : [...new Set(jointPreview.faces.map(f => f.part))];
+    const focusBox = new THREE.Box3();
+    for (const mesh of e.meshes) if (ids.includes(String(mesh.userData.partId)) && mesh.visible) focusBox.expandByObject(mesh);
+    const focusRadius = focusBox.isEmpty() ? e.radius : Math.max(focusBox.getSize(new THREE.Vector3()).length() / 2, e.radius * 0.002);
+    const points: THREE.Vector3[] = [], pickedPoints: THREE.Vector3[] = [];
+    for (const item of jointPreview.faces) {
+      const mesh = e.meshes.find(m => m.userData.partId === item.part); if (!mesh) continue;
+      let transform = mesh.matrixWorld.clone();
+      if (mesh instanceof THREE.InstancedMesh) { const instance = new THREE.Matrix4(); mesh.getMatrixAt(Math.min(Math.max(item.occurrence || 0, 0), mesh.count - 1), instance); transform.multiply(instance); }
+      const add = (p?: number[], picked = false) => { if (p?.length === 3) { const point = new THREE.Vector3(...p).applyMatrix4(transform); points.push(point); if (picked) pickedPoints.push(point); } };
+      add(item.point, true); add(item.start); add(item.end);
+      for (const path of item.boundaries || []) for (const p of path) add(p);
+    }
+    if (!points.length) return;
+    const center = pickedPoints.length ? pickedPoints.reduce((sum, p) => sum.add(p), new THREE.Vector3()).multiplyScalar(1 / pickedPoints.length) : new THREE.Box3().setFromPoints(points).getCenter(new THREE.Vector3());
+    const selectionRadius = new THREE.Box3().setFromPoints(points).getSize(new THREE.Vector3()).length() / 2;
+    const radius = Math.max(Math.min(selectionRadius || focusRadius * 0.08, focusRadius * 0.38), focusRadius * 0.025);
+    let direction: THREE.Vector3;
+    if (requestedDirection === 'opposite') direction = e.controls.target.clone().sub(e.camera.position).normalize();
+    else if (requestedDirection) direction = new THREE.Vector3(...requestedDirection).normalize();
+    else direction = e.camera.position.clone().sub(e.controls.target).normalize();
+    if (direction.lengthSq() < 1e-6) direction.set(1, -1, 0.5).normalize();
+    const distance = radius / Math.sin(THREE.MathUtils.degToRad(e.camera.fov) / 2) * 1.12;
+    e.camera.near = Math.max(focusRadius / 10000, 0.001);
+    e.camera.updateProjectionMatrix();
+    e.fly = { from: e.camera.position.clone(), to: center.clone().add(direction.multiplyScalar(distance)), tFrom: e.controls.target.clone(), tTo: center, start: performance.now(), duration: 420 };
+  };
+
   const hasSelection = !!selected;
+  const welding = !!(pickMode || jointPreview?.faces?.length || seamCandidates.length);
   return (
-    <div className="viewer">
+    <div className={'viewer' + (welding ? ' weld-mode' : '')}>
       <div ref={host} className="canvas" />
-      <div className="view-label">
-        <span className="live-dot" />
-        {flat ? 'DEVELOPED SHEET' : 'CAD WORKSPACE'}
-        <span>{loading ? 'Preparing geometry' : `${count.toLocaleString()} triangles`}</span>
-        {hoverName && <em>{hoverName}</em>}
-      </div>
-      <div className="view-tools">
-        <button title="Isometric" onClick={() => engine.current?.fit([1, -1, 0.85], null)}><Box size={18} /></button>
-        <button title="Top (Z)" onClick={() => engine.current?.fit([0, 0, 1], null)}>Z</button>
-        <button title="Front (−Y)" onClick={() => engine.current?.fit([0, -1, 0], null)}>Y</button>
-        <button title="Right (X)" onClick={() => engine.current?.fit([1, 0, 0], null)}>X</button>
-        <button title="Fit everything" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={18} /></button>
-        <button title="Fit selected part" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={18} /></button>
-        <button className={ghost ? 'selected' : ''} title={ghost ? 'Other parts are ghosted while a part is selected' : 'Other parts stay solid while a part is selected'} onClick={() => setGhost(!ghost)}>{ghost ? <EyeOff size={18} /> : <Eye size={18} />}</button>
-        <button className={measure ? 'selected' : ''} title="Measure two surface points" onClick={() => { setMeasure(!measure); setDistance(null); }}><Ruler size={18} /></button>
+      {hud && <div className="cad-hud">{hud}</div>}
+      {welding && (
+        <div className="weld-bar">
+          {pickMode ? <span className="weld-bar-mode"><Crosshair size={13} />{pickMode === 'point' ? 'Click a picked face to place the tack' : pickMode === 'edge' ? 'Click seam edges' : 'Click face A, then face B'}</span>
+            : seamCandidates.length > 0 ? <span className="weld-bar-mode"><Crosshair size={13} />Click a seam to add or remove it</span> : null}
+          <span className="weld-bar-cam">
+            <button type="button" title="Frame the weld" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection()}><Focus size={13} />Weld</button>
+            <button type="button" title="Look from the other side" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection('opposite')}>Flip</button>
+            <button type="button" title="Look from below" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection([0, 0, -1])}>Below</button>
+            <button type="button" title="Look from above" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection([0, 0, 1])}>Above</button>
+          </span>
+        </div>
+      )}
+      <div className="view-cube" role="toolbar" aria-label="View">
+        <button title="Isometric" onClick={() => engine.current?.fit([1, -1, 0.85], null)}><Box size={16} /></button>
+        <button title="Top (Z)" onClick={() => engine.current?.fit([0, 0, 1], null)}>Top</button>
+        <button title="Front (−Y)" onClick={() => engine.current?.fit([0, -1, 0], null)}>Front</button>
+        <button title="Right (X)" onClick={() => engine.current?.fit([1, 0, 0], null)}>Right</button>
+        <span />
+        <button title="Fit everything" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={16} /></button>
+        <button title="Fit selected part" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={16} /></button>
       </div>
       {loading && <div className="viewer-state"><span className="spinner" />Preparing lightweight 3D geometry…</div>}
       {error && <div className="viewer-state">{error}</div>}
-      <div className="view-bottom">
-        <label>
-          <Layers size={15} />Explode
-          <input aria-label="Explode assembly" type="range" min="0" max="100" value={explode} onChange={ev => setExplode(+ev.target.value)} />
-          <button type="button" className="mini" onClick={() => setExplode(explode > 0 ? 0 : 100)}>{explode > 0 ? 'Collapse' : 'Explode'}</button>
-        </label>
-        <label>
-          <Scissors size={15} />Section
-          <input aria-label="Section plane" type="range" min="0" max="100" value={section} onChange={ev => setSection(+ev.target.value)} />
-        </label>
+      <div className="cad-palette" role="toolbar" aria-label="Tools">
+        {toolbarStart}
+        {toolbarStart ? <i className="sep" /> : null}
+        <button className={measure ? 'selected' : ''} title="Measure two surface points" onClick={() => { setMeasure(!measure); setDistance(null); }}><Ruler size={16} /><span>Measure</span></button>
+        <span className="pop-wrap">
+          <button className={section < 100 || popover === 'section' ? 'selected' : ''} title="Section plane" onClick={() => setPopover(popover === 'section' ? null : 'section')}><Scissors size={16} /><span>Section</span></button>
+          {popover === 'section' && <span className="cad-pop"><label>Section height<input aria-label="Section plane" type="range" min="0" max="100" value={section} onChange={ev => setSection(+ev.target.value)} /></label><button type="button" className="mini" onClick={() => { setSection(100); setPopover(null); }}>Off</button></span>}
+        </span>
+        <span className="pop-wrap">
+          <button className={explode > 0 || popover === 'explode' ? 'selected' : ''} title="Explode the assembly" onClick={() => setPopover(popover === 'explode' ? null : 'explode')}><Layers size={16} /><span>Explode</span></button>
+          {popover === 'explode' && <span className="cad-pop"><label>Explode<input aria-label="Explode assembly" type="range" min="0" max="100" value={explode} onChange={ev => setExplode(+ev.target.value)} /></label><button type="button" className="mini" onClick={() => setExplode(explode > 0 ? 0 : 100)}>{explode > 0 ? 'Collapse' : 'Full'}</button></span>}
+        </span>
+        <button className={ghost ? 'selected' : ''} title={ghost ? 'Other parts are ghosted while a part is selected' : 'Other parts stay solid while a part is selected'} onClick={() => setGhost(!ghost)}>{ghost ? <EyeOff size={16} /> : <Eye size={16} />}<span>Ghost</span></button>
+        {welds.length > 0 && <button className={showWelds ? 'selected' : ''} title={showWelds ? `Hide the ${welds.length} configured weld(s)` : `Show the ${welds.length} configured weld(s)`} onClick={() => setShowWelds(!showWelds)}><Flame size={16} /><span>Beads</span></button>}
+        {refCount > 0 && <button className={showRefs ? 'selected' : ''} title={showRefs ? 'Hide reference surfaces (sketch circles, boundaries)' : `Show ${refCount} reference surface body(ies) — not solid parts`} onClick={() => setShowRefs(!showRefs)}><CircleDashed size={16} /><span>Refs</span></button>}
+        {toolbarEnd ? <i className="sep" /> : null}
+        {toolbarEnd}
       </div>
+      <div className="cad-status">{hoverName ? <b>{hoverName}</b> : null}<span>{loading ? 'Preparing geometry…' : flat ? 'Developed sheet' : `${count >= 1e6 ? (count / 1e6).toFixed(1) + 'M' : count >= 1e4 ? Math.round(count / 1000) + 'k' : count.toLocaleString()} triangles`}</span></div>
       {measure && (
         <div className="measurement">
           {distance === null ? 'Pick two visible surface points' : `${distance.toFixed(3)} mm · mesh measurement`}

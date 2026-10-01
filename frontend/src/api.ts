@@ -7,6 +7,18 @@ if (vendorId && vendorToken) {
 }
 export const headers = () => ({ 'X-Forge-Request': '1', ...(vendorId ? { Authorization: 'Bearer ' + vendorToken } : {}) });
 
+/** FastAPI validation errors arrive as a list of {loc, msg}: turn them into one readable sentence. */
+function errorText(detail: unknown): string {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((d: any) => {
+      const field = Array.isArray(d?.loc) ? d.loc.filter((x: unknown) => x !== 'body').join(' › ') : '';
+      return (field ? field + ': ' : '') + String(d?.msg || 'invalid value').replace(/ after validation/, '');
+    }).slice(0, 3).join(' · ');
+  }
+  return 'The server rejected the request';
+}
+
 export async function api(path: string, method = 'GET', body?: unknown) {
   const r = await fetch('/api' + path, {
     method,
@@ -15,7 +27,7 @@ export async function api(path: string, method = 'GET', body?: unknown) {
   });
   if (!r.ok) {
     const a = await r.json().catch(() => ({ detail: r.statusText }));
-    throw new Error(typeof a.detail === 'string' ? a.detail : JSON.stringify(a.detail));
+    throw new Error(errorText(a.detail));
   }
   return r.json();
 }
@@ -49,4 +61,27 @@ export function saveBlob(b: Blob, name: string) {
 
 export async function download(path: string, name: string) {
   saveBlob(await asset(path), name);
+}
+
+/** 3D meshes are never downloadable: ask for a short-lived, session-bound ticket, fetch the AES-GCM
+ * encrypted stream and decrypt it in memory. `key` is "revisionId:file[:partId]". */
+export async function loadSecureModel(key: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  const [revision, file, part] = key.split(':');
+  const q = new URLSearchParams({ revision, file, ...(part ? { part } : {}) });
+  const ticket = await fetch('/api/model-ticket?' + q.toString(), { headers: headers(), signal });
+  if (!ticket.ok) {
+    const body = await ticket.json().catch(() => ({ detail: '3D mesh is not available yet' }));
+    throw new Error(body.detail || '3D mesh is not available yet');
+  }
+  const t = await ticket.json();
+  const r = await fetch(t.url, { headers: headers(), signal, cache: 'no-store' });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({ detail: '3D mesh is not available yet' }));
+    throw new Error(body.detail || '3D mesh is not available yet');
+  }
+  const aad = Uint8Array.from(atob(r.headers.get('X-Forge-Aad') || ''), c => c.charCodeAt(0));
+  const data = new Uint8Array(await r.arrayBuffer());
+  const raw = Uint8Array.from(atob(t.key), c => c.charCodeAt(0));
+  const cryptoKey = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv: data.slice(0, 12), additionalData: aad }, cryptoKey, data.slice(12));
 }

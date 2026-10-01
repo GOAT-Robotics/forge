@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Download, ExternalLink, LoaderCircle, Plus, Trash2, ArrowUp, ArrowDown, Check, Eye, EyeOff, Box, CheckCircle2, Circle, Ban, Undo2, Settings, Layers } from 'lucide-react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { usePinchZoom } from './pinchZoom';
+import { X, Download, ExternalLink, LoaderCircle, Plus, Trash2, ArrowUp, ArrowDown, Check, Eye, EyeOff, Box, CheckCircle2, Circle, Ban, Undo2, Settings, Layers, Link2, Flame } from 'lucide-react';
 import { asset, assetJson, saveBlob } from './api';
 import { categories, RAL, suggestions, fmt } from './constants';
 import type { Any } from './constants';
@@ -97,12 +98,22 @@ export function DocumentPreview({ blob, name, title, close }: { blob: Blob; name
     return () => { cancelled = true; docRef.current?.destroy?.(); };
   }, [blob, isPdf]);
 
+  // While pinching, scale the already-rendered canvases immediately (CSS) so the zoom tracks the fingers;
+  // the sharp re-render follows once the gesture pauses.
+  useLayoutEffect(() => {
+    scroller.current?.querySelectorAll<HTMLCanvasElement>('canvas[data-page]').forEach(canvas => {
+      const w1 = Number(canvas.dataset.w1), h1 = Number(canvas.dataset.h1);
+      if (w1 && h1) { canvas.style.width = Math.floor(w1 * zoom) + 'px'; canvas.style.height = Math.floor(h1 * zoom) + 'px'; }
+    });
+  }, [zoom]);
+  usePinchZoom(scroller, zoom, setZoom, { min: 0.5, max: 8 });
+
   // Render every page into its canvas at the current zoom (fit-to-width × zoom).
   useEffect(() => {
     const doc = docRef.current, host = scroller.current;
     if (!doc || !host || !pages) return;
     let cancelled = false;
-    (async () => {
+    const timer = window.setTimeout(async () => {
       setRendering(true);
       const width = host.clientWidth - 48;
       for (let i = 1; i <= pages; i++) {
@@ -118,13 +129,14 @@ export function DocumentPreview({ blob, name, title, close }: { blob: Blob; name
         canvas.height = Math.floor(viewport.height * ratio);
         canvas.style.width = Math.floor(viewport.width) + 'px';
         canvas.style.height = Math.floor(viewport.height) + 'px';
+        canvas.dataset.w1 = String(viewport.width / zoom); canvas.dataset.h1 = String(viewport.height / zoom);
         const ctx = canvas.getContext('2d')!;
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
         await page.render({ canvasContext: ctx, viewport }).promise;
       }
       if (!cancelled) setRendering(false);
-    })();
-    return () => { cancelled = true; };
+    }, host.querySelector('canvas[data-w1]') ? 160 : 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [pages, zoom]);
 
   const size = blob.size > 1e6 ? (blob.size / 1e6).toFixed(1) + ' MB' : Math.round(blob.size / 1e3) + ' KB';
@@ -134,7 +146,7 @@ export function DocumentPreview({ blob, name, title, close }: { blob: Blob; name
         <header>
           <div><h2>{title}</h2><p className="muted">{name} · {size}{pages ? ` · ${pages} page${pages > 1 ? 's' : ''}` : ''}</p></div>
           <div className="flex">
-            {isPdf && <div className="zoom-group"><button type="button" onClick={() => setZoom(z => Math.max(0.5, +(z - 0.25).toFixed(2)))} aria-label="Zoom out">−</button><span>{Math.round(zoom * 100)}%</span><button type="button" onClick={() => setZoom(z => Math.min(4, +(z + 0.25).toFixed(2)))} aria-label="Zoom in">+</button></div>}
+            {isPdf && <div className="zoom-group"><button type="button" onClick={() => setZoom(z => Math.max(0.5, +(z - 0.25).toFixed(2)))} aria-label="Zoom out">−</button><button type="button" className="zoom-reset" title="Fit width (pinch or Ctrl/⌘ + scroll to zoom)" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button type="button" onClick={() => setZoom(z => Math.min(8, +(z + 0.25).toFixed(2)))} aria-label="Zoom in">+</button></div>}
             {isPdf && url && <a className="button" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} />Open in tab</a>}
             <button className="primary" onClick={() => saveBlob(blob, name)}><Download size={16} />Download</button>
             <button aria-label="Close" onClick={close}><X size={20} /></button>
@@ -563,7 +575,7 @@ export function SpecEditor({ editing, setEditing, config, onSave, busy }: { edit
 // ---------------------------------------------------------------------------------------------
 // Multi-selection: inspector panel and group specification editor
 // ---------------------------------------------------------------------------------------------
-export function GroupPanel({ parts, vendor, editable, busy, onEdit, onBulk, onExclude, onRemove, onFocus, onClear }: { parts: Any[]; vendor: boolean; editable: boolean; busy: boolean; onEdit: () => void; onBulk: (body: Any) => void; onExclude: () => void; onRemove: (id: string) => void; onFocus: (id: string) => void; onClear: () => void }) {
+export function GroupPanel({ parts, vendor, editable, busy, onEdit, onBulk, onExclude, onRemove, onFocus, onClear, onJoint, onProcess, templates = [] }: { parts: Any[]; vendor: boolean; editable: boolean; busy: boolean; onEdit: () => void; onBulk: (body: Any) => void; onExclude: () => void; onRemove: (id: string) => void; onFocus: (id: string) => void; onClear: () => void; onJoint?: () => void; onProcess?: (templateId: string) => void; templates?: Any[] }) {
   const cats = Object.entries(categories).map(([k, v]) => [k, v, parts.filter(p => p.category === k).length] as const).filter(x => x[2] > 0);
   const excluded = parts.filter(p => p.excluded).length, hidden = parts.filter(p => p.hidden).length;
   const qty = parts.reduce((n, p) => n + p.quantity, 0);
@@ -581,6 +593,12 @@ export function GroupPanel({ parts, vendor, editable, busy, onEdit, onBulk, onEx
             {editable && (
               <label className="select-action">Set category for all
                 <Select size="sm" value="" disabled={busy} placeholder="Choose…" onChange={v => { if (v) onBulk({ category: v }); }} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} />
+              </label>
+            )}
+            {editable && onJoint && <button type="button" className="full" disabled={busy} title="Define how the selected parts are joined: weld type and size, fasteners, faces" onClick={onJoint}><Flame size={15} />Weld these parts…</button>}
+            {editable && onProcess && templates.length > 0 && (
+              <label className="select-action">Process template for all
+                <Select size="sm" value="" disabled={busy} placeholder="Choose a routing…" onChange={v => { if (v) onProcess(v === '__none__' ? '' : v); }} options={[...templates.map((t: Any) => ({ value: t.id, label: t.name, hint: t.data.steps.length + ' steps' })), { value: '__none__', label: 'Remove template' }]} />
               </label>
             )}
             <div className="group-row">
@@ -730,5 +748,48 @@ export function GroupSpecEditor({ parts, config, busy, onSave }: { parts: Any[];
         <button className="primary" disabled={busy || (!changedKeys.length && !changedChecks.length && !(category && (new Set(parts.map(p => p.category)).size !== 1 || category !== parts[0].category)) && reviewed === null)}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}Apply to {parts.length} parts</button>
       </div>
     </form>
+  );
+}
+
+// ============================================================================ In-app dialogs (no browser prompt/confirm)
+type AskOptions = {
+  title: string; message?: string; confirm?: string; cancel?: string; danger?: boolean;
+  /** Ask for text: a label shows an input; `required` blocks empty answers; `choices` offers quick picks. */
+  input?: { label: string; placeholder?: string; required?: boolean; choices?: string[]; multiline?: boolean; type?: 'text' | 'date'; initial?: string; min?: string };
+};
+let openAsk: ((o: AskOptions, done: (v: string | null) => void) => void) | null = null;
+
+/** Promise-based confirm / prompt rendered by <DialogHost/>. Resolves null when cancelled, else the text ('' for a plain confirm). */
+export function ask(o: AskOptions): Promise<string | null> {
+  return new Promise(resolve => {
+    if (!openAsk) { resolve(window.confirm(o.title) ? '' : null); return; }
+    openAsk(o, resolve);
+  });
+}
+
+export function DialogHost() {
+  const [state, setState] = useState<{ o: AskOptions; done: (v: string | null) => void } | null>(null);
+  const [text, setText] = useState('');
+  useEffect(() => { openAsk = (o, done) => { setText(o.input?.initial || ''); setState({ o, done }); }; return () => { openAsk = null; }; }, []);
+  if (!state) return null;
+  const { o, done } = state;
+  const finish = (v: string | null) => { setState(null); done(v); };
+  const blocked = !!o.input?.required && !text.trim();
+  return (
+    <Modal title={o.title} close={() => finish(null)}>
+      <form className="ask-dialog" onSubmit={e => { e.preventDefault(); if (!blocked) finish(o.input ? text.trim() : ''); }}>
+        {o.message && <p className="ask-message">{o.message}</p>}
+        {o.input && <>
+          {o.input.choices && <div className="ask-choices">{o.input.choices.map(c => <button type="button" key={c} className={'chip' + (text === c ? ' selected' : '')} onClick={() => setText(c)}>{c}</button>)}</div>}
+          <label>{o.input.label}{o.input.multiline
+            ? <textarea autoFocus rows={3} value={text} placeholder={o.input.placeholder} onChange={e => setText(e.target.value)} />
+            : <input autoFocus type={o.input.type || 'text'} min={o.input.min} value={text} placeholder={o.input.placeholder} onChange={e => setText(e.target.value)} />}</label>
+        </>}
+        <div className="modal-actions">
+          <button type="button" onClick={() => finish(null)}>{o.cancel || 'Cancel'}</button>
+          <button type="submit" autoFocus={!o.input} className={o.danger ? 'danger' : 'primary'} disabled={blocked}>{o.confirm || 'OK'}</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
