@@ -27,12 +27,12 @@ def released_project(client, tmp_path):
     tid = t.json()['id']
     d = client.post('/api/templates', headers=H, json={'kind': 'drawing', 'name': 'A3 with hole table', 'data': {'size': 'A3', 'hole_table': 'always'}}).json()['id']
     p = client.post('/api/projects', headers=H, json={'name': 'Platform fixture', 'code': 'pf', 'settings': {
-        'sheet_prefixes': ['GT-SM'], 'prefix_strict': False, 'machining_prefixes': ['GT-MC'], 'drawing': {'drawn_by': 'NAVEEN', 'module': 'LIFTER'},
+        'sheet_prefixes': ['GT-SM'], 'prefix_strict': False, 'machining_prefixes': ['GT-MC'], 'drawing': {'drawn_by': 'DESIGNER', 'module': 'LIFTER'},
         'conventions': {'sheet_size': 'A4', 'hole_table': 'auto'}, 'process_templates': {'other': tid, 'machining': tid, 'sheet_metal': tid},
         'drawing_templates': {'machining': d}}})
     assert p.status_code == 200, p.text
     p = p.json()
-    assert p['code'] == 'PF' and p['effective_settings']['drawing']['drawn_by'] == 'NAVEEN'
+    assert p['code'] == 'PF' and p['effective_settings']['drawing']['drawn_by'] == 'DESIGNER'
     source = tmp_path / 'fixture.brep'
     BRepTools.Write_s(plate(), str(source))
     r = client.post(f"/api/projects/{p['id']}/revisions", headers=H, files={'file': ('fixture.brep', source.read_bytes())}).json()
@@ -182,10 +182,10 @@ def test_entra_claims_rules(monkeypatch):
     monkeypatch.setenv('AUTH_MICROSOFT_ENTRA_ID_ID', 'client')
     monkeypatch.setenv('AUTH_MICROSOFT_ENTRA_ID_SECRET', 'secret')
     monkeypatch.setenv('AUTH_MICROSOFT_ENTRA_ID_ISSUER', 'https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0/')
-    monkeypatch.setenv('ALLOWED_EMAIL_DOMAINS', 'goat-robotics.com')
+    monkeypatch.setenv('ALLOWED_EMAIL_DOMAINS', 'example.com')
     assert entra.enabled() and not entra.local_login_allowed()
     tid = '11111111-2222-3333-4444-555555555555'
-    base = {'tid': tid, 'oid': 'oid-1', 'email': 'dev@goat-robotics.com', 'name': 'Dev', 'iss': f'https://login.microsoftonline.com/{tid}/v2.0'}
+    base = {'tid': tid, 'oid': 'oid-1', 'email': 'dev@example.com', 'name': 'Dev', 'iss': f'https://login.microsoftonline.com/{tid}/v2.0'}
     assert entra.upsert_user({**base, 'tid': 'other'})[1] == 'WrongTenant'
     assert entra.upsert_user({**base, 'email': 'dev@gmail.com'})[1] == 'DomainNotAllowed'
     assert entra.upsert_user({**base, 'idp': 'https://sts.windows.net/9999/'})[1] == 'GuestsNotAllowed'
@@ -194,7 +194,7 @@ def test_entra_claims_rules(monkeypatch):
     # e-mail cannot take over an account bound to another object id
     assert entra.upsert_user({**base, 'oid': 'oid-2'})[1] == 'AccountConflict'
     with TestClient(app) as client:
-        assert client.post('/api/auth/login', json={'email': 'dev@goat-robotics.com', 'password': 'whatever-password'}).status_code == 403
+        assert client.post('/api/auth/login', json={'email': 'dev@example.com', 'password': 'whatever-password'}).status_code == 403
         r = client.get('/api/auth/entra/login?next=//evil.com', follow_redirects=False)
         assert r.status_code == 302 and 'login.microsoftonline.com/' + tid in r.headers['location'] and 'code_challenge' in r.headers['location']
         assert client.get('/api/auth/entra/callback?code=x&state=y', follow_redirects=False).headers['location'].startswith('/?signin_error=')

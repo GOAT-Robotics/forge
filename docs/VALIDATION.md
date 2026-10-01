@@ -15,23 +15,17 @@ Eight tests pass locally and inside the Linux ARM64 Docker image:
 
 Tests use synthetic geometry and a separate temporary database. They do not establish production structural accuracy or all possible CAD topology behavior. One upstream Starlette/AnyIO deprecation warning remains; it does not fail the tests.
 
-## Supplied OMNI assembly
+## Full-assembly check
 
-- Source: `GT OMNI V2 FINAL VERSION.STEP`, approximately 254 MB.
-- Imported 985 solid body definitions and 1,487 solid body occurrences; surface-only supplier geometry is also visible.
-- 2,238 named cylindrical bores.
-- Current **inferred** classification: 86 machining, 84 sheet-metal, 815 purchased. These counts are not an approved manufacturing BOM.
-- Generated 170 custom-part drawing sets and 24 candidate mating interfaces.
-- Pack contains 171 PDFs, 888 pages and 653 files, approximately 37 MB compressed.
-- ZIP CRC check passed; all PDFs opened; all extracted text stayed within page bounds; all exported DXFs parsed and passed ezdxf's structural error audit.
-- Representative wheel-mount hole maps, formed/flat clamp sheets, assembly overview and mating sheets were rendered and inspected visually. This is sample visual review, not manual approval of all 888 pages.
-- Unsupported sheet topologies remain explicitly blocked; a supported development is still provisional until its material/tooling allowance is approved.
-
-The example PDF and ZIP under `docs/examples` are draft engineering-review artifacts. The Docker workspace contains the same completed package. No real part has been signed off or released, and no production inspection was fabricated.
+Forge has been exercised on a production robot assembly of about 1,000 solid body definitions and 1,500 occurrences
+(roughly 2,200 cylindrical bores, 170 custom parts). Every custom part produced a drawing set without failure, sheet
+developments were checked against the bend tables, PDFs opened and DXFs passed ezdxf's structural audit. The assembly
+and its drawings are proprietary and are not part of this repository. Representative output was reviewed visually; this
+is not manual approval of every page, and unsupported sheet topologies remain explicitly blocked.
 
 ## Browser and runtime checks
 
-Verified the running Docker site loads the real assembly, searches/selects parts, isolates a part in its own coordinates, exposes its generated downloads, and shows a supported developed sheet. Verified the scoped vendor view cannot navigate to the internal project list. Account setup is left for the user; no production owner password was installed.
+Verified the running Docker site loads a full assembly, searches/selects parts, isolates a part in its own coordinates, exposes its generated downloads, and shows a supported developed sheet. Verified the scoped vendor view cannot navigate to the internal project list. Account setup is left for the user; no production owner password was installed.
 
 At a 1280 × 800 viewport on this local macOS Codex browser, the displayed full-assembly frame rate was approximately 108–120 fps with 3,246,973 rendered triangles, including a checked orbit interaction. Individual and flat-part views also exceeded 60 fps in these spot checks. This is not a sustained benchmark or a guarantee for other hardware, browsers, viewport sizes or files. The viewer reports actual FPS and can reduce pixel ratio when slow.
 

@@ -5,10 +5,10 @@ Configuration (same names as Volt):
   AUTH_MICROSOFT_ENTRA_ID_SECRET   client secret
   AUTH_MICROSOFT_ENTRA_ID_ISSUER   https://login.microsoftonline.com/<tenant-id>/v2.0/
   AUTH_MICROSOFT_ENTRA_ID_TENANT   optional, tenant id when the issuer does not name one
-  ALLOWED_EMAIL_DOMAINS            comma separated, default goat-robotics.com
+  ALLOWED_EMAIL_DOMAINS            comma separated; empty allows any account of the configured tenant
   ADMIN_EMAILS                     comma separated, these users become administrators
   DEFAULT_ROLE                     role for first sign-in of other domain users (default viewer)
-  PUBLIC_URL                       external base URL, e.g. https://forge.goat-robotics.com
+  PUBLIC_URL                       external base URL, e.g. https://forge.example.com
 
 Only single-tenant tokens from the configured tenant, for members (no guests) whose e-mail is in an allowed
 domain, create a session. The Entra object id (oid) is the identity; the e-mail only links a pre-created
@@ -40,7 +40,7 @@ def tenant():
 
 
 def allowed_domains():
-    raw = os.getenv('ALLOWED_EMAIL_DOMAINS', 'goat-robotics.com')
+    raw = os.getenv('ALLOWED_EMAIL_DOMAINS', '')
     return [d.strip().lower().lstrip('@') for d in raw.split(',') if d.strip()]
 
 

@@ -1,4 +1,4 @@
-https://naveen.local {
-  tls /etc/caddy/certs/naveen.local.pem /etc/caddy/certs/naveen.local-key.pem
+https://{$LOCAL_TLS_NAME} {
+  tls /etc/caddy/certs/site.pem /etc/caddy/certs/site-key.pem
   reverse_proxy app:8100
 }

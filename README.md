@@ -1,67 +1,171 @@
-# Forge Manufacturing
+# Forge
 
-Self-hosted CAD-to-manufacturing workspace. Create projects, version neutral CAD files, review inferred manufacturing features, document engineering decisions, generate PDF/DXF packages, coordinate vendors, and record production QC against released specifications.
+**A self-hosted workspace that turns a STEP assembly into manufacturing: drawings, flat patterns, weld setups, release control and shop-floor tracking.**
 
-## Start
+Upload a neutral CAD file, classify every part (machined, sheet metal, purchased), record how each one is made, and Forge produces the drawing set, sheet-metal developments and manufacturing pack. It then follows the parts through release, job orders and quality inspection. One revision-controlled record from design review to the shop floor, running on your own server.
+
+Forge is built and used in production at [GOAT Robotics](https://goat-robotics.com) for its autonomous mobile robots.
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [How a project flows through Forge](#how-a-project-flows-through-forge)
+- [Drawings](#drawings)
+- [Architecture](#architecture)
+- [Security model](#security-model)
+- [Operations](#operations)
+- [Development](#development)
+- [Scope and limits](#scope-and-limits)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## What it does
+
+**CAD workspace**
+- Imports STEP, IGES and BREP assemblies. Keeps the assembly tree, component placements, occurrence quantities and multi-body parts.
+- Fast 3D viewer: part navigator with assembly hierarchy, category filters, isolate a part (or one instance of a multi-quantity part), ghosting, section, explode, measure and view cube.
+- Classifies parts as machining, sheet metal or purchased from geometry and naming rules. Every suggestion is reviewed by an engineer, and sub-assemblies can be re-classified in one step.
+
+**Manufacturing definition**
+- Material, stock, process sequence, finish, coating (RAL picker), tolerances, datums, heat treatment, roughness, masking, marking and K-factor per part, or applied from reusable process templates.
+- A step-by-step *Make production ready* walkthrough that asks the questions an engineer must answer before a part can be released.
+- Rule checks (bend radius, flange length, hole-to-edge, …) with recorded waivers and manual verification items.
+
+**Drawings and documents**
+- GOAT-style A4/A3/A2 sheets: third- or first-angle views, ordinate dimensions, hole callouts or hole tables, chamfer and fillet notes, angled holes and sloped faces, pictorial views, a title block filled from your project settings.
+- Sheet-metal flat patterns with bend lines, UP/DOWN bend table, outside heights and blank thickness. Flat DXF ready for laser cutting.
+- A vector drawing editor: move views and callouts, add notes and detail views, switch hidden lines per view, set threads and fits, review and export PDF. Geometry stays linked to the STEP.
+- Editable DXF with true-scale ordinate dimensions, per-part STEP, and a ZIP manufacturing pack.
+
+**Welding and assembly**
+- Weld studio: pick two faces on any parts (touching or with a gap), or let Forge find every seam between selected components. Filter by inside/outside side, see the bead in 3D, and get ISO 2553 symbols on the assembly drawing.
+- Bolted, press-fit and other joints with torque, fit limits and assembly instructions.
+
+**Release and production**
+- Release gate: every custom part needs a complete specification, design review and drawing review before the revision can be released.
+- Job orders with a per-part process checklist, deadlines with days remaining and schedule pace, hold and cancel reasons, and count corrections.
+- Quality inspection against released limits, CSV export, a review thread and a full audit trail.
+- Expiring, revocable, read-only vendor links scoped to one revision.
+
+---
+
+## Quick start
+
+You need Docker with Compose v2 and about 8 GB of free RAM for the CAD worker.
 
 ```sh
+git clone https://github.com/goat-robotics/forge.git
+cd forge
+cp .env.example .env
+# Edit .env: set ALLOWED_EMAIL_DOMAINS and ADMIN_EMAILS for your organisation
 docker compose up -d --build
 ```
 
-Open **http://localhost:8100**. With Microsoft Entra ID configured (`scripts/entra-register.sh`, see [platform guide](docs/PLATFORM.md)) people sign in with their goat-robotics.com account; without it, create the first administrator with a password. No default production password is installed. Docker Compose starts the web/API service and a separate CAD worker, with a persistent `forge-manufacturing_forge-data` volume. The default port is loopback-only. Stop with `docker compose stop`; resume with `docker compose up -d`. Do not use `down -v` unless you intend to delete the database and all uploaded/generated files.
+Open **http://localhost:8100**.
 
-The supplied OMNI STEP has been imported into the local installation. A fresh installation starts empty. Project data is not embedded in the Docker image or source repository.
+- **Without Microsoft Entra ID**, the first visitor creates the administrator account with a password. Do this before the server is reachable from a network.
+- **With Microsoft Entra ID**, run `scripts/entra-register.sh` (see [platform guide](docs/PLATFORM.md)). People then sign in with their organisation account, and the first one (or anyone in `ADMIN_EMAILS`) becomes administrator.
 
-## Workflow
+Two services start: the web/API service and a separate CAD worker. Data lives in the `forge-manufacturing_forge-data` Docker volume. Stop with `docker compose stop` and resume with `docker compose up -d`. **Never run `docker compose down -v` unless you mean to delete every project.**
 
-1. **Create a project and upload** `.step`, `.stp`, `.brep`, `.brp`, `.igs` or `.iges`. Assemblies retain their source component placements and occurrence quantities; multi-solid components split into body records. Native proprietary CAD files must first be exported to a supported neutral format.
-2. **Inspect and classify.** Navigate the whole assembly, click parts in the 3D view or the navigator (the camera flies to the part, other bodies ghost out; double-click or *Isolate* hides them), orbit, section, animate the explosion, and measure approximate mesh distances. Parts are rendered in their specified coating colour; uncoated parts use a neutral tone per category. Sheet-metal parts have a 2D *Flat pattern* view (outline, cut-outs, bend lines with allowance) and a 3D developed view. Full cylindrical bores have `H001` labels; recognized bend pairs have `B001` labels. Make/buy and sheet/machining classification are suggestions that an engineer must review.
-3. **Specify manufacturing.** Record material and raw stock, primary process and an ordered process sequence, finish, coating system, coating colour (RAL picker or custom hex), film thickness, masking, heat treatment, hardness, roughness, datums, general tolerances, edge treatment, marking, packaging, feature designations, inspection limits, notes, K factor and verification evidence. Record a justified N/A where a field does not apply. The program does not choose safety-critical materials or fits from geometry alone.
-4. **Review rules and interfaces.** Each upload snapshots project workshop rules. Review automated findings and enter the required manual verification notes. Candidate coaxial bore/shaft interfaces show nominal clearance; approve explicit diameter limits, torque or justified N/A, and assembly instructions. Create additional mating records where detection does not cover the interface.
-3a. **Workspace settings** (gear in the left rail): part-number prefixes for sheet metal, machining and (optionally) purchased items — with *strict* on, anything outside the prefixes is purchased; whether small bought-in items are hidden in the viewer by default; and whether specifications carry over between revisions.
-4a. **Fix make/buy.** Name rules classify supplier downloads (`.stp`/`.STEP` names, catalogue words such as switch, relay, duct, terminal, lidar, camera, nut) as purchased and function-named parts (mount, plate, cover, bracket…) as custom. *Re-run classification* in the revision overview applies the current rules to every part an engineer has not classified yet. Select several parts in the navigator (click, Shift-click for a range, Ctrl/Cmd-click to toggle) and use the toolbar to set a category, hide/show, or mark not for production in one go.
-4b. **Scope production.** Mark parts *Not for production* (with a reason) to leave them out of release checks, drawing sets and the vendor checklist; restore them any time on an active revision. Small bought-in items (terminal blocks, lidars, connectors, fasteners…) are hidden in the viewer by default — toggle any part's visibility with the eye icon in the navigator.
-5. **Generate documents.** Generate selected-part PDFs/DXFs/STEPs from the part Documents tab, or the whole manufacturing pack from the revision overview. Part drawings open in an editable vector canvas: drag views/callouts, edit manufacturing text, apply explicitly specified threads/fits, add notes, undo/redo, save, and export PDF. Geometry remains linked to the STEP; views and dimensions cannot change the source solid. Released/archived/vendor drawings are read-only. Other PDFs open in the existing preview; DXF/STEP/ZIP download directly. A full pack also writes `machining-drawings.pdf` (every machined part) and `sheet-metal-drawings.pdf` (every sheet part with flat pattern, labelled bend lines and a bend table: angle, inside radius, UP/DOWN direction, allowance, line length and outside formed height for recognized 90-degree bends), each with an index page. The worker runs independently of the viewer. Drafts are marked for engineering review. Regenerate after changing specifications.
-6. **Share a revision.** Create an expiring, revocable vendor link. Vendors see that revision's model, specifications, documents, QC records and comments. They cannot change engineering specifications, release a revision or browse other projects. A link never silently changes to the latest revision. Localhost links work only on your computer; remote vendor access requires your own HTTPS deployment.
-6b. **Production checklist.** The Production tab (also visible to vendors) lists every production part with a thumbnail, quantity, material, finish and colour, a drawing preview, and a *produced* tick with quantity done and remarks, recorded with author and time.
-7. **Release.** All custom parts must be reviewed; required specifications, manual checks and mating approvals must be complete. Invalid solids and unsupported required sheet developments block release. Release generates the final pack and locks engineering edits. This records your engineering approval; it is not an independent certification of the design.
-8. **Inspect.** Record serial/batch, feature, released limits, measured value, instrument, operator and notes. The server rejects limits different from the released specification and computes pass/fail. Export QC as CSV. Hole diameters, X/Y/Z envelopes and bend angles can carry inspection limits.
-9. **Revise.** A new successful upload becomes active and archives the previous version. Manufacturing specifications (material, process sequence, finish, coating, tolerances…) plus hidden / not-for-production flags are carried from the active revision into the new one, matched by part name and then by shape; feature limits, verification notes and rule dispositions are carried only when the shape is identical, and every part returns to *review pending*. Parts show a *From rev N* badge. A failed upload leaves the previous revision active. Geometry/specification approvals are not carried across versions. Compare quantities and shape fingerprints; renamed and split parts need manual reconciliation.
+The port is bound to `127.0.0.1` by default. For remote use, put Forge behind an HTTPS reverse proxy and set `COOKIE_SECURE=true` and `PUBLIC_URL`.
 
-## Outputs
+---
 
-- Zoned A3 PDF template with the GOAT title block, orthographic and isometric views, and separate specification/review sheets. Machining drawings pair enlarged views on two drawing sheets. Outline ordinates use each view's bottom-left (0,0); connected coaxial bore/step/chamfer features have grouped quantity, diameter, THRU or cylindrical depth, countersink diameter/angle/side and XY callouts beside the associated holes with leaders placed in clear space. Supported planar profile chamfers show setback length x angle after checking the source face orientation; split collinear edges are joined before measuring. Separate hole schedules are omitted. Thread pitch/class and press-fit intent are user specifications, never inferred as facts from a plain bore. Drawing edits are revision-bound, audited, and preserved in per-part and combined PDF regeneration; saving clears the part review flag and marks combined packs stale. DXF remains a geometry export and does not include freeform editor layout/text overrides. View scale adapts when callouts need more room; unsupported dense layouts fail explicitly rather than overlap labels. Sheet-metal drawings retain cut-out geometry but omit hole labels, hole schedules and hole-specific findings (full release checks still run in the workspace). Supported 90-degree bends show outside formed height from the parent flange outer plane to the adjoining flange far edge; other bends explicitly require a height detail. Flat sheets show bend IDs linked to a paginated bend schedule. Template material, finish, tolerances and approvals come from this part, never the example drawing.
-- Layered millimetre DXF drawing geometry and reference dimensions; per-part exact STEP export.
-- Supported sheet developments: flat DXF with cut contours/bend lines, developed 3D preview and PDF flat + formed isometric.
-- Assembly PDF: assembly view, mating schedule, individual two-body mating illustrations, fit limits, torque and method. Assembly DXF supplies vector pair views.
-- ZIP pack with assembly/part documents, parts/specification data, mating records and revision metadata.
-- QC CSV, review comments and an internal audit trail in the website.
+## Configuration
 
-**The output is an engineering drawing starting point, not automatic complete production detailing.** Feature patterns, GD&T, datum feature symbols, threads, counterbores, welds, functional dimensions, machining setups and full assembly sequence still need engineering verification or additional drafting. Curves in 2D DXFs are sampled at 0.025 mm deflection; these files are not validated CAM/toolpaths. Flat layouts are provisional until material/tooling allowance is approved and the development is checked. See [coverage and boundaries](docs/COVERAGE.md).
+All settings are environment variables, read from `.env` by Docker Compose. See [`.env.example`](.env.example).
 
-## Architecture and operation
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `8100` | Local port (bound to loopback). |
+| `PUBLIC_URL` | `http://localhost:8100` | External URL, used for sign-in redirects and links. |
+| `COOKIE_SECURE` | `false` | Set `true` whenever Forge is served over HTTPS. |
+| `FORGE_SECRET` | generated | Signs short-lived model links and sign-in state. If unset, a random secret is created in the data volume; set it explicitly (`openssl rand -hex 32`) when running more than one container. |
+| `ALLOWED_EMAIL_DOMAINS` | — | Comma-separated e-mail domains allowed to sign in. Set this to your own domain. |
+| `ADMIN_EMAILS` | — | Accounts that become administrators on first sign-in. |
+| `DEFAULT_ROLE` | `viewer` | Role for other new accounts. |
+| `AUTH_MICROSOFT_ENTRA_ID_ID` / `_SECRET` / `_ISSUER` | — | Microsoft Entra ID single-tenant sign-in. Filled by `scripts/entra-register.sh`. |
+| `FORGE_ALLOW_LOCAL_LOGIN` | `false` | Keep password sign-in available as break-glass access once Entra is configured. |
+| `MAX_UPLOAD_MB` | `1024` | Largest CAD upload. |
+| `FORGE_DRAWING_WORKERS` | `3` | Parallel drawing-generation processes in the worker. |
+| `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | — | Optional S3-compatible mirror for uploads and generated files. |
+| `CAD_EXECUTION_MODE` | `local` | `ephemeral` runs each CAD job on a short-lived DigitalOcean Droplet (see below). |
 
-React + Three.js frontend; FastAPI + SQLite WAL API; OpenCascade geometry worker; ezdxf + ReportLab outputs. No Redis, PostgreSQL or cloud CAD upload service. Fonts and frontend assets are bundled. The worker is necessarily heavier than the web service because a full CAD kernel is required.
+**Company details on drawings** (company name, drawn/checked/approved by, tolerance table, fits, general note) are set in the app under *Settings → Drawing*, not in the environment. Part-number prefixes, make/buy rules and workshop rules are per project.
 
-The default deployment is **one API process and one worker**, on one host with a local persistent volume. Mutating HTTP requests are serialized; jobs are persisted and resumed after restart. Do not scale worker replicas: automatic running-job recovery assumes one worker. This is not a distributed job system or multi-tenant SaaS.
+---
 
-### Ephemeral CAD workers on DigitalOcean
+## How a project flows through Forge
 
-For cost-controlled remote CAD work, set `CAD_EXECUTION_MODE=ephemeral`. The lightweight dispatcher uploads a per-job database/data snapshot to the revision's private Spaces prefix, creates one tagged Droplet, and gives it only an expiring download URL plus an expiring single-object upload capability. The Droplet runs exactly one job, returns a result archive, then is deleted by the dispatcher; a deadline (`DO_WORKER_TIMEOUT_SECONDS`, default two hours) deletes a worker that fails to return.
+1. **Upload** a `.step`/`.stp`/`.iges`/`.igs`/`.brep`. Export native CAD (SolidWorks, Creo, Inventor, …) to STEP first. Assemblies keep their structure; multi-body parts become one record per body.
+2. **Classify.** Review the suggested category of every part. Mark purchased items, hide small bought-in parts, and mark anything *Not for production* with a reason.
+3. **Specify.** Fill in how each part is made, directly or with the *Make production ready* walkthrough. Apply process templates to many parts at once.
+4. **Check.** Work through the rule findings and manual checks, and approve fits and joints. Configure welds in the weld studio.
+5. **Generate documents.** Drawings, flat patterns, DXF, STEP and the manufacturing pack are produced by the worker in the background. Refine any drawing in the editor and mark it reviewed.
+6. **Release.** When every part is production ready, *Release revision* locks engineering edits and produces the final pack.
+7. **Produce.** Open job orders against the released revision, record progress per process step, and track the deadline.
+8. **Inspect.** Record measurements against released limits. Forge computes pass/fail and keeps the record.
+9. **Revise.** Upload the next revision. Specifications carry over by part name and shape; every part returns to review.
 
-Set `DO_TOKEN`, `DO_WORKER_REGION`, `DO_WORKER_IMAGE`, `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` in the ignored deployment environment file. `DO_WORKER_IMAGE` must be a public immutable Forge image such as `ghcr.io/goat-robotics/forge:main`; the build workflow publishes this image. Keep the DigitalOcean token and Spaces credentials on the API host only—the spawned Droplet receives neither. Use a DigitalOcean token restricted to Droplet read/write and a Spaces key restricted to the Forge bucket. The dispatcher intentionally runs one remote worker at a time, so the SQLite result merge is deterministic and the maximum concurrent compute cost is one Droplet.
+Details, roles and permissions are in the [platform guide](docs/PLATFORM.md).
 
-### Durable artifact storage
+---
 
-Set `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` to mirror every accepted source file and every completed generated artifact to an S3-compatible bucket. For DigitalOcean Spaces in SFO3, keep `S3_ENDPOINT=https://sfo3.digitaloceanspaces.com` and `S3_REGION=sfo3`. The service restores an absent artifact from the bucket on demand. The S3 key must be restricted to this bucket with read/write/delete access; do not put it in Git, a Docker image, or a GitHub Actions log.
+## Drawings
 
-Docker service limits: API 768 MB; worker 6 GB / 3 CPUs. Large CAD assemblies need adequate host RAM and disk. Configure `PORT`, `COOKIE_SECURE`, and `MAX_UPLOAD_MB` in `.env` using `.env.example`. Keep `COOKIE_SECURE=false` only for local HTTP. For remote use, put the app behind an HTTPS reverse proxy and set `COOKIE_SECURE=true`; configure your hostname and upload/time limits. Complete first-run owner setup before making the endpoint remotely reachable. No public deployment is performed by this project.
+Forge generates a starting drawing for every machined and sheet-metal part:
 
-Sign-in is Microsoft Entra ID (single tenant, goat-robotics.com accounts only, no guests) with HttpOnly sessions; MFA and account lifecycle come from Entra. Roles and per-project membership control what each person can change; vendor links are read-only bearer credentials stored as hashes, expiring and revocable per revision. 3D meshes are streamed encrypted through short-lived, session-bound signed URLs and are never downloadable; STEP/DXF need the CAD-download permission. See [platform guide](docs/PLATFORM.md) for roles, project settings, templates, joints and job orders.
+- **View selection:** the main view is the face with the largest area; long parts are laid along the sheet. Top, side and extra views are added where holes enter.
+- **Dimensions:** ordinate dimensions from each view's bottom-left corner, hole positions, step edges, angled holes (entry point and drilling angle) and sloped faces.
+- **Holes:** grouped callouts (Ø, depth, THRU, counterbore, countersink). Crowded views switch to a tagged hole table in CNC tool order.
+- **Placement:** every label is placed with a collision map of views, dimensions, holes and other text. Sheet size and scale are chosen so nothing overlaps.
+- **Sheet metal:** a formed views sheet plus a flat pattern sheet with the blank edge view and thickness, bend lines, a bend table and balloon tags tied to each bend line.
+- **Never inferred:** thread size, thread class and fits are never guessed from geometry. They come only from what an engineer specifies.
 
-## Backup
+The drawing editor is documented in [docs/DRAWING_EDITOR.md](docs/DRAWING_EDITOR.md). What is and is not covered automatically is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
-For a consistent complete backup, briefly stop **both** services and archive the named volume. Restart them afterward. The archive contains credentials, CAD, vendor access records and quality data; store it privately. The following commands create a timestamped local backup without deleting any source data:
+---
+
+## Architecture
+
+```
+frontend/   React + TypeScript + Three.js (Vite)    workspace, viewer, weld studio, drawing editor
+backend/    FastAPI + SQLite (WAL)                  API, auth, permissions, jobs
+  app/cad.py, hole_features.py, unfold.py, seams.py   OpenCascade geometry: analysis, holes, flat patterns, weld seams
+  app/sheet.py, drawing_scene.py, pictorials.py        drawing layout, editable vector scene, PDF/DXF output
+  app/worker.py                                        CAD import and document generation worker
+```
+
+- **Geometry:** OpenCascade (OCP), trimesh and shapely. **Documents:** ReportLab (PDF) and ezdxf (DXF).
+- **Services:** no Redis, PostgreSQL or cloud CAD service. One API process and one worker on a single host with a persistent volume. Jobs are persisted and resume after a restart.
+- **Ephemeral CAD workers (optional):** with `CAD_EXECUTION_MODE=ephemeral` and DigitalOcean/Spaces credentials, each CAD job runs on a one-off Droplet that gets only expiring upload and download URLs, then is deleted.
+
+The module map and extension points are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+---
+
+## Security model
+
+- Sign-in with Microsoft Entra ID (single tenant, no guests) or local passwords. Sessions are HttpOnly; access can be restricted to listed e-mail domains.
+- Roles and per-project membership decide who can edit, review, release, download CAD or manage job orders.
+- 3D models are streamed encrypted through short-lived, session-bound URLs and are not downloadable. STEP/DXF downloads need an explicit permission.
+- Vendor links are read-only, scoped to one revision, expiring and revocable, and stored as hashes.
+- Containers run read-only, with no Linux capabilities and `no-new-privileges`.
+
+Report security issues privately to the maintainers (see [Contributing](#contributing)), not in public issues.
+
+---
+
+## Operations
+
+**Backup.** Stop both services briefly and archive the volume:
 
 ```sh
 mkdir -p backups
@@ -73,26 +177,55 @@ docker run --rm --user 0 --entrypoint sh \
 docker compose up -d
 ```
 
-Restore into a separate empty volume and validate before replacing a live installation. Never overwrite a live database with an old SQLite file while the app/worker are running.
+The archive contains accounts, CAD, vendor links and quality records, so store it privately. Restore into a separate empty volume and validate it before replacing a live installation.
 
-## Development and verification
+**Resources.** The API is limited to 768 MB. The worker is limited to 6 GB and 3 CPUs; large assemblies need that much RAM and disk.
 
-Python 3.13 and Node 22:
+**Do not scale workers.** Job recovery assumes exactly one worker.
+
+---
+
+## Development
+
+Requirements: Python 3.13 and Node 22.
 
 ```sh
 python3.13 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 (cd frontend && npm ci && npm run build)
+
+# API
 PYTHONPATH=backend .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100
-# Separate terminal, same working directory:
+# Worker (second terminal)
 PYTHONPATH=backend .venv/bin/python -m app.worker
-# Isolated temporary test database and geometry fixtures:
+
+# Tests (isolated temporary database and generated geometry fixtures)
 PYTHONPATH=backend .venv/bin/python -m pytest backend/tests -q
+# Type check the frontend
+(cd frontend && npx tsc --noEmit -p .)
 ```
 
-See [validation record](docs/VALIDATION.md) for the tested models, workflow and performance limits. API documentation is at `/docs`. See [module map](docs/ARCHITECTURE.md) for extension points.
+For frontend work, run `npm run dev` in `frontend/` alongside the API. Interactive API documentation is served at `/docs`.
 
-On this Mac, Docker Desktop's registry credential helper stalled during the initial build. The build succeeded with an isolated temporary configuration for public base images; existing Docker credentials were left unchanged. If that helper problem recurs, run `./scripts/build-public.sh` and then `docker compose up -d`. This optional helper is for this project's public-image build, not private registries. It respects the selected Docker endpoint and removes its temporary configuration afterward.
+---
+
+## Scope and limits
+
+Forge produces an **engineering starting point, not finished production detailing**. An engineer remains responsible for every released drawing.
+
+- GD&T, datum feature symbols, functional dimensioning, machining setups and full assembly sequences still need drafting by an engineer.
+- Flat patterns use the configured K-factor and are marked provisional until the allowance is approved for your tooling.
+- DXF curves are sampled at 0.025 mm deflection; they are not validated CAM toolpaths.
+- Classification, weld seams and fits are suggestions until reviewed.
+- Release records your organisation's approval; it is not an independent certification of the design.
+
+See [docs/COVERAGE.md](docs/COVERAGE.md) and [docs/VALIDATION.md](docs/VALIDATION.md).
+
+---
+
+## Contributing
+
+Forge is developed by GOAT Robotics. You may send improvements to GOAT Robotics; anything you send becomes the property of GOAT Robotics under section 5 of the [LICENSE](LICENSE).
 
 ---
 

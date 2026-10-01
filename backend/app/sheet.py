@@ -7,7 +7,7 @@ One drafting model in paper millimetres (origin bottom-left, y up) is rendered t
 
 Sheet template, line weights (0.25 visible / 0.18 thin), arrowheads (3.3 x 1.0 filled), ordinate style
 (baseline 3 mm off the part, origin circle, 90-degree rotated values, jogged when crowded) and the title
-block are taken from the GOAT SolidWorks A4 template (ES-MC-001 / ES-MC-002).
+block are taken from the GOAT SolidWorks A4 template.
 
 Machined parts: third-angle views chosen from where the holes enter, ordinate dimensions for hole centres and
 step edges, grouped hole callouts (count, diameter, depth/THRU, counterbore/countersink, thread), chamfer and
