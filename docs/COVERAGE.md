@@ -16,7 +16,7 @@
 
 Geometry validity, minimum hole diameter, sheet hole/thickness ratio, external hole edge-web/thickness ratio, drilling depth/diameter ratio, bend radius/thickness ratio, supported flat development, required specifications and recorded verification notes. Default workshop thresholds are configurable starting values, not universal international design limits. Rule snapshots belong to revisions; changing project defaults affects later uploads.
 
-Manual verification records cover strength/load cases/fatigue/stability; functional dimensions/datums/GD&T; thread specifications; process/tool access/stock/fixtures; assembly/fasteners/torque; coating thickness/masking/fit effects. Writing a note is an attestation by the engineer, not independent numerical validation by the program. In particular, the OMNI project's **1.5-ton statement does not determine wheel load distribution, structural factors, material grades, fatigue life or fit tolerances**.
+Manual verification records cover strength/load cases/fatigue/stability; functional dimensions/datums/GD&T; thread specifications; process/tool access/stock/fixtures; assembly/fasteners/torque; coating thickness/masking/fit effects. Writing a note is an attestation by the engineer, not independent numerical validation by the program. In particular, a capacity stated in a project or part name (for example a payload rating) does not validate any part, weld or fastener; the engineering calculation and test evidence must be recorded separately.
 
 ## Drawing conventions
 

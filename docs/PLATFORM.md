@@ -2,24 +2,24 @@
 
 ## Sign-in (Microsoft Entra ID)
 
-1. `az login` as a tenant admin, then `scripts/entra-register.sh --url https://forge.goat-robotics.com`.
+1. `az login` as a tenant admin, then `scripts/entra-register.sh --url https://forge.example.com`.
    The script creates a single-tenant app registration (redirect `…/api/auth/entra/callback`), a client secret, and writes
    `AUTH_MICROSOFT_ENTRA_ID_ID/_SECRET/_ISSUER` and `FORGE_SECRET` into `.env`.
-2. Set `PUBLIC_URL`, `COOKIE_SECURE=true`, `ADMIN_EMAILS=naveen@goat-robotics.com` and restart.
+2. Set `PUBLIC_URL`, `COOKIE_SECURE=true`, `ADMIN_EMAILS=admin@example.com`, `ALLOWED_EMAIL_DOMAINS=example.com` and restart.
 
-For the local Mac, run `scripts/entra-register.sh --url https://naveen.local:8443` and set
-`PUBLIC_URL=http://localhost:8100`, `PUBLIC_URLS=https://naveen.local:8443`,
-`COOKIE_SECURE=false`, and `ADMIN_EMAILS=naveen@goat-robotics.com` in the ignored `.env`.
+For a local machine with an HTTPS name, run `scripts/entra-register.sh --url https://forge.local:8443` and set
+`PUBLIC_URL=http://localhost:8100`, `PUBLIC_URLS=https://forge.local:8443`, `LOCAL_TLS_NAME=forge.local`,
+`COOKIE_SECURE=false`, and `ADMIN_EMAILS=admin@example.com` in the ignored `.env`.
 Create the local certificate with
-`mkdir -p local-certs && mkcert -cert-file local-certs/naveen.local.pem -key-file local-certs/naveen.local-key.pem naveen.local`,
+`mkdir -p local-certs && mkcert -cert-file local-certs/forge.local.pem -key-file local-certs/forge.local-key.pem forge.local`,
 then start with `docker compose --profile local-domain up -d --build`.
 Forge uses Secure sign-in cookies on the HTTPS address while keeping HTTP localhost usable.
-The local domain uses port 8443 because another service already occupies port 443.
+The local profile listens on port 8443.
 
 Rules enforced by the server (authorization-code flow with PKCE, ID token signature/issuer/audience/nonce checked):
 
 - only tokens from the configured tenant; guest (B2B) accounts are refused;
-- only e-mail domains in `ALLOWED_EMAIL_DOMAINS` (default `goat-robotics.com`) — checked at sign-in **and** on every request;
+- only e-mail domains in `ALLOWED_EMAIL_DOMAINS` (empty allows any account of the configured tenant) — checked at sign-in **and** on every request;
 - identity is the Entra object id; an e-mail only links a pre-created account that has no object id yet;
 - `ADMIN_EMAILS` become administrators; otherwise the first person to sign in does; others get `DEFAULT_ROLE` (viewer);
 - password sign-in is disabled once Entra is configured (`FORGE_ALLOW_LOCAL_LOGIN=true` for break-glass only).

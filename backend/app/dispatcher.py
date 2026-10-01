@@ -58,7 +58,7 @@ def _cloud_init(config):
   'apt-get update -qq',
   'apt-get install -y -qq docker.io ca-certificates',
   'systemctl enable --now docker',
-  'printf %s '+shlex.quote(os.environ['GHCR_TOKEN'])+' | docker login ghcr.io -u '+shlex.quote(os.getenv('GHCR_USERNAME','naveenrobo'))+' --password-stdin',
+  'printf %s '+shlex.quote(os.environ['GHCR_TOKEN'])+' | docker login ghcr.io -u '+shlex.quote(os.getenv('GHCR_USERNAME',''))+' --password-stdin',
   'docker pull '+shlex.quote(image),
   'docker run --rm --read-only --tmpfs /tmp:rw,size=4g --memory=7g --cpus=4 -e FORGE_EPHEMERAL_CONFIG='+shlex.quote(encoded)+' '+shlex.quote(image)+' python -m app.ephemeral_worker',
   'shutdown -h now'])

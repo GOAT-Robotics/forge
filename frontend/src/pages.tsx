@@ -474,7 +474,7 @@ export function AdminPage({ ctx, me }: { ctx: Ctx; me: Any }) {
   const patch = (u: Any, body: Any) => ctx.action(async () => { await api('/users/' + u.id, 'PATCH', body); load(); });
   return (
     <div className="v-page">
-      <PageHeader title="Administration" description="People and roles. Sign-in is Microsoft Entra ID for goat-robotics.com accounts; new people get the default role on first sign-in." actions={<button className="primary" onClick={() => setAdding(true)}><Plus size={15} />Add person</button>} />
+      <PageHeader title="Administration" description="People and roles. Sign-in is Microsoft Entra ID for your organisation's accounts; new people get the default role on first sign-in." actions={<button className="primary" onClick={() => setAdding(true)}><Plus size={15} />Add person</button>} />
       <div className="v-body">
         <section className="v-card flush">
           <header className="pad"><h3><Users size={15} />People</h3><small>{users.length}</small></header>
@@ -506,10 +506,10 @@ export function AdminPage({ ctx, me }: { ctx: Ctx; me: Any }) {
         )}
       </div>
       {adding && (
-        <Modal title="Add a person" subtitle="They sign in with their goat-robotics.com Microsoft account; this sets their role in advance." close={() => setAdding(false)}>
+        <Modal title="Add a person" subtitle="They sign in with their organisation Microsoft account; this sets their role in advance." close={() => setAdding(false)}>
           <form onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget)); ctx.action(async () => { await api('/users', 'POST', f); setAdding(false); load(); ctx.notify('Person added'); }); }}>
             <label>Name<input name="name" required /></label>
-            <label>E-mail<input name="email" type="email" required placeholder="name@goat-robotics.com" /></label>
+            <label>E-mail<input name="email" type="email" required placeholder="name@company.com" /></label>
             <label>Role<Select name="role" defaultValue="viewer" options={(roles?.roles || []).map((r: Any) => ({ value: r.id, label: r.label }))} /></label>
             <div className="modal-actions"><button type="button" onClick={() => setAdding(false)}>Cancel</button><button className="primary" disabled={ctx.busy}>Add</button></div>
           </form>
@@ -562,8 +562,8 @@ export function ProjectSettingsDialog({ project, workspace, config, close, onSav
         <div className="v-settings-body">
           {section === 'general' && <>
             <div className="form-grid">
-              <label>Project name<input required autoFocus value={g.name} onChange={e => setG({ ...g, name: e.target.value })} placeholder="e.g. OMNI 1.5T — Chassis" /></label>
-              <label>Project code<input value={g.code} maxLength={24} onChange={e => setG({ ...g, code: e.target.value.toUpperCase() })} placeholder="e.g. OMNI" /><small>Prefixes job-order numbers (OMNI-JO-001)</small></label>
+              <label>Project name<input required autoFocus value={g.name} onChange={e => setG({ ...g, name: e.target.value })} placeholder="e.g. Delivery robot — Chassis" /></label>
+              <label>Project code<input value={g.code} maxLength={24} onChange={e => setG({ ...g, code: e.target.value.toUpperCase() })} placeholder="e.g. DR1" /><small>Prefixes job-order numbers (DR1-JO-001)</small></label>
             </div>
             <label>Description<textarea value={g.description} onChange={e => setG({ ...g, description: e.target.value })} placeholder="Product, customer, or manufacturing context" /></label>
           </>}
