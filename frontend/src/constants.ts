@@ -9,9 +9,9 @@ export const categories: Record<string, string> = {
 
 /** Default body colour in the 3D viewer per manufacturing category (uncoated appearance). */
 export const categoryColors: Record<string, string> = {
-  machining: '#aeb4bc',
-  sheet_metal: '#9db0bd',
-  purchased: '#7c838c',
+  machining: '#8ea8c3',
+  sheet_metal: '#c9a678',
+  purchased: '#5d646d',
   other: '#b3ada2',
 };
 

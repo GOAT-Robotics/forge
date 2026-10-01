@@ -7,11 +7,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel,Field,ConfigDict
 from . import db,storage
 from .security import user,editor,revision_access,password_hash,verify_password,token_hash
+from .access import require,can,perms_for,project_of_revision
+from . import entra
 from .rules import evaluate,MANUAL_CHECKS,STANDARDS
 
 @asynccontextmanager
 async def lifespan(app):db.init();yield
-app=FastAPI(title='Forge Manufacturing',version='0.1.0',lifespan=lifespan)
+app=FastAPI(title='Forge Manufacturing',version='0.2.0',lifespan=lifespan)
+app.include_router(entra.router)
 WRITE_LOCK=asyncio.Lock()
 @app.middleware('http')
 async def headers(req,call_next):
@@ -20,17 +23,26 @@ async def headers(req,call_next):
  else:res=await call_next(req)
  res.headers['X-Content-Type-Options']='nosniff';res.headers['Referrer-Policy']='no-referrer';res.headers['X-Frame-Options']='SAMEORIGIN';res.headers['Cache-Control']='no-store';return res
 class Auth(BaseModel):email:str;password:str;name:str=''
-class Project(BaseModel):name:str=Field(min_length=1,max_length=160);description:str=''
+class Project(BaseModel):
+ model_config=ConfigDict(extra='forbid')
+ name:str=Field(min_length=1,max_length=160);description:str=Field(default='',max_length=2000);code:str=Field(default='',max_length=24)
+ settings:dict|None=None;rules:dict|None=None;members:list[dict]=Field(default_factory=list,max_length=200)
 class Spec(BaseModel):
  model_config=ConfigDict(extra='forbid')
  material:str='';stock:str='';finish:str='';paint:str='';coating_color:str='';coating_hex:str='';coating_thickness:str='';masking:str='';process:str='';heat_treatment:str='';hardness:str='';general_tolerance:str='';roughness:str='';datums:str='';edge_treatment:str='';marking:str='';packaging:str='';notes:str='';k_factor:float=Field(default=.4,gt=0,lt=1);k_factor_approved:bool=False;feature_specs:dict={};rule_waivers:dict={};manual_checks:dict={};operations:list=[]
 class PartEdit(BaseModel):spec:Spec;category:str;reviewed:bool=False
 class Comment(BaseModel):body:str=Field(min_length=1,max_length=5000);part_id:str|None=None;feature:str=''
-class Share(BaseModel):label:str=Field(min_length=1,max_length=100);days:int=Field(default=14,ge=1,le=90)
+class Share(BaseModel):label:str=Field(min_length=1,max_length=100);days:int=Field(default=14,ge=1,le=90);allow_cad:bool=False
 class FitEdit(BaseModel):data:dict;approved:bool=False
 class Inspection(BaseModel):
  part_id:str;feature:str;serial:str=Field(min_length=1,max_length=100);nominal:float;lower_limit:float;upper_limit:float;measured:float;unit:str='mm';instrument:str=Field(min_length=1);notes:str=''
 
+def cad_download(access,rid):
+ """STEP / DXF leave Forge only for users with the download permission (or vendor links created with it)."""
+ if access['role']=='vendor':
+  if not access.get('allow_cad'):raise HTTPException(403,'This vendor link does not include CAD downloads')
+ else:require(access,'cad.download',project_of_revision(rid))
+ with db.connect() as c:db.audit(c,access['name'],'cad.downloaded',{},rid)
 def get_rev(rid):
  r=db.row('SELECT * FROM revisions WHERE id=?',(rid,))
  if not r:raise HTTPException(404,'Revision not found')
@@ -52,33 +64,41 @@ def invalidate(rid,pid=None):
  d=db.revdir(rid)
  for file in ['manufacturing-pack.zip','assembly.pdf','assembly.dxf']:(d/file).unlink(missing_ok=True)
  if pid:
-  for file in ['drawing.pdf','drawing.dxf','flat.dxf','flat.glb','flat.json']:(d/'parts'/pid/file).unlink(missing_ok=True)
+  (d/'parts'/pid/'.drawing-invalid').write_text('Part specification changed; regenerate documents')
+  with db.connect() as c:c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?",(pid,))
+  for file in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.glb','flat.json','drawing-scene.json']:(d/'parts'/pid/file).unlink(missing_ok=True)
 
 def enqueue(c,rid,kind,payload={}):
  id=db.uid();c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(id,rid,kind,'queued',db.now(),'',json.dumps(payload)));return id
 @app.get('/api/health')
-def health():return {'status':'ok','version':'0.1.0'}
+def health():return {'status':'ok','version':'0.2.0'}
 @app.get('/api/auth/status')
 def auth_status(request:Request):
  configured=bool(db.row('SELECT id FROM users LIMIT 1'))
  try:u=user(request)
  except HTTPException:u=None
- return {'configured':configured,'user':u}
+ if u:u['permissions']=sorted(perms_for(u))
+ return {'configured':configured,'user':u,'providers':entra.providers()}
 @app.post('/api/auth/setup')
 def setup(a:Auth):
+ if not entra.local_login_allowed():raise HTTPException(403,'Sign in with Microsoft; the first organisation account becomes administrator')
+ if not entra.domain_ok(a.email):raise HTTPException(403,'Use an organisation e-mail address ('+', '.join(entra.allowed_domains())+')')
  if len(a.password)<12 or '@' not in a.email or not a.name.strip():raise HTTPException(422,'Use a name, valid email and password of at least 12 characters')
  with db.connect() as c:
   c.execute('BEGIN IMMEDIATE')
   if c.execute('SELECT id FROM users LIMIT 1').fetchone():raise HTTPException(409,'Workspace already configured')
-  c.execute('INSERT INTO users VALUES(?,?,?,?,?,?)',(db.uid(),a.email.lower(),a.name,password_hash(a.password),'owner',db.now()))
+  c.execute('INSERT INTO users(id,email,name,password,role,created) VALUES(?,?,?,?,?,?)',(db.uid(),a.email.lower(),a.name,password_hash(a.password),'admin',db.now()))
  return {'ok':True}
 LOGIN_ATTEMPTS={}
 @app.post('/api/auth/login')
 def login(a:Auth,request:Request):
+ if not entra.local_login_allowed():raise HTTPException(403,'Password sign-in is disabled; use Sign in with Microsoft')
+ if not entra.domain_ok(a.email):raise HTTPException(403,'Only organisation accounts can use Forge')
  key=(request.client.host if request.client else '',a.email.lower());attempts=[t for t in LOGIN_ATTEMPTS.get(key,[]) if t>time.time()-900]
  if len(attempts)>=10:raise HTTPException(429,'Too many attempts. Try again in 15 minutes.')
  LOGIN_ATTEMPTS[key]=attempts+[time.time()];u=db.row('SELECT * FROM users WHERE email=?',(a.email.lower(),))
  if not u or not verify_password(a.password,u['password']):raise HTTPException(401,'Incorrect email or password')
+ if not u.get('active',1):raise HTTPException(403,'Your Forge account is disabled; ask an administrator')
  LOGIN_ATTEMPTS.pop(key,None);token=secrets.token_urlsafe(40);expires=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=12)).isoformat()
  with db.connect() as c:c.execute('INSERT INTO sessions VALUES(?,?,?)',(token_hash(token),u['id'],expires))
  r=JSONResponse({'ok':True});r.set_cookie('forge_session',token,httponly=True,samesite='strict',secure=os.getenv('COOKIE_SECURE','false')=='true',max_age=43200);return r
@@ -87,30 +107,18 @@ def logout(request:Request):
  user(request)
  with db.connect() as c:c.execute('DELETE FROM sessions WHERE hash=?',(token_hash(request.cookies.get('forge_session','')),))
  r=JSONResponse({'ok':True});r.delete_cookie('forge_session');return r
-@app.get('/api/users')
-def users(request:Request):
- u=user(request)
- if u['role']!='owner':raise HTTPException(403,'Owner access required')
- return db.rows('SELECT id,email,name,role,created FROM users')
-class NewUser(Auth):role:str='engineer'
-@app.post('/api/users')
-def create_user(a:NewUser,request:Request):
- if user(request)['role']!='owner':raise HTTPException(403,'Owner access required')
- if a.role not in ('engineer','qc','viewer') or len(a.password)<12 or '@' not in a.email:raise HTTPException(422,'Invalid role, email or password')
- if db.row('SELECT id FROM users WHERE email=?',(a.email.lower(),)):raise HTTPException(409,'Email already exists')
- with db.connect() as c:c.execute('INSERT INTO users VALUES(?,?,?,?,?,?)',(db.uid(),a.email.lower(),a.name,password_hash(a.password),a.role,db.now()))
- return {'ok':True}
 @app.get('/api/config')
 def config():return {'standards':STANDARDS,'manual_checks':MANUAL_CHECKS,'default_rules':db.DEFAULT_RULES,'formats':['.step','.stp','.brep','.brp','.igs','.iges'],'capabilities':{'native_proprietary_cad':False,'unfolding':'Constant-thickness planar/cylindrical developable sheets; unsupported topology is blocked','rules':'Configurable workshop checks plus required engineering checks','fps':'Target 60 fps; actual FPS reported for the current device and assembly'}}
 @app.get('/api/settings')
-def get_settings(request:Request):user(request);return db.settings()
+def get_settings(request:Request):user(request);return db.settings()  # workspace defaults for new projects
 class SettingsEdit(BaseModel):
  model_config=ConfigDict(extra='forbid')
  sheet_prefixes:list[str]=[];machining_prefixes:list[str]=[];purchased_prefixes:list[str]=[];prefix_strict:bool=True;hide_purchased_by_default:bool=True;carry_over_specs:bool=True
+ drawing:dict[str,str]={}
 @app.put('/api/settings')
 def put_settings(a:SettingsEdit,request:Request):
  """Workspace-wide naming convention and import behaviour. Applies to new uploads and to Re-run classification."""
- u=editor(request);values=a.model_dump()
+ u=editor(request,'users.manage');values=a.model_dump()
  for key in ('sheet_prefixes','machining_prefixes','purchased_prefixes'):
   values[key]=[str(x).strip() for x in values[key] if str(x).strip()][:50]
   if any(len(x)>40 for x in values[key]):raise HTTPException(422,'Prefixes must be at most 40 characters')
@@ -119,32 +127,45 @@ def put_settings(a:SettingsEdit,request:Request):
   for x in values[key]:
    if x.lower() in seen:raise HTTPException(422,f'Prefix "{x}" is listed in more than one category')
    seen.add(x.lower())
+ values['drawing']={k:str(v).strip()[:80] for k,v in (values.get('drawing') or {}).items() if k in db.DEFAULT_DRAWING}
  with db.connect() as c:db.save_settings(c,values);db.audit(c,u['name'],'settings.updated',values)
  return db.settings()
 @app.get('/api/projects')
 def projects(request:Request):
- user(request);return db.rows('SELECT p.*, (SELECT COUNT(*) FROM revisions r WHERE r.project_id=p.id) AS revision_count FROM projects p ORDER BY p.created DESC')
+ u=user(request)
+ rows=db.rows("SELECT p.*, (SELECT COUNT(*) FROM revisions r WHERE r.project_id=p.id) AS revision_count, (SELECT number FROM revisions r WHERE r.project_id=p.id AND r.state='active') AS active_revision, (SELECT status FROM revisions r WHERE r.project_id=p.id AND r.state='active') AS active_status, (SELECT COUNT(*) FROM job_orders j WHERE j.project_id=p.id AND j.status IN ('open','in_progress','on_hold')) AS open_job_orders FROM projects p WHERE archived=0 ORDER BY p.created DESC")
+ for r in rows:r['settings']=json.loads(r.get('settings') or '{}');r['rules']=json.loads(r['rules']);r['permissions']=sorted(perms_for(u,r['id']))
+ return rows
 @app.post('/api/projects')
 def create_project(p:Project,request:Request):
- u=editor(request);id=db.uid()
- with db.connect() as c:c.execute('INSERT INTO projects VALUES(?,?,?,?,?)',(id,p.name,p.description,db.now(),json.dumps(db.DEFAULT_RULES)));db.audit(c,u['name'],'project.created',p.model_dump())
- return db.row('SELECT * FROM projects WHERE id=?',(id,))
+ """Project creation collects its conventions up front: part-number prefixes, title block, drawing
+ conventions, rule library and default process / drawing templates per category."""
+ from .workspace import clean_project_settings,clean_rules,clean_members
+ u=editor(request,'project.create');id=db.uid()
+ settings=clean_project_settings(p.settings or {});rules=clean_rules(p.rules) if p.rules else dict(db.DEFAULT_RULES);members=clean_members(p.members)
+ with db.connect() as c:
+  c.execute('INSERT INTO projects(id,name,description,created,rules,code,settings,created_by) VALUES(?,?,?,?,?,?,?,?)',(id,p.name.strip(),p.description,db.now(),json.dumps(rules),p.code.strip().upper(),json.dumps(settings),u['name']))
+  for m in members:c.execute('INSERT OR REPLACE INTO project_members VALUES(?,?,?,?)',(id,m['user_id'],m['role'],db.now()))
+  db.audit(c,u['name'],'project.created',{'name':p.name,'code':p.code,'settings':settings,'members':members})
+ return project(id,request)
 @app.get('/api/projects/{pid}')
 def project(pid:str,request:Request):
- user(request);p=db.row('SELECT * FROM projects WHERE id=?',(pid,))
+ u=user(request);p=db.row('SELECT * FROM projects WHERE id=?',(pid,))
  if not p:raise HTTPException(404,'Project not found')
- p['rules']=json.loads(p['rules']);p['revisions']=db.rows('SELECT * FROM revisions WHERE project_id=? ORDER BY number DESC',(pid,));return p
+ p['rules']=json.loads(p['rules']);p['settings']=json.loads(p.get('settings') or '{}');p['effective_settings']=db.project_settings(pid);p['permissions']=sorted(perms_for(u,pid))
+ p['revisions']=db.rows('SELECT * FROM revisions WHERE project_id=? ORDER BY number DESC',(pid,));return p
 @app.put('/api/projects/{pid}/rules')
 async def update_rules(pid:str,request:Request):
- u=editor(request);body=await request.json()
+ u=editor(request,'project.settings',pid);body=await request.json()
  if not db.row('SELECT id FROM projects WHERE id=?',(pid,)):raise HTTPException(404,'Project not found')
- if set(body)!=set(db.DEFAULT_RULES) or any(not isinstance(v,(int,float)) or not math.isfinite(v) or v<=0 for v in body.values()) or not 0<body['k_factor']<1:raise HTTPException(422,'Provide all positive numeric rule values, with K between 0 and 1')
+ from .workspace import clean_rules
+ body=clean_rules(body)
  # Rule changes are versioned by the next upload; existing revision snapshots do not change.
  with db.connect() as c:c.execute('UPDATE projects SET rules=? WHERE id=?',(json.dumps(body),pid));db.audit(c,u['name'],'project.rules.updated',body)
  return {'ok':True,'message':'Applies to future revisions'}
 @app.post('/api/projects/{pid}/revisions')
 async def upload(pid:str,request:Request,file:UploadFile=File(...),notes:str=Form('')):
- u=editor(request);p=db.row('SELECT * FROM projects WHERE id=?',(pid,))
+ u=editor(request,'revision.upload',pid);p=db.row('SELECT * FROM projects WHERE id=?',(pid,))
  if not p:raise HTTPException(404,'Project not found')
  filename=Path(file.filename or '').name;ext=Path(filename).suffix.lower()
  if ext not in ('.step','.stp','.brep','.brp','.igs','.iges'):raise HTTPException(422,'Export CAD as STEP, BREP or IGES; native proprietary part files are not supported')
@@ -174,7 +195,31 @@ def revision(rid:str,request:Request):
  rules=r['manifest'].get('rules_snapshot',db.DEFAULT_RULES)
  for p in db.rows('SELECT * FROM parts WHERE revision_id=? ORDER BY name',(rid,)):
   p=deserialize(p);g=p['geometry'];p['findings']=evaluate(g,p['spec'],rules);p['assets']=[x.name for x in (db.revdir(rid)/'parts'/p['id']).glob('*') if x.suffix in ('.pdf','.dxf','.glb','.json','.step','.png')];r['parts'].append(p)
- r['assets']=[f.name for f in db.revdir(rid).glob('*') if f.suffix in ('.pdf','.dxf','.zip')];r['jobs']=db.rows('SELECT * FROM jobs WHERE revision_id=? ORDER BY created DESC LIMIT 10',(rid,));r['access']=access['role'];return r
+ for p in r['parts']:p['drawing_options']=json.loads(p.get('drawing_options') or '{}');p['assets']=[a for a in p['assets'] if a not in ('model.glb','flat.glb','shape.brep')]
+ attach_assembly_paths(rid,r['parts'])
+ r['assets']=[f.name for f in db.revdir(rid).glob('*') if f.suffix in ('.pdf','.dxf','.zip')];r['jobs']=db.rows('SELECT * FROM jobs WHERE revision_id=? ORDER BY created DESC LIMIT 10',(rid,));r['access']=access['role']
+ r['permissions']=sorted(perms_for(access,r['project_id'])) if access['role']!='vendor' else (['cad.download'] if access.get('allow_cad') else [])
+ r['joints']=[{**j,'data':json.loads(j['data'])} for j in db.rows('SELECT * FROM joints WHERE revision_id=? ORDER BY created',(rid,))]
+ r['job_orders']=db.rows('SELECT id,number,title,status,quantity,due FROM job_orders WHERE revision_id=? ORDER BY number',(rid,)) if access['role']!='vendor' else []
+ return r
+def attach_assembly_paths(rid,parts):
+ """STEP assembly structure for the navigator tree: each part's sub-assembly path (first occurrence),
+ without the part itself and without the top-level assembly every part shares."""
+ f=db.revdir(rid)/'instances.json'
+ if not f.exists():
+  try:storage.restore(rid,'instances.json',f)
+  except Exception:pass
+ try:instances=json.loads(f.read_text()) if f.exists() else {}
+ except Exception:instances={}
+ paths={}
+ for p in parts:
+  inst=instances.get(p['id']) or []
+  segs=[x.strip() for x in str(inst[0].get('path','')).split(' / ')][:-1] if inst else []
+  paths[p['id']]=segs
+  p['assemblies']=len({' / '.join([x.strip() for x in str(i.get('path','')).split(' / ')][:-1]) for i in inst}) if inst else 0
+ roots={tuple(v[:1]) for v in paths.values() if v}
+ strip=1 if len(roots)==1 and all(v for v in paths.values()) else 0
+ for p in parts:p['assembly_path']=paths[p['id']][strip:]
 def validate_spec(p,spec):
  """Shared checks for single and group specification edits; returns the normalised operations list."""
  for key,value in spec.rule_waivers.items():
@@ -198,11 +243,135 @@ def validate_spec(p,spec):
 @app.patch('/api/parts/{pid}')
 def update_part(pid:str,a:PartEdit,request:Request):
  p=get_part(pid);u=revision_access(request,p['revision_id'],True);mutable(p['revision_id'])
+ if a.reviewed and not p['reviewed']:require(u,'design.review',project_of_revision(p['revision_id']))
  if a.category not in ('machining','sheet_metal','purchased','other'):raise HTTPException(422,'Invalid category')
  a.spec.operations=validate_spec(p,a.spec)
  g=p['geometry'];g['category']=a.category;g['classification_confidence']='engineer classified'
- with db.connect() as c:c.execute('UPDATE parts SET category=?,spec=?,reviewed=?,geometry=? WHERE id=?',(a.category,a.spec.model_dump_json(),int(a.reviewed),json.dumps(g),pid));db.audit(c,u['name'],'part.specification.updated',{'part':pid,'before':p['spec'],'after':a.spec.model_dump()},p['revision_id'])
+ with db.connect() as c:c.execute('UPDATE parts SET category=?,spec=?,reviewed=?,geometry=?,reviewed_by=?,reviewed_at=? WHERE id=?',(a.category,a.spec.model_dump_json(),int(a.reviewed),json.dumps(g),u['name'] if a.reviewed else '',db.now() if a.reviewed else '',pid));db.audit(c,u['name'],'part.specification.updated',{'part':pid,'before':p['spec'],'after':a.spec.model_dump()},p['revision_id'])
  invalidate(p['revision_id'],pid);return {'ok':True}
+class DrawingEdit(BaseModel):
+ model_config=ConfigDict(extra='forbid')
+ scene_hash:str;version:int=Field(ge=0);objects:dict=Field(default_factory=dict,max_length=1000);notes:list[dict]=Field(default_factory=list,max_length=100)
+ pictorials:list[dict]|None=Field(default=None,max_length=8)
+ extra_pages:list[dict]|None=Field(default=None,max_length=10)
+ views:list[dict]|None=Field(default=None,max_length=24)
+ details:list[dict]|None=Field(default=None,max_length=12)
+ page_order:list[int]|None=Field(default=None,max_length=40)
+
+def drawing_state(p):
+ folder=db.revdir(p['revision_id'])/'parts'/p['id'];path=folder/'drawing-scene.json'
+ if (folder/'.drawing-invalid').exists():raise HTTPException(409,'Part specification changed; regenerate documents')
+ if not path.exists():storage.restore(p['revision_id'],f"parts/{p['id']}/drawing-scene.json",path)
+ if not path.exists():raise HTTPException(409,'Generate documents once to create the editable drawing')
+ from .drawing_scene import unique_group_ids
+ scene=unique_group_ids(json.loads(path.read_text()));r=get_rev(p['revision_id'])
+ if scene['source_hash']!=r['sha256']:raise HTTPException(409,'Drawing source has changed; regenerate documents')
+ saved=db.row('SELECT * FROM drawing_edits WHERE part_id=?',(p['id'],))
+ edits=json.loads(saved['data']) if saved and saved['source_hash']==scene['source_hash'] else {'objects':{},'notes':[]}
+ # sheets added in the editor are part of the drawing: extend the generated scene with them
+ from .drawings import full_scene,validate_extra_pages
+ try:edits['extra_pages']=validate_extra_pages(edits.get('extra_pages') or [])
+ except ValueError:edits['extra_pages']=[]
+ if not edits['extra_pages']:edits.pop('extra_pages')
+ scene=full_scene(p,r,db.project_settings(r['project_id']),scene,edits)
+ # Page order and detail views survive only while they still fit the regenerated scene.
+ from .drawing_scene import validate_details,page_order
+ if edits.get('page_order') and page_order(scene,edits['page_order'])!=edits['page_order']:edits.pop('page_order')
+ try:edits['details']=validate_details(scene,edits.get('details') or [])
+ except ValueError:edits['details']=[]
+ # Views can disappear after regeneration (e.g. a removed pictorial): drop edits that no longer have a target.
+ ids={g['id'] for page in scene['pages'] for g in page['groups']}
+ edits['objects']={k:v for k,v in edits.get('objects',{}).items() if k in ids}
+ return folder,scene,edits,saved['version'] if saved else 0
+
+@app.get('/api/parts/{pid}/drawing')
+def editable_drawing(pid:str,request:Request):
+ p=get_part(pid);access=revision_access(request,p['revision_id']);r=get_rev(p['revision_id'])
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running")',(p['revision_id'],)):raise HTTPException(409,'Wait for drawing generation to complete')
+ _,scene,edits,version=drawing_state(p)
+ from . import pictorials
+ from .drawings import attach_view_lines
+ folder=db.revdir(p['revision_id'])/'parts'/p['id']
+ edits=attach_view_lines(p,folder,scene,edits)
+ pr=r['project_id'];editable=access['role']!='vendor' and can(access,'drawing.edit',pr) and r['state']=='active' and r['status']=='ready'
+ tmpl=db.rows("SELECT id,name,data FROM templates WHERE kind='drawing' AND archived=0 AND (project_id IS NULL OR project_id=?) ORDER BY name",(pr,))
+ return {'scene':scene,'edits':edits,'version':version,'name':p['name'],'editable':editable,
+  'can_review':access['role']!='vendor' and can(access,'drawing.review',pr) and r['status']=='ready','doc_reviewed':bool(p.get('doc_reviewed')),'doc_reviewed_by':p.get('doc_reviewed_by',''),'doc_reviewed_at':p.get('doc_reviewed_at',''),
+  'drawing_options':json.loads(p.get('drawing_options') or '{}'),'revision_id':p['revision_id'],'drawing_templates':[{**t,'data':json.loads(t['data'])} for t in tmpl],'category':p['category'],
+  'pictorials':pictorials.normalize(edits.get('pictorials')),'pictorial_presets':pictorials.presets()}
+
+@app.get('/api/parts/{pid}/drawing/blank-sheet')
+def blank_sheet(pid:str,size:str,request:Request):
+ """An empty template sheet to add in the editor (views and details can be moved onto it)."""
+ p=get_part(pid);revision_access(request,p['revision_id'],True,'drawing.edit');r=get_rev(p['revision_id'])
+ from .drawings import blank_page,EXTRA_SIZES
+ if size not in EXTRA_SIZES:raise HTTPException(422,'Sheet size must be A4, A3 or A2')
+ _,scene,_,_=drawing_state(p)
+ return blank_page(p,r,db.project_settings(r['project_id']),size,(scene.get('frame') or {}).get('scale') or 1.0)
+
+@app.get('/api/parts/{pid}/pictorial')
+def pictorial_view(pid:str,azimuth:float,elevation:float,request:Request):
+ """Visible edges of the part from any pictorial angle (model mm), for the editor's view palette."""
+ import math
+ p=get_part(pid);revision_access(request,p['revision_id'])
+ if not (math.isfinite(azimuth) and math.isfinite(elevation) and -360<=azimuth<=360 and -89.5<=elevation<=89.5):raise HTTPException(422,'Angle out of range')
+ folder=db.revdir(p['revision_id'])/'parts'/p['id'];path=folder/'drawing-scene.json'
+ if not path.exists():storage.restore(p['revision_id'],f"parts/{p['id']}/drawing-scene.json",path)
+ scene=json.loads(path.read_text()) if path.exists() else {}
+ if not (folder/'shape.brep').exists():raise HTTPException(409,'Part geometry unavailable')
+ from .drawings import pictorial_for
+ return pictorial_for(p,folder,scene,round(azimuth,3),round(elevation,3))
+
+@app.put('/api/parts/{pid}/drawing')
+def save_drawing(pid:str,a:DrawingEdit,request:Request):
+ from .drawing_scene import validate_edits,render_scene
+ p=get_part(pid);u=revision_access(request,p['revision_id'],True,'drawing.edit');mutable(p['revision_id'])
+ folder,scene,old,version=drawing_state(p)
+ if a.scene_hash!=scene['scene_hash'] or a.version!=version:raise HTTPException(409,'Drawing changed in another session. Reload before saving.')
+ from . import pictorials
+ from .drawings import full_scene,validate_extra_pages
+ try:
+  extra=validate_extra_pages(old.get('extra_pages') or [] if a.extra_pages is None else a.extra_pages)
+  base_n=len(scene['pages'])-len(old.get('extra_pages') or [])
+  r_=get_rev(p['revision_id'])
+  scene={**scene,'pages':scene['pages'][:base_n]}
+  scene=full_scene(p,r_,db.project_settings(r_['project_id']),scene,{'extra_pages':extra})
+  from .drawing_scene import validate_views
+  from .drawings import attach_view_lines
+  edits=validate_edits(scene,a.objects,a.notes)
+  placed=validate_views(scene,old.get('views',[]) if a.views is None else a.views)
+  if placed:edits['views']=placed
+  if extra:edits['extra_pages']=extra
+  views=old.get('pictorials') if a.pictorials is None else pictorials.normalize(a.pictorials)
+  from .drawing_scene import validate_details,page_order
+  details=validate_details(scene,old.get('details',[]) if a.details is None else a.details)
+  if details:edits['details']=details
+  order=old.get('page_order') if a.page_order is None else a.page_order
+  if order:
+   if page_order(scene,order)!=list(order):raise ValueError('Page order must list every sheet once')
+   if list(order)!=list(range(len(scene['pages']))):edits['page_order']=list(order)
+ except ValueError as e:raise HTTPException(422,str(e))
+ if views is not None:edits['pictorials']=views
+ # Pictorial view changes need new hidden-line projections: regenerate this part's drawing in the worker.
+ regenerate=(views or None)!=(old.get('pictorials') or None)
+ temporary=folder/'drawing-editor.tmp.pdf'
+ try:
+  render_scene(scene,attach_view_lines(p,folder,scene,edits),target=str(temporary))
+  with db.connect() as c:
+   c.execute('INSERT INTO drawing_edits(part_id,revision_id,source_hash,version,data,updated,author) VALUES(?,?,?,?,?,?,?) ON CONFLICT(part_id) DO UPDATE SET source_hash=excluded.source_hash,version=excluded.version,data=excluded.data,updated=excluded.updated,author=excluded.author',
+    (pid,p['revision_id'],scene['source_hash'],version+1,json.dumps(edits),db.now(),u['name']))
+   # Arranging the sheets reopens the document review (the design review stays).
+   c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?",(pid,))
+   db.audit(c,u['name'],'drawing.edited',{'part':pid,'before':old,'after':edits,'version':version+1},p['revision_id'])
+   temporary.replace(folder/'drawing.pdf')
+   if regenerate:enqueue(c,p['revision_id'],'documents',{'part_id':pid});db.audit(c,u['name'],'documents.requested',{'part_id':pid,'reason':'pictorial views changed'},p['revision_id'])
+ finally:temporary.unlink(missing_ok=True)
+ # The per-part PDF is current; combined packs must be rebuilt with these edits.
+ revision_folder=db.revdir(p['revision_id']);(revision_folder/'.documents-stale').write_text('Drawing presentation changed')
+ for name in ('manufacturing-pack.zip','machining-drawings.pdf','sheet-metal-drawings.pdf'):(revision_folder/name).unlink(missing_ok=True)
+ storage.upload(p['revision_id'],folder/'drawing.pdf',f'parts/{pid}/drawing.pdf')
+ return {'ok':True,'version':version+1,'edits':edits,'regenerating':regenerate}
+
 class PartFlags(BaseModel):
  model_config=ConfigDict(extra='forbid')
  excluded:bool|None=None;exclusion_reason:str=Field(default='',max_length=300);hidden:bool|None=None
@@ -233,6 +402,7 @@ def group_spec(rid:str,a:GroupSpec,request:Request):
  if set(a.spec)-GROUP_KEYS:raise HTTPException(422,'Unsupported group field: '+', '.join(sorted(set(a.spec)-GROUP_KEYS)))
  if a.category is not None and a.category not in ('machining','sheet_metal','purchased','other'):raise HTTPException(422,'Invalid category')
  if not a.spec and a.category is None and a.reviewed is None:raise HTTPException(422,'Nothing to change')
+ if a.reviewed:require(u,'design.review',project_of_revision(rid))
  ids=list(dict.fromkeys(a.ids));n=0
  with db.connect() as c:
   for pid in ids:
@@ -242,7 +412,7 @@ def group_spec(rid:str,a:GroupSpec,request:Request):
    spec=Spec(**merged);spec.operations=validate_spec(p,spec)
    g=p['geometry'];sets={'spec':spec.model_dump_json()}
    if a.category is not None:g['category']=a.category;g['classification_confidence']='engineer classified';sets['category']=a.category;sets['geometry']=json.dumps(g)
-   if a.reviewed is not None:sets['reviewed']=int(a.reviewed)
+   if a.reviewed is not None:sets['reviewed']=int(a.reviewed);sets['reviewed_by']=u['name'] if a.reviewed else '';sets['reviewed_at']=db.now() if a.reviewed else ''
    c.execute('UPDATE parts SET '+','.join(k+'=?' for k in sets)+' WHERE id=?',(*sets.values(),pid));n+=1
   db.audit(c,u['name'],'parts.group.specification.updated',{'count':n,'fields':sorted(a.spec),'category':a.category,'reviewed':a.reviewed},rid)
  invalidate(rid)
@@ -278,7 +448,7 @@ def bulk_parts(rid:str,a:BulkParts,request:Request):
 def reclassify(rid:str,request:Request):
  """Re-run the make/buy name heuristics and hidden-by-default rule on parts an engineer has not classified."""
  from .cad import classify_name,geometric_category,hidden_by_default,classify_prefix
- u=revision_access(request,rid,True);mutable(rid);changed=0;hidden=0;settings=db.settings()
+ u=revision_access(request,rid,True);mutable(rid);changed=0;hidden=0;settings=db.project_settings(project_of_revision(rid))
  with db.connect() as c:
   for p in c.execute('SELECT * FROM parts WHERE revision_id=?',(rid,)).fetchall():
    p=dict(p);g=json.loads(p['geometry'])
@@ -301,7 +471,7 @@ def production(rid:str,request:Request):revision_access(request,rid);return db.r
 @app.put('/api/revisions/{rid}/production/{pid}')
 def set_production(rid:str,pid:str,a:ProductionEdit,request:Request):
  """Vendor / shop checklist: mark a part as produced. Open to vendor links and internal roles alike."""
- u=revision_access(request,rid);p=get_part(pid)
+ u=revision_access(request,rid,True,'joborder.update');p=get_part(pid)
  if p['revision_id']!=rid:raise HTTPException(422,'Part outside revision')
  if p.get('excluded'):raise HTTPException(409,'Part is marked not for production')
  with db.connect() as c:
@@ -310,7 +480,7 @@ def set_production(rid:str,pid:str,a:ProductionEdit,request:Request):
  return {'ok':True}
 @app.post('/api/revisions/{rid}/documents')
 async def documents(rid:str,request:Request):
- u=revision_access(request,rid,True);r=get_rev(rid)
+ u=revision_access(request,rid,True,'drawing.edit');r=get_rev(rid)
  if r['status']!='ready':raise HTTPException(409,'Only draft revisions can regenerate documents; released artifacts are locked')
  if db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Job already active')
  body=await request.json()
@@ -326,14 +496,15 @@ def release_check(rid:str,request:Request):
  for p in db.rows('SELECT * FROM parts WHERE revision_id=?',(rid,)):
   p=deserialize(p)
   if p['category']=='purchased' or p.get('excluded'):continue
-  if not p['reviewed']:reasons.append(p['name']+': part not reviewed')
+  if not p['reviewed']:reasons.append(p['name']+': design review not complete')
+  if not p.get('doc_reviewed'):reasons.append(p['name']+': drawing not reviewed')
   for f in evaluate(p['geometry'],p['spec'],rules):
    if f['severity']=='blocker' and (not f['waiver'] or f['code'] in ('GEO001','FLAT001')):reasons.append(p['name']+': '+f['title'])
  if db.row('SELECT id FROM fits WHERE revision_id=? AND approved=0',(rid,)):reasons.append('Unapproved mating records')
  return {'can_release':not reasons,'reasons':reasons}
 @app.post('/api/revisions/{rid}/release')
 def release(rid:str,request:Request):
- u=revision_access(request,rid,True);mutable(rid);check=release_check(rid,request)
+ u=revision_access(request,rid,True,'revision.release');mutable(rid);check=release_check(rid,request)
  if not check['can_release']:raise HTTPException(409,check)
  with db.connect() as c:
   c.execute('UPDATE revisions SET status="release_pending",release_by=?,release_at=? WHERE id=?',(u['name'],db.now(),rid));id=enqueue(c,rid,'documents',{'release':True});db.audit(c,u['name'],'release.requested',{},rid)
@@ -372,6 +543,7 @@ def comments(rid:str,request:Request):revision_access(request,rid);return db.row
 @app.post('/api/revisions/{rid}/comments')
 def add_comment(rid:str,a:Comment,request:Request):
  u=revision_access(request,rid);get_rev(rid)
+ if u['role']=='vendor':raise HTTPException(403,'Vendor links are read-only')
  if a.part_id and get_part(a.part_id)['revision_id']!=rid:raise HTTPException(422,'Part outside revision')
  id=db.uid()
  with db.connect() as c:c.execute('INSERT INTO comments VALUES(?,?,?,?,?,?,?,0)',(id,rid,a.part_id,a.feature,u['name'],a.body,db.now()));db.audit(c,u['name'],'review.comment',a.model_dump(),rid)
@@ -380,23 +552,23 @@ def add_comment(rid:str,a:Comment,request:Request):
 def resolve_comment(cid:str,request:Request):
  r=db.row('SELECT * FROM comments WHERE id=?',(cid,))
  if not r:raise HTTPException(404,'Comment not found')
- u=revision_access(request,r['revision_id'],True)
+ u=revision_access(request,r['revision_id'],True,'design.review')
  with db.connect() as c:c.execute('UPDATE comments SET resolved=1 WHERE id=?',(cid,));db.audit(c,u['name'],'comment.resolved',cid,r['revision_id'])
  return {'ok':True}
 @app.get('/api/revisions/{rid}/shares')
-def shares(rid:str,request:Request):revision_access(request,rid,True);return db.rows('SELECT id,label,expires,revoked,created FROM shares WHERE revision_id=?',(rid,))
+def shares(rid:str,request:Request):revision_access(request,rid,True,'share.manage');return db.rows('SELECT id,label,expires,revoked,created,allow_cad FROM shares WHERE revision_id=?',(rid,))
 @app.post('/api/revisions/{rid}/shares')
 def share(rid:str,a:Share,request:Request):
- u=revision_access(request,rid,True);r=get_rev(rid)
+ u=revision_access(request,rid,True,'share.manage');r=get_rev(rid)
  if r['status'] not in ('ready','released'):raise HTTPException(409,'Analysis must finish before sharing')
  token=secrets.token_urlsafe(40);id=db.uid();expires=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=a.days)).isoformat()
- with db.connect() as c:c.execute('INSERT INTO shares VALUES(?,?,?,?,?,0,?)',(id,rid,token_hash(token),a.label,expires,db.now()));db.audit(c,u['name'],'vendor.link.created',{'label':a.label,'expires':expires},rid)
+ with db.connect() as c:c.execute('INSERT INTO shares(id,revision_id,hash,label,expires,revoked,created,allow_cad) VALUES(?,?,?,?,?,0,?,?)',(id,rid,token_hash(token),a.label,expires,db.now(),int(a.allow_cad)));db.audit(c,u['name'],'vendor.link.created',{'label':a.label,'expires':expires,'allow_cad':a.allow_cad},rid)
  return {'id':id,'path':f'/vendor/{rid}#token={token}','expires':expires}
 @app.delete('/api/shares/{sid}')
 def revoke(sid:str,request:Request):
  s=db.row('SELECT * FROM shares WHERE id=?',(sid,))
  if not s:raise HTTPException(404,'Share not found')
- u=revision_access(request,s['revision_id'],True)
+ u=revision_access(request,s['revision_id'],True,'share.manage')
  with db.connect() as c:c.execute('UPDATE shares SET revoked=1 WHERE id=?',(sid,));db.audit(c,u['name'],'vendor.link.revoked',sid,s['revision_id'])
  return {'ok':True}
 @app.get('/api/revisions/{rid}/qc')
@@ -411,8 +583,7 @@ def inspection_csv(rid:str,request:Request):
  return Response(out.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="qc-'+rid+'.csv"'})
 @app.post('/api/revisions/{rid}/qc')
 def inspect(rid:str,a:Inspection,request:Request):
- u=user(request)
- if u['role'] not in ('owner','engineer','qc'):raise HTTPException(403,'QC access required')
+ u=revision_access(request,rid,True,'qc.record')
  r=get_rev(rid);p=get_part(a.part_id)
  if p['revision_id']!=rid:raise HTTPException(422,'Part outside revision')
  if r['status']!='released':raise HTTPException(409,'Record production QC against a released revision')
@@ -440,7 +611,10 @@ def compare(rid:str,other:str,request:Request):
  return {'parts':out,'matching':'Name and source-body number; rename/split changes require manual reconciliation. No approval carried over.'}
 @app.get('/api/revisions/{rid}/assets/{filename}')
 def revision_asset(rid:str,filename:str,request:Request):
- revision_access(request,rid);get_rev(rid)
+ access=revision_access(request,rid);get_rev(rid)
+ if filename=='assembly.glb':raise HTTPException(403,'3D models are streamed to the Forge viewer only')
+ if filename in ('manufacturing-pack.zip','assembly.dxf'):cad_download(access,rid)
+ if filename in ('manufacturing-pack.zip','machining-drawings.pdf','sheet-metal-drawings.pdf') and (db.revdir(rid)/'.documents-stale').exists():raise HTTPException(409,'Drawing edits changed; regenerate the manufacturing pack')
  if filename.endswith(('.pdf','.dxf','.zip')) and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
  if filename not in ('assembly.glb','assembly.png','assembly.pdf','assembly.dxf','manufacturing-pack.zip','instances.json','machining-drawings.pdf','sheet-metal-drawings.pdf'):raise HTTPException(404,'Asset not found')
  p=db.revdir(rid)/filename
@@ -449,10 +623,13 @@ def revision_asset(rid:str,filename:str,request:Request):
  return FileResponse(p,filename=filename if filename.endswith(('.zip','.pdf')) else None)
 @app.get('/api/parts/{pid}/assets/{filename}')
 def part_asset(pid:str,filename:str,request:Request):
- p=get_part(pid);revision_access(request,p['revision_id'])
+ p=get_part(pid);access=revision_access(request,p['revision_id'])
+ if filename in ('model.glb','flat.glb'):raise HTTPException(403,'3D models are streamed to the Forge viewer only')
+ if filename in ('part.step','drawing.dxf','flat.dxf'):cad_download(access,p['revision_id'])
  if filename not in ('model.glb','thumb.png') and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running")',(p['revision_id'],)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
- if filename not in ('model.glb','thumb.png','drawing.pdf','drawing.dxf','flat.glb','flat.dxf','flat.json','projections.json','part.step'):raise HTTPException(404,'Asset not found')
+ if filename not in ('model.glb','thumb.png','drawing.pdf','drawing.dxf','review.pdf','flat.glb','flat.dxf','flat.json','projections.json','part.step'):raise HTTPException(404,'Asset not found')
  f=db.revdir(p['revision_id'])/'parts'/pid/filename
+ if filename in ('drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','flat.glb') and (f.parent/'.drawing-invalid').exists():raise HTTPException(409,'Part specification changed; regenerate documents')
  if not f.exists():storage.restore(p['revision_id'],f'parts/{pid}/{filename}',f)
  if filename=='thumb.png' and not f.exists() and (f.parent/'model.glb').exists():
   # Revisions imported before thumbnails existed: render once on demand from the lightweight mesh.
@@ -463,6 +640,8 @@ def part_asset(pid:str,filename:str,request:Request):
   except Exception as e:raise HTTPException(500,'Thumbnail rendering failed: '+str(e)[:200])
  if not f.exists():raise HTTPException(404,'Generate this document first')
  return FileResponse(f,filename=p['name'].replace('/','_')+'_'+filename if filename.endswith(('.pdf','.dxf')) else None)
+from .workspace import router as platform_router
+app.include_router(platform_router)
 # Built UI is served by the same origin; no CORS, no second production web server.
 STATIC=Path(os.getenv('STATIC_DIR',Path(__file__).resolve().parents[2]/'frontend/dist'))
 if STATIC.exists():
@@ -470,4 +649,6 @@ if STATIC.exists():
  @app.get('/{path:path}')
  def spa(path:str):
   if path.startswith('api/'):raise HTTPException(404,'Not found')
+  f=(STATIC/path).resolve()
+  if path and f.is_file() and STATIC.resolve() in f.parents and f.suffix in ('.ttf','.woff2','.svg','.png','.ico'):return FileResponse(f)
   return FileResponse(STATIC/'index.html')

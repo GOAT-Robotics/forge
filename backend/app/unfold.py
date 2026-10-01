@@ -15,11 +15,19 @@ def unfold(s,g,k=.4):
  for b in g['bends']:
   for ci in b['faces']:
    bendface=faces[ci];edge_list=list(explore(bendface,TopAbs_EDGE));neighbors=[]
+   from .cad import sample_edge as _se
+   ax_=np.array(b['axis'],float);ax_/=np.linalg.norm(ax_);c_=np.array(b['center'],float)
    for pi,p in by_index.items():
-    if abs(np.dot(p['normal'],np.array(b['axis'])))>.001:continue
+    if abs(np.dot(p['normal'],ax_))>.001:continue
     for e in explore(p['face'],TopAbs_EDGE):
      if any(e.IsSame(other) for other in edge_list):
-      w=wire_points(next(iter(explore(p['face'],TopAbs_WIRE))));neighbors.append((pi,e));break
+      # only the skin planes the bend is tangent to: their normal is radial at the shared edge. Cut
+      # (thickness) faces of a neighbouring flange can also touch the bend surface in closed corners.
+      pts=_se(e);m=pts.mean(axis=0);rad=(m-c_)-ax_*np.dot(m-c_,ax_);rn=np.linalg.norm(rad)
+      if rn<1e-9 or abs(np.dot(p['normal'],rad/rn))<.99:break
+      neighbors.append((pi,e,float(np.linalg.norm(pts[-1]-pts[0]))));break
+   if len(neighbors)>2:neighbors=sorted(neighbors,key=lambda t:-t[2])[:2]
+   neighbors=[(pi,e) for pi,e,*_ in neighbors]
    if len(neighbors)==2:
     a,ae=neighbors[0];c,ce=neighbors[1];links.setdefault(a,[]).append((c,b,ae,ce));links.setdefault(c,[]).append((a,b,ce,ae));bend_lookup[(a,c)]=b
  if g['bends'] and root['index'] not in links:raise ValueError('Could not connect the largest planar skin to the bend graph')
@@ -43,7 +51,18 @@ def unfold(s,g,k=.4):
    # (the root skin's outward normal), DOWN when it folds away. Sign of the bend axis offset from the
    # parent skin, corrected for parents whose outward normal maps to -Z in the flat.
    side=np.dot(Rp@parent['normal'],[0,0,1])*np.dot(np.array(b['center'])-parent['origin'],parent['normal'])
-   rectangles.append(Polygon([a[:2],z[:2],(z+target_o*ba)[:2],(a+target_o*ba)[:2]]));bend_lines.append({'id':b['id'],'a':(a+target_o*ba/2)[:2].tolist(),'b':(z+target_o*ba/2)[:2].tolist(),'allowance':ba,'angle':b['angle'],'radius':b['radius'],'length':float(np.linalg.norm(z-a)),'direction':'up' if side>0 else 'down'});used.add(b['id'])
+   # For right-angle bends, measure the adjoining planar face from the OUTER
+   # parent plane. The selected development skin can be either inside or outside.
+   outside_height=None
+   if abs(b['angle']-90)<.01:
+    from OCP.BRepTools import BRepTools
+    child_points=wire_points(BRepTools.OuterWire_s(by_index[ci]['face']))
+    nparent=parent['normal'];center=np.array(b['center'])
+    tangent_radius=abs(float(np.dot(p-center,nparent)))
+    if min(abs(tangent_radius-b['radius']),abs(tangent_radius-b['radius']-th))<.02:
+     correction=max(0,b['radius']+th-tangent_radius)
+     outside_height=float(np.max(np.abs((child_points-p)@nparent))+correction)
+   rectangles.append(Polygon([a[:2],z[:2],(z+target_o*ba)[:2],(a+target_o*ba)[:2]]));bend_lines.append({'id':b['id'],'a':(a+target_o*ba/2)[:2].tolist(),'b':(z+target_o*ba/2)[:2].tolist(),'allowance':ba,'angle':b['angle'],'radius':b['radius'],'length':float(np.linalg.norm(z-a)),'direction':'up' if side>0 else 'down','outside_height':outside_height});used.add(b['id'])
  if len(used)!=len(g['bends']):raise ValueError('Not all bends belong to a single developable skin; manual unfolding required')
  polys=[]
  from OCP.BRepTools import BRepTools
