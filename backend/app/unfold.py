@@ -11,41 +11,91 @@ def unfold(s,g,k=.4):
  faces,planes,cyl,_=face_features(s);by_index={p['index']:p for p in planes};th=g['thickness']
  if not planes or th<=0:raise ValueError('Constant thickness could not be established')
  root=max(planes,key=lambda p:p['area']);n=root['normal'];x=root['x'];y=root['y'];R=np.vstack([x,y,n]);origin=root['origin'];maps={root['index']:(R,-R@origin)}
+ from .cad import sample_edge as _se
+ # Skin graph: planes and bend (cylinder) faces. A bend face touches the planes it is tangent to (their normal is
+ # radial at the shared edge; cut faces of a neighbouring flange can also touch it in closed corners) and, in a
+ # rolled profile, the next bend face of the same skin (R48 -> R618 -> R48 tangent arcs).
+ bend_of={ci:b for b in g['bends'] for ci in b['faces']}
+ plane_n={};bend_n={}
+ for ci,b in bend_of.items():
+  bendface=faces[ci];edge_list=list(explore(bendface,TopAbs_EDGE))
+  ax_=np.array(b['axis'],float);ax_/=np.linalg.norm(ax_);c_=np.array(b['center'],float)
+  nb=[]
+  for pi,p in by_index.items():
+   if abs(np.dot(p['normal'],ax_))>.001:continue
+   for e in explore(p['face'],TopAbs_EDGE):
+    if any(e.IsSame(other) for other in edge_list):
+     pts=_se(e);m=pts.mean(axis=0);rad=(m-c_)-ax_*np.dot(m-c_,ax_);rn=np.linalg.norm(rad)
+     if rn<1e-9 or abs(np.dot(p['normal'],rad/rn))<.99:break
+     nb.append((pi,e,float(np.linalg.norm(pts[-1]-pts[0]))));break
+  plane_n[ci]=[(pi,e) for pi,e,_ in sorted(nb,key=lambda t:-t[2])[:2]]
+  bb=[]
+  for cj,b2 in bend_of.items():
+   if cj==ci or b2 is b:continue
+   for e in explore(faces[cj],TopAbs_EDGE):
+    if any(e.IsSame(other) for other in edge_list):
+     pts=_se(e);d=pts[-1]-pts[0];L=float(np.linalg.norm(d))
+     if L>1e-6 and abs(np.dot(d/L,ax_))>.999:bb.append((cj,L));break
+  bend_n[ci]=[cj for cj,_ in sorted(bb,key=lambda t:-t[1])[:2]]
  links={};bend_lookup={}
- for b in g['bends']:
-  for ci in b['faces']:
-   bendface=faces[ci];edge_list=list(explore(bendface,TopAbs_EDGE));neighbors=[]
-   from .cad import sample_edge as _se
-   ax_=np.array(b['axis'],float);ax_/=np.linalg.norm(ax_);c_=np.array(b['center'],float)
-   for pi,p in by_index.items():
-    if abs(np.dot(p['normal'],ax_))>.001:continue
-    for e in explore(p['face'],TopAbs_EDGE):
-     if any(e.IsSame(other) for other in edge_list):
-      # only the skin planes the bend is tangent to: their normal is radial at the shared edge. Cut
-      # (thickness) faces of a neighbouring flange can also touch the bend surface in closed corners.
-      pts=_se(e);m=pts.mean(axis=0);rad=(m-c_)-ax_*np.dot(m-c_,ax_);rn=np.linalg.norm(rad)
-      if rn<1e-9 or abs(np.dot(p['normal'],rad/rn))<.99:break
-      neighbors.append((pi,e,float(np.linalg.norm(pts[-1]-pts[0]))));break
-   if len(neighbors)>2:neighbors=sorted(neighbors,key=lambda t:-t[2])[:2]
-   neighbors=[(pi,e) for pi,e,*_ in neighbors]
-   if len(neighbors)==2:
-    a,ae=neighbors[0];c,ce=neighbors[1];links.setdefault(a,[]).append((c,b,ae,ce));links.setdefault(c,[]).append((a,b,ce,ae));bend_lookup[(a,c)]=b
+ for ci in bend_of:
+  for pa,pe in plane_n[ci]:
+   # walk through tangent bend faces until another plane is reached: plane - bend(s) - plane
+   chain=[ci];cur=ci
+   while True:
+    ends=[(pi,e) for pi,e in plane_n[cur] if pi!=pa or cur!=ci]
+    if cur!=ci and ends:
+     for pc,ce in ends:
+      key=(pa,pc,tuple(bend_of[c]['id'] for c in chain))
+      if key not in bend_lookup:
+       bs=[bend_of[c] for c in chain];bend_lookup[key]=bs
+       links.setdefault(pa,[]).append((pc,bs,pe,ce))
+     break
+    if cur==ci and len(plane_n[ci])==2 and not bend_n[ci]:
+     pc,ce=[t for t in plane_n[ci] if t[0]!=pa][0] if any(t[0]!=pa for t in plane_n[ci]) else (None,None)
+     if pc is not None:
+      key=(pa,pc,(bend_of[ci]['id'],))
+      if key not in bend_lookup:bend_lookup[key]=[bend_of[ci]];links.setdefault(pa,[]).append((pc,[bend_of[ci]],pe,ce))
+     break
+    nxt=[c for c in bend_n[cur] if c not in chain]
+    if not nxt or len(chain)>12:
+     if cur==ci:
+      for pc,ce in plane_n[ci]:
+       if pc!=pa:
+        key=(pa,pc,(bend_of[ci]['id'],))
+        if key not in bend_lookup:bend_lookup[key]=[bend_of[ci]];links.setdefault(pa,[]).append((pc,[bend_of[ci]],pe,ce))
+     break
+    chain.append(nxt[0]);cur=nxt[0]
  if g['bends'] and root['index'] not in links:raise ValueError('Could not connect the largest planar skin to the bend graph')
- rectangles=[];bend_lines=[];queue=[root['index']];used=set()
+ rectangles=[];bend_lines=[];queue=[root['index']];used=set();done_pairs={}
  from .cad import sample_edge
  while queue:
   pi=queue.pop(0);Rp,tp=maps[pi];parent=by_index[pi]
-  for ci,b,pe,ce in links.get(pi,[]):
-   if ci in maps:continue
-   pp=sample_edge(pe);cp=sample_edge(ce);p=pp.mean(axis=0);q=cp.mean(axis=0);axis=np.array(b['axis']);axis/=np.linalg.norm(axis)
+  for ci,bs,pe,ce in links.get(pi,[]):
+   ids=[b['id'] for b in bs]
+   if all(i in used for i in ids):continue
+   b=bs[0]
+   if ci in maps:
+    # a second bend between the same two flanges on the same line (the bend split by a relief / cut-out):
+    # already developed with its twin; only its bend line and allowance strip are added
+    if len(bs)!=1:continue
+    twin=next((t for t in done_pairs.get((pi,ci),[]) if np.linalg.norm(np.cross(np.array(t['axis'],float),np.array(b['axis'],float)))<1e-3
+               and np.linalg.norm(np.cross(np.array(b['center'],float)-np.array(t['center'],float),np.array(t['axis'],float)/np.linalg.norm(t['axis'])))<.05
+               and abs(t['angle']-b['angle'])<.1 and abs(t['radius']-b['radius'])<.01),None)
+    if twin is None:continue
+   pp=sample_edge(pe);cp=sample_edge(ce);p=pp.mean(axis=0);q=cp.mean(axis=0);axis=np.array(b['axis'],float);axis/=np.linalg.norm(axis)
    outward=p-parent['center'];outward-=axis*np.dot(axis,outward)
    inside=by_index[ci]['center']-q;inside-=axis*np.dot(axis,inside)
    if np.linalg.norm(outward)<1e-6 or np.linalg.norm(inside)<1e-6:raise ValueError('Ambiguous flange orientation')
    outward/=np.linalg.norm(outward);inside/=np.linalg.norm(inside)
    target_t=Rp@axis;target_o=Rp@outward
    basis_source=np.column_stack([axis,inside,np.cross(axis,inside)]);basis_target=np.column_stack([target_t,target_o,np.cross(target_t,target_o)])
-   Rc=basis_target@basis_source.T;ba=math.radians(b['angle'])*(b['radius']+k*th)
-   target_q=Rp@p+tp+target_o*ba;tc=target_q-Rc@q;maps[ci]=(Rc,tc);queue.append(ci)
+   Rc=basis_target@basis_source.T
+   # developed length of the bend (or of a rolled chain of tangent arcs): sum of the neutral-fibre arcs
+   allow=[math.radians(x['angle'])*(x['radius']+k*th) for x in bs];ba=sum(allow)
+   if ci not in maps:
+    target_q=Rp@p+tp+target_o*ba;tc=target_q-Rc@q;maps[ci]=(Rc,tc);queue.append(ci)
+   for x in bs:done_pairs.setdefault((pi,ci),[]).append(x);done_pairs.setdefault((ci,pi),[]).append(x)
    a=Rp@pp[0]+tp;z=Rp@pp[-1]+tp
    # Bend direction as seen from the developed view: UP when the flange folds toward the viewer
    # (the root skin's outward normal), DOWN when it folds away. Sign of the bend axis offset from the
@@ -54,7 +104,7 @@ def unfold(s,g,k=.4):
    # For right-angle bends, measure the adjoining planar face from the OUTER
    # parent plane. The selected development skin can be either inside or outside.
    outside_height=None
-   if abs(b['angle']-90)<.01:
+   if len(bs)==1 and abs(b['angle']-90)<.01:
     from OCP.BRepTools import BRepTools
     child_points=wire_points(BRepTools.OuterWire_s(by_index[ci]['face']))
     nparent=parent['normal'];center=np.array(b['center'])
@@ -62,7 +112,14 @@ def unfold(s,g,k=.4):
     if min(abs(tangent_radius-b['radius']),abs(tangent_radius-b['radius']-th))<.02:
      correction=max(0,b['radius']+th-tangent_radius)
      outside_height=float(np.max(np.abs((child_points-p)@nparent))+correction)
-   rectangles.append(Polygon([a[:2],z[:2],(z+target_o*ba)[:2],(a+target_o*ba)[:2]]));bend_lines.append({'id':b['id'],'a':(a+target_o*ba/2)[:2].tolist(),'b':(z+target_o*ba/2)[:2].tolist(),'allowance':ba,'angle':b['angle'],'radius':b['radius'],'length':float(np.linalg.norm(z-a)),'direction':'up' if side>0 else 'down','outside_height':outside_height});used.add(b['id'])
+   rectangles.append(Polygon([a[:2],z[:2],(z+target_o*ba)[:2],(a+target_o*ba)[:2]]))
+   off=0.0
+   for x,al in zip(bs,allow):
+    mid=off+al/2;off+=al
+    bend_lines.append({'id':x['id'],'a':(a+target_o*mid)[:2].tolist(),'b':(z+target_o*mid)[:2].tolist(),'allowance':al,'angle':x['angle'],'radius':x['radius'],
+                       'length':float(np.linalg.norm(z-a)),'direction':'up' if side>0 else 'down','outside_height':outside_height if len(bs)==1 else None,
+                       **({'rolled':True} if len(bs)>1 else {})})
+    used.add(x['id'])
  if len(used)!=len(g['bends']):raise ValueError('Not all bends belong to a single developable skin; manual unfolding required')
  polys=[]
  from OCP.BRepTools import BRepTools
