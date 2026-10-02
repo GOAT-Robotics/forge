@@ -690,7 +690,7 @@ label.check.reviewed { margin-top: 24px; padding: 12px 14px; background: var(--s
 .ral.chosen { border-color: var(--accent); background: var(--accent-soft); }
 
 /* Toasts, auth, misc */
-.error-toast, .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); border-radius: var(--radius); padding: 13px 18px; z-index: 200; display: flex; align-items: center; gap: 12px; box-shadow: var(--shadow); font-size: var(--fs-sm); font-weight: 500; max-width: 85vw; }
+.error-toast, .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); border-radius: var(--radius); padding: 13px 18px; z-index: 3200; display: flex; align-items: center; gap: 12px; box-shadow: var(--shadow); font-size: var(--fs-sm); font-weight: 500; max-width: 85vw; }
 .error-toast { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger-soft); }
 .error-toast span { max-height: 180px; overflow: auto; }
 .error-toast button { padding: 2px; background: none; border: 0; }
@@ -808,9 +808,9 @@ label.check.reviewed { margin-top: 24px; padding: 12px 14px; background: var(--s
 .combo-toggle { position: absolute; right: 2px; top: 5px; bottom: 0; width: 26px; height: auto; padding: 0; border: 0; background: none; color: var(--muted); }
 .combo.sm .combo-toggle { top: 0; }
 .combo-toggle:hover { background: none; color: var(--ink); }
-#popover-root { position: fixed; inset: 0 auto auto 0; z-index: 1000; }
+#popover-root { position: fixed; inset: 0 auto auto 0; z-index: 3100; }
 .popover {
-  position: fixed; z-index: 1000; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  position: fixed; z-index: 3100; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: 0 10px 30px #14171b24, 0 2px 6px #14171b14; padding: 4px; animation: pop 0.1s ease-out;
 }
 @keyframes pop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }

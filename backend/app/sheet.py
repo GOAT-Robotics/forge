@@ -446,6 +446,210 @@ def hole_features(shape, g):
     return merged
 
 
+def profile_features(shape, g):
+    """Pockets (enclosed recessed floors) and non-circular cut-outs, for every planar face family.
+    Pocket depth was never stated and cut-outs/pockets narrower than the step-edge length rule were never
+    located. Returns [{'kind': 'pocket'|'cutout', 'axis', 'pts' (3D outline samples), 'depth', 'floor' (a point
+    on the floor), 'centre'}]."""
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    faces = [TopoDS.Face(f) for f in explore(shape, TopAbs_FACE)]
+    classifier = BRepClass3d_SolidClassifier(shape)
+    lo3 = np.array(g['bounds'][:3], float)
+    hi3 = np.array(g['bounds'][3:], float)
+    out = []
+
+    def circle_only(w):
+        es = list(explore(w, TopAbs_EDGE))
+        return all(BRepAdaptor_Curve(TopoDS.Edge(e)).GetType() == GeomAbs_Circle for e in es)
+
+    def wire_pts(w):
+        return np.vstack([sample_edge(e, .05) for e in explore(w, TopAbs_EDGE)])
+
+    def on_face(f, p):
+        try:
+            d = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, p))).Vertex(), f)
+            return d.IsDone() and d.Value() < 1e-3
+        except Exception:
+            return False
+    for f in faces:
+        a = BRepAdaptor_Surface(f, True)
+        if a.GetType() != GeomAbs_Plane:
+            continue
+        n = xyz(a.Plane().Axis().Direction())
+        if f.Orientation() == TopAbs_REVERSED:
+            n = -n
+        ax = int(np.argmax(np.abs(n)))
+        if abs(n[ax]) < .999:
+            continue
+        axis = np.zeros(3)
+        axis[ax] = 1.0
+        outer = BRepTools.OuterWire_s(f)
+        wires = [TopoDS.Wire(w) for w in explore(f, TopAbs_WIRE)]
+        opts = wire_pts(outer)
+        pos = float(opts[0] @ axis)
+        side_hi = n[ax] > 0  # the floor faces the +axis side: the pocket opens towards hi
+        depth = (hi3[ax] - pos) if side_hi else (pos - lo3[ax])
+        others = [i for i in range(3) if i != ax]
+        flo, fhi = opts[:, others].min(0), opts[:, others].max(0)
+        inside = all(flo[i] > lo3[others[i]] + .5 and fhi[i] < hi3[others[i]] - .5 for i in range(2))
+        # a slot runs out through the outline but is not a full-width step (steps show in the side views)
+        partial = all(fhi[i] - flo[i] < .9 * (hi3[others[i]] - lo3[others[i]]) for i in range(2))
+        # ...and is cut into a face (along the part's thin direction), not a notch in a plate's outline
+        partial = partial and ax == int(np.argmin(hi3 - lo3))
+        pt = None
+        if depth > .05 and (inside or partial) and not circle_only(outer):
+            # floor point for the leader: the centroid when it lies on the floor, else just inside an outline edge
+            c = props(f)[1]
+            pt = c if on_face(f, c) else None
+            if pt is None:
+                for q in opts[::max(1, len(opts) // 24)]:
+                    cand = q + (c - q) / (np.linalg.norm(c - q) or 1) * min(2.0, .2 * np.linalg.norm(c - q))
+                    if on_face(f, cand):
+                        pt = cand
+                        break
+            # a floor has open air above it all the way out of the part; a pocket wall or a face of an island does not
+            if pt is None or not all(classify_out(classifier, pt + n * depth * k) for k in (.1, .35, .6, .85, .99)):
+                pt = None
+        if pt is not None and depth > .05:
+            out.append({'kind': 'pocket', 'axis': axis, 'pts': opts, 'depth': float(depth), 'floor': pt,
+                        'centre': opts.mean(0), 'entry': n, 'open': not inside})
+        for w in wires:
+            if w.IsSame(outer) or circle_only(w):
+                continue
+            wp = wire_pts(w)
+            span = np.ptp(wp[:, others], axis=0)
+            if span.min() < 2.0:
+                continue
+            out.append({'kind': 'cutout', 'axis': axis, 'pts': wp, 'depth': None, 'floor': None, 'centre': wp.mean(0), 'entry': n})
+    # one opening appears as an inner loop of both faces it passes through: keep one per outline
+    uniq = []
+    for f in out:
+        ax = int(np.argmax(f['axis']))
+        others = [i for i in range(3) if i != ax]
+        box = np.r_[f['pts'][:, others].min(0), f['pts'][:, others].max(0)]
+        f['box'] = box
+        ti = next((i for i, u in enumerate(uniq) if np.allclose(u['box'], box, atol=.05) and int(np.argmax(u['axis'])) == ax), None)
+        if ti is None:
+            uniq.append(f)
+        elif f['kind'] == 'pocket' and uniq[ti]['kind'] != 'pocket':
+            uniq[ti] = f
+    return uniq
+
+
+def turned_profile(shape):
+    """A lathe part: every cylinder / cone shares one axis and every plane is square to it. Returns
+    {'axis', 'o', 'segs': [(r, t0, t1)], 'chamfers': [(leg, t, r)], 'lo', 'hi'} or None. Its side view needs
+    diameters and shoulder positions along the axis, not ordinates to the silhouette."""
+    faces = [TopoDS.Face(f) for f in explore(shape, TopAbs_FACE)]
+    axis = o = None
+    segs, cones = {}, []
+    for f in faces:
+        a = BRepAdaptor_Surface(f, True)
+        t = a.GetType()
+        if t == GeomAbs_Plane:
+            continue
+        if t not in (GeomAbs_Cylinder, GeomAbs_Cone):
+            return None
+        ax = a.Cylinder().Axis() if t == GeomAbs_Cylinder else a.Cone().Axis()
+        d = xyz(ax.Direction())
+        d = d * (1 if d[np.argmax(abs(d))] >= 0 else -1)
+        q = xyz(ax.Location())
+        q = q - d * np.dot(q, d)
+        if axis is None:
+            axis, o = d, q
+        elif abs(np.dot(d, axis)) < .9999 or np.linalg.norm(q - o) > .02:
+            return None
+        pts = np.vstack([sample_edge(e, .05) for e in explore(f, TopAbs_EDGE)])
+        v = pts @ axis
+        rad = np.linalg.norm((pts - o) - np.outer(v, axis), axis=1)
+        if t == GeomAbs_Cylinder:
+            if f.Orientation() == TopAbs_REVERSED:
+                continue  # bores are hole features
+            k = (round(a.Cylinder().Radius(), 3), round(float(v.min()), 3), round(float(v.max()), 3))
+            segs[k] = segs.get(k, 0) + abs(a.LastUParameter() - a.FirstUParameter())
+        else:
+            L, dr = float(np.ptp(v)), float(np.ptp(rad))
+            if f.Orientation() != TopAbs_REVERSED and abs(L - dr) < .02 and L < 5:
+                cones.append((round(L, 2), float(v.mean()), float(rad.max())))
+    if axis is None:
+        return None
+    for f in faces:
+        a = BRepAdaptor_Surface(f, True)
+        if a.GetType() == GeomAbs_Plane and abs(abs(np.dot(xyz(a.Plane().Axis().Direction()), axis)) - 1) > 1e-4:
+            return None
+    full = sorted((r, t0, t1) for (r, t0, t1), ang in segs.items() if ang > 2 * math.pi - .05)
+    if len(full) < 2:
+        return None
+    vs = [x for _, t0, t1 in full for x in (t0, t1)]
+    return {'axis': axis, 'o': o, 'segs': full, 'chamfers': cones, 'lo': min(vs), 'hi': max(vs)}
+
+
+def turned_dims(views, tp):
+    """Side view: shoulder positions along the axis as ordinates and no silhouette ordinates across it.
+    End view: nothing (diameters are called out on the side view)."""
+    for v in views.values():
+        along = abs(tp['axis'] @ v.n) > .99
+        if along:
+            v.hords, v.vords = [], []
+            continue
+        if abs(tp['axis'] @ v.right) < .99:
+            continue  # axis runs up the sheet: leave the generic dimensions
+        perp = v.up
+        xo = v.hi[0] if v.origin_right else v.lo[0]
+        v.vords = [t for t in v.vords if t[2] == 'hole']
+        keep = [t for t in v.hords if t[2] in ('extent', 'hole')]
+        seen = {round(float(t[1][0]), 2) for t in keep}
+        for r, t0, t1 in tp['segs']:
+            for tt in (t0, t1):
+                rmax = max(rr for rr, a0, a1 in tp['segs'] if a0 - .01 <= tt <= a1 + .01)
+                q = v.to2d(tp['o'] + tp['axis'] * tt + perp * rmax)
+                if round(float(q[0]), 2) in seen:
+                    continue
+                seen.add(round(float(q[0]), 2))
+                keep.append((abs(q[0] - xo), q, 'edge'))
+        v.hords = sorted(keep, key=lambda t: t[0])
+
+
+def locate_profiles(v, feats, arcs):
+    """Ordinates for pocket / cut-out extents and arc centres in a view looking along their axis."""
+    xo = v.hi[0] if v.origin_right else v.lo[0]
+    span = max(v.span)
+
+    def add_h(q, kind):
+        if all(abs(q[0] - t[1][0]) > .01 for t in v.hords):
+            v.hords = sorted(v.hords + [(abs(q[0] - xo), np.array(q, float), kind)], key=lambda t: t[0])
+
+    def add_v(q, kind):
+        if all(abs(q[1] - t[1][1]) > .01 for t in v.vords):
+            v.vords = sorted(v.vords + [(abs(q[1] - v.lo[1]), np.array(q, float), kind)], key=lambda t: t[0])
+    feats = [f for f in feats if abs(f['axis'] @ v.n) > .99]
+    feats.sort(key=lambda f: -float(np.prod(np.ptp(np.array([v.to2d(p) for p in f['pts']]), axis=0))))
+    for f in feats[:8]:
+        q = np.array([v.to2d(p) for p in f['pts']])
+        for i in (int(np.argmin(q[:, 0])), int(np.argmax(q[:, 0]))):
+            add_h(q[i], 'edge')
+        for i in (int(np.argmin(q[:, 1])), int(np.argmax(q[:, 1]))):
+            add_v(q[i], 'edge')
+    marks = []
+    for items in arcs.values():
+        for it in items:
+            if abs(it['axis'] @ v.n) < .99 or it['angle'] < math.radians(150):
+                continue
+            c = v.to2d(it['arc_centre'])
+            if not (v.lo[0] - .01 <= c[0] <= v.hi[0] + .01 and v.lo[1] - .01 <= c[1] <= v.hi[1] + .01):
+                continue
+            add_h(c, 'centre')
+            add_v(c, 'centre')
+            arm = min(.15 * it['r'], .02 * span, 6.0)
+            marks += [(c - [arm, 0], c + [arm, 0]), (c - [0, arm], c + [0, arm])]
+    v.centrelines = list(getattr(v, 'centrelines', [])) + marks
+
+
 def thread_for(dia):
     for drill, name, pitch in TAP_DRILLS:
         if abs(dia - drill) <= .06:
@@ -457,7 +661,7 @@ def edge_notes(shape, g):
     """Chamfers (45 deg planar strips) and fillet radii (partial cylinders) for leader notes."""
     faces = [TopoDS.Face(f) for f in explore(shape, TopAbs_FACE)]
     size = max(g['dimensions'])
-    chamfers, fillets = {}, {}
+    chamfers, fillets, arcs = {}, {}, {}
     for f in faces:
         a = BRepAdaptor_Surface(f, True)
         t = a.GetType()
@@ -488,15 +692,36 @@ def edge_notes(shape, g):
         elif t == GeomAbs_Cylinder:
             ang = abs(a.LastUParameter() - a.FirstUParameter())
             r = a.Cylinder().Radius()
-            if ang > math.pi / 2 + .05 or r > .15 * size or r < .2:
+            if r < .2:
                 continue
             d = xyz(a.Cylinder().Axis().Direction())
             um = (a.FirstUParameter() + a.LastUParameter()) / 2
             vm = (a.FirstVParameter() + a.LastVParameter()) / 2
             mid = xyz(a.Value(um, vm))
             pts = np.vstack([sample_edge(e, .05) for e in explore(f, TopAbs_EDGE)])
-            fillets.setdefault(round(r, 2), []).append({'centre': mid, 'axis': d, 'pts': pts})
-    return chamfers, fillets
+            if ang <= math.pi / 2 + .05 and r <= .15 * size:
+                fillets.setdefault(round(r, 2), []).append({'centre': mid, 'axis': d, 'pts': pts})
+                continue
+            # any other partial cylinder: outline arcs (R620 ends) and arc cut-outs (R90 half moons) were never
+            # called out. Faces of one arc split at a seam are merged; a complete circle is a hole, not an arc.
+            dn = d * (1 if d[np.argmax(abs(d))] >= 0 else -1)
+            o = xyz(a.Cylinder().Location())
+            o = o - dn * np.dot(o, dn)
+            v = pts @ dn
+            key = tuple(np.round(np.r_[dn, o, r], 2))
+            arc = arcs.setdefault(key, {'r': r, 'axis': dn, 'o': o, 'angle': 0.0, 'parts': [], 't': (float(v.min()), float(v.max()))})
+            arc['angle'] += ang
+            arc['parts'].append({'centre': mid, 'axis': d, 'pts': pts})
+    out = {}
+    for arc in arcs.values():
+        if arc['angle'] >= 2 * math.pi - .05:
+            continue
+        part = max(arc['parts'], key=lambda q: len(q['pts']))
+        allpts = np.vstack([q['pts'] for q in arc['parts']])
+        centre = arc['o'] + arc['axis'] * float(np.mean(allpts @ arc['axis']))
+        out.setdefault(round(arc['r'], 2), []).append({'centre': part['centre'], 'axis': arc['axis'], 'pts': allpts,
+                                                       'arc_centre': centre, 'angle': arc['angle'], 'r': arc['r']})
+    return chamfers, fillets, out
 
 
 # --------------------------------------------------------------------------------------------- views
@@ -708,7 +933,7 @@ def draw_ordinates(sh, v, gid):
         band_bottom = yb
         for i, ((val, q, kind), p, t) in enumerate(zip(v.hords, px, tx)):
             oid = f'{gid}h{i}'
-            start = v.P(q)[1] - (1.0 if kind == 'hole' else 0.35)
+            start = v.P(q)[1] - (1.0 if kind in ('hole', 'centre') else 0.35)
             jog = abs(t - p) > .05
             if jog:
                 pts = [(p, start), (p, yb - .5), (t, yb - 2.5), (t, yb - 3.0)]
@@ -744,7 +969,7 @@ def draw_ordinates(sh, v, gid):
         band_x = xb
         for i, ((val, q, kind), p, t) in enumerate(zip(v.vords, py, ty_)):
             oid = f'{gid}v{i}'
-            start = v.P(q)[0] + sx * (1.0 if kind == 'hole' else 0.35)
+            start = v.P(q)[0] + sx * (1.0 if kind in ('hole', 'centre') else 0.35)
             jog = abs(t - p) > .05
             if jog:
                 pts = [(start, p), (xb + sx * .5, p), (xb + sx * 2.5, t), (xb + sx * 3.0, t)]
@@ -1310,7 +1535,7 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
     g = p['geometry']
     sm = p.get('category') == 'sheet_metal'
     holes = [] if sm else cache.setdefault('holes', hole_features(shape, g))
-    chamfers, fillets = ({}, {}) if sm else cache.setdefault('edges', edge_notes(shape, g))
+    chamfers, fillets, arcs = ({}, {}, {}) if sm else cache.setdefault('edges', edge_notes(shape, g))
     n0, up0 = choose_main(g, holes, sm, landscape=cache.get('landscape', True))
     cache['frame'] = (n0, up0)
     frames = view_frames(n0, up0)
@@ -1319,6 +1544,15 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
         # flat laser-cut plate: face view + one edge view for the thickness
         dims = np.array(g['dimensions'])
         wanted = ['main', 'top']
+    tp = None if sm else cache.setdefault('turned', turned_profile(shape))
+    if tp is not None and abs(tp['axis'] @ frames['main'][0]) < .01:
+        ends = [k for k in ('top', 'right') if abs(tp['axis'] @ frames[k][0]) > .99]
+        if ends:
+            wanted = ['main', ends[0]]  # the other side view is identical for a turned part
+    elif tp is not None and abs(tp['axis'] @ frames['main'][0]) > .99:
+        sides = [k for k in ('right', 'top') if abs(tp['axis'] @ frames[k][1]) > .99]
+        if sides:
+            wanted = ['main', sides[0]]  # end view + the side view with the axis across the sheet
     if not sm:
         for side in ('left', 'bottom', 'rear'):
             n = frames[side][0]
@@ -1352,8 +1586,12 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
         views['top'].thk = float(g['thickness'])
     if not sm:
         oblique_features(views, holes, g)
+        feats = cache.setdefault('profiles', profile_features(shape, g))
         for v in views.values():
             slope_angles(v)
+            locate_profiles(v, feats, arcs)
+        if tp is not None:
+            turned_dims(views, tp)
 
     # hole groups per view -> callouts, or a tagged hole table when a view is crowded (ASME Y14.5 / ISO 129 practice)
     spec = p.get('spec', {})
@@ -1421,6 +1659,38 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
         notes_proto.append({'kind': 'chamfer', 'lines': [text + (' TYP' if len(items) > 1 else '')], 'items': items})
     for r, items in sorted(fillets.items()):
         notes_proto.append({'kind': 'fillet', 'lines': [f"R{r:.2f}" + (' TYP' if len(items) > 1 else '')], 'items': items})
+    for r, items in sorted(arcs.items()):
+        if r in fillets:
+            items = items + fillets[r]
+            notes_proto[:] = [q for q in notes_proto if not (q['kind'] == 'fillet' and q['lines'][0].startswith(f"R{r:.2f}"))]
+        notes_proto.append({'kind': 'radius', 'lines': [f"R{r:.2f}" + (' TYP' if len(items) > 1 else '')], 'items': items})
+    if tp is not None:
+        side = next((v for v in views.values() if abs(tp['axis'] @ v.right) > .99), None)
+        if side is not None:
+            dias = {}
+            for r, t0, t1 in tp['segs']:
+                p3 = tp['o'] + tp['axis'] * ((t0 + t1) / 2) + side.up * r
+                dias.setdefault(round(2 * r, 2), []).append({'centre': p3, 'axis': side.n, 'pts': np.array([p3])})
+            for d, items in sorted(dias.items(), reverse=True):
+                notes_proto.append({'kind': 'dia', 'lines': [f"\u00d8 {d:.2f}" + (' TYP' if len(items) > 1 else '')], 'items': items})
+            legs = {}
+            for leg, tt, r in tp['chamfers']:
+                p3 = tp['o'] + tp['axis'] * tt + side.up * (r - leg / 2)
+                legs.setdefault(leg, []).append({'centre': p3, 'axis': side.n, 'pts': np.array([p3])})
+            for leg, items in sorted(legs.items()):
+                if any(q['kind'] == 'chamfer' and q['lines'][0].startswith(f"{leg:.2f} X 45") for q in notes_proto):
+                    continue
+                notes_proto.append({'kind': 'chamfer', 'lines': [f"{leg:.2f} X 45\u00b0" + (' TYP' if len(items) > 1 else '')], 'items': items})
+    if not sm:
+        pockets = {}
+        for f in cache.get('profiles') or []:
+            if f['kind'] == 'pocket':
+                # the depth note sits in the main view; say so when the recess is cut from the far side
+                far = float(np.dot(f['entry'], n0)) < -.5
+                key = ('SLOT' if f.get('open') else 'POCKET', round(f['depth'], 2), far)
+                pockets.setdefault(key, []).append({'centre': f['floor'], 'axis': f['axis'], 'pts': f['pts']})
+        for (word, d, far), items in sorted(pockets.items()):
+            notes_proto.append({'kind': word.lower(), 'lines': [f"{word} {DEPTH} {d:.2f}" + (' FAR SIDE' if far else '') + (' TYP' if len(items) > 1 else '')], 'items': items})
 
     title_notes = []
     if inferred_any:
@@ -2249,7 +2519,7 @@ def draw_text_pt(c, x, y, s, size, font, ha='l'):
             run += ch
 
 
-def paint_callout(c, g, lines, dx=0.0, dy=0.0, px=0.0, py=0.0):
+def paint_callout(c, g, lines, dx=0.0, dy=0.0, px=0.0, py=0.0, flip=False):
     """GOAT leader note in points: arrow on the feature, leader to the nearer shoulder end, text on the shoulder.
     (dx, dy) moves the note, (px, py) moves the owning view (the feature end of the leader follows it)."""
     font = g.get('font', DIM_FONT)
@@ -2276,6 +2546,10 @@ def paint_callout(c, g, lines, dx=0.0, dy=0.0, px=0.0, py=0.0):
     c.line(bx, by, bx + w, by)
     ux, uy = (tx - ax) / (math.hypot(tx - ax, ty - ay) or 1), (ty - ay) / (math.hypot(tx - ax, ty - ay) or 1)
     L, W2 = ARROW_L * mm, ARROW_W * mm / 2
+    if flip:
+        # arrow on the far side of the feature, pointing back at it (SolidWorks "arrows outside" / inside a bore)
+        c.line(tx, ty, tx + ux * (L + 1.5 * mm), ty + uy * (L + 1.5 * mm))
+        ux, uy = -ux, -uy
     p = c.beginPath()
     p.moveTo(tx, ty)
     p.lineTo(tx - ux * L - uy * W2, ty - uy * L + ux * W2)

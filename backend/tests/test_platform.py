@@ -505,3 +505,56 @@ def test_face_pair_seams_any_two_faces():
     far = Body('F', 0, box((0, 0, 60), 100, 2, 40), np.eye(4), 2)
     none, d = face_pair_seams((a, face(a, lambda q: abs(q[2] - 2) < 1e-6)), (far, face(far, lambda q: abs(q[2] - 60) < 1e-6)))
     assert none == [] and d > 25
+
+
+def test_chunked_upload_survives_proxy_body_limits(tmp_path, monkeypatch):
+    """Large CAD goes up in chunks (Cloudflare tunnels cap a request at 100 MB); chunks are retryable and
+    may arrive in any order; the assembled file is identical to the source."""
+    import app.main as m
+    monkeypatch.setattr(m, 'CHUNK', 512)
+    with TestClient(app) as client:
+        login_as(client, 'chunk@example.com', 'admin')
+        p = client.post('/api/projects', headers=H, json={'name': 'Chunked'}).json()
+        source = tmp_path / 'big.brep'
+        BRepTools.Write_s(plate(), str(source))
+        data = source.read_bytes()
+        assert client.post(f"/api/projects/{p['id']}/uploads", headers=H, json={'filename': 'x.sldprt', 'size': len(data)}).status_code == 422
+        s = client.post(f"/api/projects/{p['id']}/uploads", headers=H, json={'filename': 'big.brep', 'size': len(data), 'notes': 'via tunnel'}).json()
+        n, size = s['chunks'], s['chunk_size']
+        assert n > 2
+        parts = [data[i * size:(i + 1) * size] for i in range(n)]
+        # a truncated chunk is refused and can be sent again
+        assert client.put(f"/api/uploads/{s['upload_id']}/chunks/0", headers=H, content=parts[0][:-1]).status_code == 422
+        assert client.post(f"/api/uploads/{s['upload_id']}/complete", headers=H).status_code == 409
+        for i in reversed(range(n)):
+            assert client.put(f"/api/uploads/{s['upload_id']}/chunks/{i}", headers=H, content=parts[i]).status_code == 200
+        assert client.get(f"/api/uploads/{s['upload_id']}").json()['received'] == list(range(n))
+        r = client.post(f"/api/uploads/{s['upload_id']}/complete", headers=H)
+        assert r.status_code == 200, r.text
+        rev = r.json()
+        assert rev['filename'] == 'big.brep' and rev['notes'] == 'via tunnel'
+        import hashlib
+        assert rev['sha256'] == hashlib.sha256(data).hexdigest()
+        # another user cannot touch someone else's upload
+        other = TestClient(app)
+        login_as(other, 'other@example.com', 'admin')
+        s2 = client.post(f"/api/projects/{p['id']}/uploads", headers=H, json={'filename': 'b.brep', 'size': len(data)}).json()
+        assert other.put(f"/api/uploads/{s2['upload_id']}/chunks/0", headers=H, content=parts[0]).status_code == 403
+
+
+def test_prefix_rules_tolerate_exporter_noise():
+    """SolidWorks STEP names wrap part numbers in config/mirror noise; un-numbered made parts must not vanish into purchased."""
+    from app.cad import classify_prefix, classify_name
+    s = {'sheet_prefixes': ['GT-SM'], 'machining_prefixes': ['GT-MC'], 'purchased_prefixes': [], 'prefix_strict': True}
+    assert classify_prefix('11GT-SM-028-LINE FOLLOWER CLAMPT2CC', s) == 'sheet_metal'
+    assert classify_prefix('_ISOGT-SM-042-ULTRASONIC MOUNT CLAMPT211', s) == 'sheet_metal'
+    assert classify_prefix('Mirror1111GT-MC-011-DRIVE SIDE SUSPENSION SETUP PILLART2CC', s) == 'machining'
+    assert classify_prefix('GT_MC_002 TOP PLATE / Body 2', s) == 'machining'
+    # strict: catalogue items stay purchased, un-numbered made parts fall back to geometry (None)
+    assert classify_prefix('11GRAY_2_5^cTERMINAL_BLOCK_Av1t1t1T2CC', s) == 'purchased'
+    assert classify_prefix('M3 NUT1', s) == 'purchased'
+    assert classify_prefix('GT_FRONT_CASTER_MOUNT_PLATE', s) is None
+    assert classify_prefix('MOUNT BLOCK FOR KINCO MOTOR / Body 2', s) is None
+    assert classify_prefix('_ISOGT_FRONT_LIDAR_ROD / Body 1', s) is None
+    assert classify_name('11END_CLAMP^cTERMINAL_BLOCK_Av1t1t1T2CC') == 'purchased'
+    assert classify_prefix('ANY NAME', {**s, 'prefix_strict': False}) is None

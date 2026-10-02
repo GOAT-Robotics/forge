@@ -22,6 +22,7 @@ services:
       DEFAULT_ROLE: ${DEFAULT_ROLE:-viewer}
       FORGE_ALLOW_LOCAL_LOGIN: ${FORGE_ALLOW_LOCAL_LOGIN:-false}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+      UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-16}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_ENDPOINT: ${S3_ENDPOINT:-https://sfo3.digitaloceanspaces.com}
       S3_REGION: ${S3_REGION:-sfo3}

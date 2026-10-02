@@ -1,4 +1,4 @@
-import os,re,json,secrets,datetime,hashlib,math,time,io,csv,asyncio
+import uuid,os,re,json,secrets,datetime,hashlib,math,time,io,csv,asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI,Request,HTTPException,UploadFile,File,Form
@@ -16,9 +16,13 @@ async def lifespan(app):db.init();yield
 app=FastAPI(title='Forge Manufacturing',version='0.2.0',lifespan=lifespan)
 app.include_router(entra.router)
 WRITE_LOCK=asyncio.Lock()
+# Long-running body transfers (CAD uploads) must not hold the write lock: they only write their own files and
+# take an IMMEDIATE SQLite transaction for the final insert.
+import re as _re
+UNLOCKED=_re.compile(r'^/api/(uploads/[^/]+/chunks/\d+|projects/[^/]+/revisions)$')
 @app.middleware('http')
 async def headers(req,call_next):
- if req.method in ('POST','PUT','PATCH','DELETE'):
+ if req.method in ('POST','PUT','PATCH','DELETE') and not (req.method in ('PUT','POST') and UNLOCKED.match(req.url.path)):
   async with WRITE_LOCK:res=await call_next(req)
  else:res=await call_next(req)
  res.headers['X-Content-Type-Options']='nosniff';res.headers['Referrer-Policy']='no-referrer';res.headers['X-Frame-Options']='SAMEORIGIN';res.headers['Cache-Control']='no-store';return res
@@ -163,25 +167,103 @@ async def update_rules(pid:str,request:Request):
  # Rule changes are versioned by the next upload; existing revision snapshots do not change.
  with db.connect() as c:c.execute('UPDATE projects SET rules=? WHERE id=?',(json.dumps(body),pid));db.audit(c,u['name'],'project.rules.updated',body)
  return {'ok':True,'message':'Applies to future revisions'}
+CAD_EXTS=('.step','.stp','.brep','.brp','.igs','.iges')
+def upload_limit():return int(os.getenv('MAX_UPLOAD_MB','1024'))*1024*1024
+def cad_name(name):
+ filename=Path(name or '').name;ext=Path(filename).suffix.lower()
+ if ext not in CAD_EXTS:raise HTTPException(422,'Export CAD as STEP, BREP or IGES; native proprietary part files are not supported')
+ return filename,ext
 @app.post('/api/projects/{pid}/revisions')
 async def upload(pid:str,request:Request,file:UploadFile=File(...),notes:str=Form('')):
  u=editor(request,'revision.upload',pid);p=db.row('SELECT * FROM projects WHERE id=?',(pid,))
  if not p:raise HTTPException(404,'Project not found')
- filename=Path(file.filename or '').name;ext=Path(filename).suffix.lower()
- if ext not in ('.step','.stp','.brep','.brp','.igs','.iges'):raise HTTPException(422,'Export CAD as STEP, BREP or IGES; native proprietary part files are not supported')
- rid=db.uid();folder=db.revdir(rid);dest=folder/('source'+ext);h=hashlib.sha256();size=0;limit=int(os.getenv('MAX_UPLOAD_MB','1024'))*1024*1024
+ filename,ext=cad_name(file.filename)
+ rid=db.uid();folder=db.revdir(rid);dest=folder/('source'+ext);h=hashlib.sha256();size=0;limit=upload_limit()
  with dest.open('wb') as out:
   while chunk:=await file.read(1024*1024):
    size+=len(chunk)
    if size>limit:out.close();dest.unlink(missing_ok=True);raise HTTPException(413,'File exceeds configured upload limit')
    h.update(chunk);out.write(chunk)
+ return create_revision(pid,p,u,rid,dest,filename,notes,size,h.hexdigest())
+
+# ---------------------------------------------------------------- chunked (resumable) uploads
+# Proxies and tunnels cap request bodies (Cloudflare: 100 MB) and request time. Large CAD goes up in chunks:
+# start -> PUT each chunk (retryable, any order) -> complete. Chunks land in DATA_DIR/uploads/<id>/ and are
+# assembled and hashed on completion; abandoned uploads are removed after a day.
+CHUNK=int(os.getenv('UPLOAD_CHUNK_MB','16'))*1024*1024
+class UploadStart(BaseModel):
+ model_config=ConfigDict(extra='forbid')
+ filename:str=Field(min_length=1,max_length=255);size:int=Field(gt=29);notes:str=Field(default='',max_length=4000)
+def upload_dir(uid):
+ if not _re.fullmatch(r'[0-9a-f]{32}',uid or ''):raise HTTPException(404,'Upload not found')
+ return db.ROOT/'uploads'/uid
+def upload_meta(uid,u):
+ d=upload_dir(uid);f=d/'meta.json'
+ if not f.exists():raise HTTPException(404,'Upload not found or expired')
+ m=json.loads(f.read_text())
+ if m['user']!=u['id']:raise HTTPException(403,'Upload belongs to another session')
+ return d,m
+def sweep_uploads():
+ import shutil,time
+ root=db.ROOT/'uploads'
+ if not root.exists():return
+ for d in root.iterdir():
+  try:
+   if d.is_dir() and time.time()-d.stat().st_mtime>86400:shutil.rmtree(d,ignore_errors=True)
+  except OSError:pass
+@app.post('/api/projects/{pid}/uploads')
+def upload_start(pid:str,a:UploadStart,request:Request):
+ u=editor(request,'revision.upload',pid)
+ if not db.row('SELECT id FROM projects WHERE id=?',(pid,)):raise HTTPException(404,'Project not found')
+ filename,ext=cad_name(a.filename)
+ if a.size>upload_limit():raise HTTPException(413,f'File exceeds the configured upload limit ({upload_limit()//1048576} MB)')
+ sweep_uploads()
+ uid=uuid.uuid4().hex;d=upload_dir(uid);d.mkdir(parents=True)
+ n=(a.size+CHUNK-1)//CHUNK
+ (d/'meta.json').write_text(json.dumps({'project':pid,'user':u['id'],'filename':filename,'ext':ext,'size':a.size,'notes':a.notes,'chunks':n,'chunk':CHUNK}))
+ return {'upload_id':uid,'chunk_size':CHUNK,'chunks':n}
+@app.put('/api/uploads/{uid}/chunks/{index}')
+async def upload_chunk(uid:str,index:int,request:Request):
+ u=user(request);d,m=upload_meta(uid,u)
+ if not 0<=index<m['chunks']:raise HTTPException(422,'Chunk out of range')
+ expect=min(m['chunk'],m['size']-index*m['chunk']);tmp=d/f'{index}.part';got=0
+ with tmp.open('wb') as out:
+  async for piece in request.stream():
+   got+=len(piece)
+   if got>expect:out.close();tmp.unlink(missing_ok=True);raise HTTPException(413,'Chunk larger than declared')
+   out.write(piece)
+ if got!=expect:tmp.unlink(missing_ok=True);raise HTTPException(422,f'Chunk {index} incomplete ({got} of {expect} bytes); retry it')
+ tmp.replace(d/f'{index}.chunk')
+ return {'ok':True,'index':index}
+@app.get('/api/uploads/{uid}')
+def upload_status(uid:str,request:Request):
+ d,m=upload_meta(uid,user(request))
+ return {'received':sorted(int(f.stem) for f in d.glob('*.chunk')),'chunks':m['chunks']}
+@app.post('/api/uploads/{uid}/complete')
+def upload_complete(uid:str,request:Request):
+ import shutil
+ d,m=upload_meta(uid,user(request));u=editor(request,'revision.upload',m['project'])
+ missing=[i for i in range(m['chunks']) if not (d/f'{i}.chunk').exists()]
+ if missing:raise HTTPException(409,f'{len(missing)} chunk(s) still missing: {missing[:10]}')
+ p=db.row('SELECT * FROM projects WHERE id=?',(m['project'],))
+ if not p:raise HTTPException(404,'Project not found')
+ rid=db.uid();dest=db.revdir(rid)/('source'+m['ext']);h=hashlib.sha256();size=0
+ with dest.open('wb') as out:
+  for i in range(m['chunks']):
+   with (d/f'{i}.chunk').open('rb') as src:
+    while b:=src.read(1024*1024):h.update(b);out.write(b);size+=len(b)
+ shutil.rmtree(d,ignore_errors=True)
+ if size!=m['size']:dest.unlink(missing_ok=True);raise HTTPException(422,'Assembled file size does not match')
+ return create_revision(m['project'],p,u,rid,dest,m['filename'],m['notes'],size,h.hexdigest())
+
+def create_revision(pid,p,u,rid,dest,filename,notes,size,sha):
  if size<30:dest.unlink();raise HTTPException(422,'Empty or invalid CAD file')
  with db.connect() as c:
   c.execute('BEGIN IMMEDIATE')
   if c.execute('SELECT id FROM revisions WHERE project_id=? AND status="processing"',(pid,)).fetchone():dest.unlink();raise HTTPException(409,'Another revision is processing')
   n=c.execute('SELECT COALESCE(MAX(number),0)+1 FROM revisions WHERE project_id=?',(pid,)).fetchone()[0]
-  c.execute('INSERT INTO revisions(id,project_id,number,filename,sha256,state,status,created,created_by,notes,manifest) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(rid,pid,n,filename,h.hexdigest(),'pending','processing',db.now(),u['name'],notes,json.dumps({'rules_snapshot':json.loads(p['rules'])})))
-  enqueue(c,rid,'import');db.audit(c,u['name'],'revision.uploaded',{'filename':filename,'sha256':h.hexdigest(),'bytes':size},rid)
+  c.execute('INSERT INTO revisions(id,project_id,number,filename,sha256,state,status,created,created_by,notes,manifest) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(rid,pid,n,filename,sha,'pending','processing',db.now(),u['name'],notes,json.dumps({'rules_snapshot':json.loads(p['rules'])})))
+  enqueue(c,rid,'import');db.audit(c,u['name'],'revision.uploaded',{'filename':filename,'sha256':sha,'bytes':size},rid)
  try:storage.upload(rid,dest,dest.name)
  except Exception as e:
   # Do not leave a revision queued when durable artifact storage is unavailable.
@@ -456,7 +538,7 @@ def reclassify(rid:str,request:Request):
    by_prefix=classify_prefix(p['name'],settings);hint=classify_name(p['name']);category=p['category']
    if by_prefix:category=by_prefix;g['classification_confidence']='workspace prefix rule'
    elif hint=='purchased':category='purchased'
-   elif hint=='custom':category=geometric_category(g) # named like a custom part: fall back to the geometric sheet/machining guess
+   elif hint=='custom':category=geometric_category(g);g['classification_confidence']='name and geometry' # named like a custom part: fall back to the geometric sheet/machining guess
    h=int(p['hidden'] or hidden_by_default(p['name'],category,'',settings)) # never un-hides what an engineer hid
    if category!=p['category'] or h!=p['hidden']:
     g['category']=category;c.execute('UPDATE parts SET category=?,geometry=?,hidden=? WHERE id=?',(category,json.dumps(g),h,p['id']));changed+=int(category!=p['category']);hidden+=int(h and not p['hidden'])

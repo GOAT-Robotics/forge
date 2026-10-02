@@ -574,7 +574,7 @@ export function ProjectSettingsDialog({ project, workspace, config, close, onSav
               <label>Machining<input value={joinList(s.machining_prefixes)} placeholder="GT-MC, MC-" onChange={e => setS({ ...s, machining_prefixes: e.target.value })} /></label>
               <label>Purchased (optional)<input value={joinList(s.purchased_prefixes)} placeholder="PUR-, BO-" onChange={e => setS({ ...s, purchased_prefixes: e.target.value })} /></label>
             </div>
-            <label className="check"><input type="checkbox" checked={!!s.prefix_strict} onChange={e => setS({ ...s, prefix_strict: e.target.checked })} />Anything matching no prefix is a purchased item (strict)</label>
+            <label className="check"><input type="checkbox" checked={!!s.prefix_strict} onChange={e => setS({ ...s, prefix_strict: e.target.checked })} />Anything matching no prefix is a purchased item (strict), unless it is named like a made part (plate, bracket, cover …)</label>
             <label className="check"><input type="checkbox" checked={!!s.hide_purchased_by_default} onChange={e => setS({ ...s, hide_purchased_by_default: e.target.checked })} />Hide small bought-in items in the 3D viewer by default</label>
             <label className="check"><input type="checkbox" checked={!!s.assembly_show_purchased} onChange={e => setS({ ...s, assembly_show_purchased: e.target.checked })} />Show purchased components on the complete assembly drawing (otherwise only per-part overrides are shown)</label>
             <label className="check"><input type="checkbox" checked={!!s.carry_over_specs} onChange={e => setS({ ...s, carry_over_specs: e.target.checked })} />Carry specifications from the previous revision (never approvals)</label>

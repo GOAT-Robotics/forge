@@ -1,0 +1,21 @@
+services:
+  app:
+    image: ghcr.io/goat-robotics/forge:f44fc962569c5eb1efcbb226f207d9313cbef7a6
+  worker:
+    image: ghcr.io/goat-robotics/forge:f44fc962569c5eb1efcbb226f207d9313cbef7a6
+  public-proxy:
+    image: caddy:2
+    ports:
+      - "8180:80"
+      - "8444:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  caddy-data:
+  caddy-config:

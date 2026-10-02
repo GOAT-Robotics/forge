@@ -18,7 +18,7 @@ export function Swatch({ hex, title, size = 14 }: { hex?: string; title?: string
   return <span className="swatch" title={title || hex} style={{ background: hex, width: size, height: size }} />;
 }
 
-export function Modal({ title, close, children, wide = false, subtitle }: { title: string; close: () => void; children: React.ReactNode; wide?: boolean; subtitle?: string }) {
+export function Modal({ title, close, children, wide = false, subtitle, top = false }: { title: string; close: () => void; children: React.ReactNode; wide?: boolean; subtitle?: string; top?: boolean }) {
   useEffect(() => {
     // Escape closes an open dropdown first; the modal only closes on the next press.
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.getElementById('popover-root')?.childElementCount) close(); };
@@ -26,7 +26,7 @@ export function Modal({ title, close, children, wide = false, subtitle }: { titl
     return () => window.removeEventListener('keydown', onKey);
   }, [close]);
   return (
-    <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
+    <div className={'overlay' + (top ? ' top' : '')} onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
       <section role="dialog" aria-modal="true" aria-label={title} className={'modal' + (wide ? ' wide' : '')}>
         <header>
           <div><h2>{title}</h2>{subtitle && <p className="muted">{subtitle}</p>}</div>
@@ -776,7 +776,7 @@ export function DialogHost() {
   const finish = (v: string | null) => { setState(null); done(v); };
   const blocked = !!o.input?.required && !text.trim();
   return (
-    <Modal title={o.title} close={() => finish(null)}>
+    <Modal top title={o.title} close={() => finish(null)}>
       <form className="ask-dialog" onSubmit={e => { e.preventDefault(); if (!blocked) finish(o.input ? text.trim() : ''); }}>
         {o.message && <p className="ask-message">{o.message}</p>}
         {o.input && <>

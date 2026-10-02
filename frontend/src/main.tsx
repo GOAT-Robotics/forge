@@ -392,38 +392,44 @@ function App() {
   );
   const bulk = (body: Any) => action(async () => { const r = await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: multi, ...body }); await loadRevision(rev.id); notify(`${r.updated} parts updated`); });
 
-  const uploadFile = (file: File, notes: string) => new Promise<void>((resolve, reject) => {
-    const data = new FormData();
-    data.append('file', file); data.append('notes', notes);
-    const xhr = new XMLHttpRequest();
-    const responseError = () => {
-      const fallback = xhr.status ? `Upload failed (HTTP ${xhr.status}${xhr.statusText ? ` ${xhr.statusText}` : ''})` : 'Upload failed';
-      try {
-        const body = JSON.parse(xhr.responseText);
-        return typeof body.detail === 'string' ? body.detail : fallback;
-      } catch {
-        // Proxies can return HTML for upload limits and timeouts. Never leave the
-        // enclosing action pending merely because their error is not JSON.
-        return fallback;
+  /** Chunked upload: proxies and tunnels (Cloudflare caps a request at 100 MB) never see one huge body.
+   *  Each chunk is retried on its own, so a dropped connection costs one chunk, not the whole file. */
+  const uploadFile = async (file: File, notes: string) => {
+    const errorOf = async (r: Response) => {
+      const t = await r.text().catch(() => '');
+      try { const j = JSON.parse(t); if (typeof j.detail === 'string') return j.detail; } catch { /* proxy HTML */ }
+      return r.status === 413 ? 'The server or proxy rejected the upload size (HTTP 413)' : `Upload failed (HTTP ${r.status})`;
+    };
+    setUploadPercent(0);
+    try {
+      const start = await api(`/projects/${project.id}/uploads`, 'POST', { filename: file.name, size: file.size, notes });
+      const { upload_id: id, chunk_size: size, chunks } = start;
+      let sent = 0;
+      for (let i = 0; i < chunks; i++) {
+        const blob = file.slice(i * size, Math.min(file.size, (i + 1) * size));
+        for (let attempt = 1; ; attempt++) {
+          let r: Response | null = null;
+          try {
+            r = await fetch(`/api/uploads/${id}/chunks/${i}`, { method: 'PUT', headers: { ...headers(), 'Content-Type': 'application/octet-stream' }, body: blob });
+          } catch { r = null; }
+          if (r && r.ok) break;
+          // client errors other than a timeout are final; network failures and 5xx/408/429 are retried
+          if (r && r.status < 500 && ![408, 429].includes(r.status)) throw new Error(await errorOf(r));
+          if (attempt >= 5) throw new Error(r ? await errorOf(r) : 'Upload failed: the connection keeps dropping. Check the network and try again.');
+          await new Promise(res => setTimeout(res, 1000 * 2 ** (attempt - 1)));
+        }
+        sent += blob.size;
+        setUploadPercent(Math.round(sent / file.size * 100));
       }
-    };
-    xhr.open('POST', `/api/projects/${project.id}/revisions`);
-    Object.entries(headers()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
-    xhr.upload.onprogress = e => setUploadPercent(Math.round(e.loaded / e.total * 100));
-    xhr.onload = () => {
+      const r = await api(`/uploads/${id}/complete`, 'POST');
       setUploadPercent(null);
-      if (xhr.status < 200 || xhr.status >= 300) { reject(new Error(responseError())); return; }
-      void (async () => {
-        const r = JSON.parse(xhr.responseText);
-        await loadRevision(r.id);
-        setProject(await api('/projects/' + project.id));
-        setModal('');
-      })().then(resolve).catch(e => reject(e instanceof Error ? e : new Error(String(e))));
-    };
-    xhr.onerror = () => { setUploadPercent(null); reject(new Error('Upload failed')); };
-    xhr.onabort = () => { setUploadPercent(null); reject(new Error('Upload cancelled')); };
-    xhr.send(data);
-  });
+      await loadRevision(r.id);
+      setProject(await api('/projects/' + project.id));
+      setModal('');
+    } finally {
+      setUploadPercent(null);
+    }
+  };
 
   if (!auth) return <div className="boot"><div className="brand-mark">F</div><span className="spinner" />Opening Forge…{error && <p>{error}</p>}</div>;
 
@@ -509,7 +515,7 @@ function App() {
     <button type="button" className="icon-only" title={layout.left && !layout.focus ? 'Hide model tree' : 'Show model tree'} onClick={() => setLayout({ left: !(layout.left && !layout.focus), focus: false })}>{layout.left && !layout.focus ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button>
     <button type="button" className={'icon-only' + (layout.focus ? ' selected' : '')} title={layout.focus ? 'Exit full canvas (Esc)' : 'Full canvas (F)'} onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
   </>;
-  const workspaceTab = page === 'project' && tab === 'parts' && !!rev && rev.status !== 'processing';
+  const workspaceTab = (page === 'project' || !!vendor) && tab === 'parts' && !!rev && rev.status !== 'processing';
   const ctx = { busy, action, notify };
   const activeJobs = projects.reduce((n: number, p: Any) => n + (p.open_job_orders || 0), 0);
   const signOut = () => action(async () => { await api('/auth/logout', 'POST'); setAuth(await api('/auth/status')); });
@@ -823,7 +829,7 @@ function App() {
                         const asmKey = path.join(' / ');
                         const siblings = path.length ? parts.filter((p: Any) => (p.assembly_path || []).slice(0, path.length).join(' / ') === asmKey) : [];
                         const differ = siblings.filter((p: Any) => p.category !== part.category);
-                        const missing = (k: string) => <button type="button" className="pi-add" onClick={() => setReadyFor(part.id)}>Add</button>;
+                        const missing = (k: string) => editable ? <button type="button" className="pi-add" onClick={() => setReadyFor(part.id)}>Add</button> : <span className="muted">—</span>;
                         const row = (label: string, value: Any, opt = false) => (opt && !value) ? null : <div className="pi-kv" key={label}><span>{label}</span><b>{value || missing(label)}</b></div>;
                         return (
                         <div className="pi">
@@ -859,7 +865,8 @@ function App() {
                                 <span className={part.reviewed ? 'done' : ''}><i>{part.reviewed ? <Check size={11} /> : '2'}</i>Design</span>
                                 <span className={part.doc_reviewed ? 'done' : ''}><i>{part.doc_reviewed ? <Check size={11} /> : '3'}</i>Drawing</span>
                               </div>
-                              <button type="button" className={ready ? '' : 'primary'} onClick={() => setReadyFor(part.id)}>{ready ? <><CheckCircle2 size={15} />Production ready</> : <><Sparkles size={15} />Make production ready</>}</button>
+                              {editable ? <button type="button" className={ready ? '' : 'primary'} onClick={() => setReadyFor(part.id)}>{ready ? <><CheckCircle2 size={15} />Production ready</> : <><Sparkles size={15} />Make production ready</>}</button>
+                                : <p className="pi-ready-note">{ready ? <><CheckCircle2 size={14} />Production ready</> : 'Engineering is still completing this part — manufacture only from released drawings.'}</p>}
                             </div>
                           )}
 
@@ -1268,7 +1275,7 @@ function App() {
                 <label>Machining prefixes<input value={joinList(settings.machining_prefixes)} placeholder="MC-, MACH-" onChange={e => setSettings({ ...settings, machining_prefixes: e.target.value })} /></label>
                 <label>Purchased prefixes (optional)<input value={joinList(settings.purchased_prefixes)} placeholder="PUR-, BO-" onChange={e => setSettings({ ...settings, purchased_prefixes: e.target.value })} /></label>
               </div>
-              <label className="check"><input type="checkbox" checked={!!settings.prefix_strict} onChange={e => setSettings({ ...settings, prefix_strict: e.target.checked })} />Everything that matches no prefix is a purchased item (strict). Off: fall back to name and geometry rules.</label>
+              <label className="check"><input type="checkbox" checked={!!settings.prefix_strict} onChange={e => setSettings({ ...settings, prefix_strict: e.target.checked })} />Everything that matches no prefix is a purchased item (strict), unless it is named like a made part (plate, bracket, cover …). Prefixes are found anywhere in the name, so exporter noise such as 11GT-MC-… still matches. Off: fall back to name and geometry rules.</label>
               <h3>Import behaviour</h3>
               <label className="check"><input type="checkbox" checked={!!settings.hide_purchased_by_default} onChange={e => setSettings({ ...settings, hide_purchased_by_default: e.target.checked })} />Hide small bought-in items (terminals, lidars, connectors, fasteners, multi-body supplier models) in the viewer by default</label>
               <label className="check"><input type="checkbox" checked={!!settings.carry_over_specs} onChange={e => setSettings({ ...settings, carry_over_specs: e.target.checked })} />Carry manufacturing specifications from the active revision into new uploads (matched by part name, then shape). Approvals and review status are never carried.</label>
