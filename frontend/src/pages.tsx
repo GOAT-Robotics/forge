@@ -300,6 +300,9 @@ export function JobOrderDetail({ id, ctx, back, openProject }: { id: string; ctx
                 {key === 'assembly' ? <Flame size={15} /> : key === 'procurement' ? <Box size={15} /> : <Layers size={15} />}
                 <b className="grow">{title}</b>
                 {finished !== null && <small>{finished}/{items[0].required} finished</small>}
+                {jo.qc?.[key] && (() => { const qc = jo.qc[key]; return <span className="jo-qc" title={`Inspection: first article ${qc.fai}; ${qc.inspected} serial(s) inspected; ${qc.critical} critical characteristic(s)`}>
+                  <Badge kind={qc.fai === 'passed' ? 'success' : qc.fai === 'nonconforming' ? 'danger' : qc.fai === 'incomplete' ? 'warning' : ''}>FAI {qc.fai}</Badge>
+                  {qc.inspected > 0 && <small>{qc.inspected} inspected</small>}{qc.open_ncr > 0 && <Badge kind="danger">{qc.open_ncr} NCR</Badge>}</span>; })()}
                 <span className="v-progress-row narrow"><Progress value={100 * done / Math.max(1, req)} /><span className="tabular">{Math.round(100 * done / Math.max(1, req))}%</span></span>
               </button>
               {isOpen && (
