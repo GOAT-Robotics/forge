@@ -77,13 +77,24 @@ def face_features(s):
 # component words; custom parts are named after their function (mount, plate, cover ...).
 PURCHASED_WORDS=r'terminal|relay|mcb|rccb|contactor|plc\b|nvidia|jetson|jenson|pcb|nut\b|bolt|screw|washer|rivet|bearing|motor|gearbox|reducer|encoder|caster|castor|fuse|breaker|battery|charger|speaker|buzzer|beacon|lidar|lider|camera|sensor|proximity|switch|duct|connector|\bcon\b|conector|插座|socket|\bport\b|usb|ethernet|hdmi|antenna|module|card\b|\bsim\b|heat.?sink|gland|grommet|converter|inverter|\bhub\b|\bpin\b|spring|rubber|\bpad\b|tyre|tire|cable|harness|\bled\b|lock\b|\brail(?:\b|_)|manifold_solid|mcadid|^part\d+\^|tl-q5|als-0|xb5|zb5|zbe|2eld|hgh\d|hgr\d|^080-|southco|waveshare|xwst|fenner|pizzato|realsense$|arandela|tuerca|rondelle|vis-|tornillo|vossloh'
 STRONG_PURCHASED=r'terminal|relay|mcb|rccb|contactor|plc\b|nvidia|jetson|jenson|pcb|nut\b|bolt|screw|washer|rivet|bearing|motor|gearbox|reducer|encoder|caster|castor|fuse|breaker|manifold_solid|mcadid|^080-|2eld|hgh\d|hgr\d'
-CUSTOM_WORDS=r'mount|plate|block|clamp|cover|covr|bracket|stand|door|hinge|\brod\b|stopper|spacer|shaft|frame|chassis|gusset|stiffener|lft1500|chrome|gto-la'
+CUSTOM_WORDS=r'mount|plate|block|clamp|cover|covr|bracket|stand|door|hinge|(?<![a-z])rod(?![a-z])|stopper|spacer|shaft|frame|chassis|gusset|stiffener|pillar|closure|trench|(?<![a-z])rib(?![a-z])|guide(?![a-z])|lft1500|chrome|gto-la'
+# Catalogue items that are never made in-house, whatever else the name says ("terminal block", "M3 nut").
+NEVER_CUSTOM=r'terminal|relay|mcb|rccb|contactor|plc\b|nvidia|jetson|jenson|pcb|nut\b|bolt|screw|washer|rivet|bearing|fuse|breaker|manifold_solid|mcadid|^080-|2eld|hgh\d|hgr\d'
+def name_tokens(name):
+ """Words of a CAD name with exporter noise removed: SolidWorks adds config/mirror junk such as '11', '_ISO',
+ 'Mirror' or 'T2CC' around the real part name."""
+ base=re.sub(r'\s*/\s*Body \d+$','',name or '').strip()
+ base=re.sub(r'\s+for\s+.*$','',base,flags=re.I) # "MOUNT BLOCK FOR KINCO MOTOR": the subject is before "for"
+ return [t for t in re.split(r'[^a-z0-9]+',base.lower()) if t and not re.search(r'\d',t)]
 def classify_name(name):
  """Return 'purchased', 'custom' or None from the component name alone."""
  base=re.sub(r'\s*/\s*Body \d+$','',name or '').strip()
  if re.search(r'\.st(e)?p\s*\d*$',base,re.I):return 'purchased'
  custom=bool(re.search(CUSTOM_WORDS,base,re.I));strong=bool(re.search(STRONG_PURCHASED,base,re.I));bought=bool(re.search(PURCHASED_WORDS,base,re.I))
  if custom and not strong:return 'custom'
+ # The head noun decides when both kinds of word appear: "FRONT CASTER MOUNT PLATE" is a plate, not a caster.
+ words=name_tokens(base)
+ if custom and words and re.fullmatch(CUSTOM_WORDS,words[-1]) and not re.search(NEVER_CUSTOM,base,re.I):return 'custom'
  if bought:return 'purchased'
  return None
 HIDDEN_WORDS=r'terminal|lidar|lider|sensor|connector|cable|harness|relay|switch|screw|bolt|nut\b|washer|rivet|plug|antenna|camera|fuse|breaker|mcb|\bled\b|buzzer|beacon|ihawk|waveshare|xb5a|zb5|zbe|2eld|rail|pcb|module|card\b|\bsim\b|charger|battery|duct|plc\b|speaker|gland|\bpin\b|hub\b|usb|port\b|ethernet'
@@ -91,17 +102,32 @@ def hidden_by_default(name,category,provenance='',settings=None):
  """Small bought-in items and multi-body supplier models clutter the viewer; hide them unless asked for."""
  if category!='purchased' or (settings and not settings.get('hide_purchased_by_default',True)):return False
  return bool(re.search(HIDDEN_WORDS,name+' '+provenance,re.I)) or ' / Body ' in name
+def _norm_pn(s):return re.sub(r'[\s_]+','-',str(s).strip().lower())
+def prefix_match(name,settings):
+ """Category whose configured part-number prefix appears in the name, else None. Exporters often wrap the
+ number in noise ('11GT-MC-002-TOP PLATET2CC', '_ISOGT-SM-042', 'Mirror...'), so the prefix may sit anywhere;
+ spaces and underscores count as dashes ('GT_MC' = 'GT-MC'). Earliest match wins."""
+ base=_norm_pn(re.sub(r'\s*/\s*Body \d+$','',name or ''))
+ best=None
+ for category,key in (('sheet_metal','sheet_prefixes'),('machining','machining_prefixes'),('purchased','purchased_prefixes')):
+  for pf in settings.get(key) or []:
+   p=_norm_pn(pf)
+   if not p:continue
+   m=re.search(re.escape(p)+(r'(?![a-z])' if p[-1].isalpha() else ''),base)
+   if m and (best is None or m.start()<best[0]):best=(m.start(),category)
+ return best[1] if best else None
 def classify_prefix(name,settings):
  """Workspace naming convention: part-number prefixes decide the category outright. Returns a category or
- None when no prefix rule applies. In strict mode any name outside the configured prefixes is purchased."""
+ None when no prefix rule applies. In strict mode a name outside the configured prefixes is purchased, unless
+ the name itself reads like a made part (plate, bracket, cover ...): those fall back to geometry so an
+ un-numbered in-house part is not silently dropped from manufacturing."""
  if not settings:return None
- base=re.sub(r'\s*/\s*Body \d+$','',name or '').strip().lower()
- groups=[('sheet_metal',settings.get('sheet_prefixes') or []),('machining',settings.get('machining_prefixes') or []),('purchased',settings.get('purchased_prefixes') or [])]
- configured=any(g[1] for g in groups)
+ configured=any(settings.get(k) for k in ('sheet_prefixes','machining_prefixes','purchased_prefixes'))
  if not configured:return None
- for category,prefixes in groups:
-  if any(base.startswith(str(pf).strip().lower()) for pf in prefixes if str(pf).strip()):return category
- return 'purchased' if settings.get('prefix_strict',True) else None
+ hit=prefix_match(name,settings)
+ if hit:return hit
+ if not settings.get('prefix_strict',True) or classify_name(name)=='custom':return None
+ return 'purchased'
 def geometric_category(g):
  """Sheet / machining guess from stored geometry only (used when re-running classification)."""
  th=g.get('thickness',0) or 0;est=2*g.get('volume',0)/max(g.get('area',1e-10),1e-10)

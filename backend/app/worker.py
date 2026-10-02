@@ -9,6 +9,30 @@ from .drawings import make_part,assembly_pdf,render_meshes,combined_canvas,thumb
 
 def progress(rid,p,message):
  with db.connect() as c:c.execute('UPDATE revisions SET progress=?,message=? WHERE id=?',(p,message,rid))
+def _beat(rid,p,message,started):
+ while True:
+  time.sleep(3);s=int(time.time()-started)
+  try:progress(rid,p,f"{message} · {s//60} min {s%60:02d} s" if s>=60 else f"{message} · {s} s")
+  except Exception:pass
+class stage:
+ """A long single step (reading a large STEP file, meshing the assembly ...) gives no progress of its own and
+ the OpenCascade calls hold the interpreter, so a small side process keeps the status line ticking with the
+ elapsed time. The UI then shows the import is alive instead of a frozen percentage."""
+ def __init__(self,rid,p,message):self.rid,self.p,self.message=rid,p,message;self.proc=None
+ def __enter__(self):
+  progress(self.rid,self.p,self.message)
+  try:
+   import multiprocessing as mp
+   self.proc=mp.get_context('fork').Process(target=_beat,args=(self.rid,self.p,self.message,time.time()),daemon=True);self.proc.start()
+  except Exception:self.proc=None
+  return self
+ def __exit__(self,*exc):
+  if self.proc:
+   self.proc.terminate();self.proc.join(2)
+  return False
+def size_text(path):
+ n=Path(path).stat().st_size
+ return f'{n/1e6:.0f} MB' if n>=1e6 else f'{n/1e3:.0f} kB'
 def parts_for(rid):
  ps=db.rows('SELECT * FROM parts WHERE revision_id=? ORDER BY name',(rid,))
  for p in ps:p['geometry']=json.loads(p['geometry']);p['spec']=json.loads(p['spec'])
@@ -63,7 +87,7 @@ def apply_defaults(spec,g,settings,carried):
 
 def process_import(rid):
  rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));folder=db.revdir(rid);project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));source=folder/('source'+Path(rev['filename']).suffix.lower())
- progress(rid,3,'Reading CAD assembly and preserving component placements');leaves=import_model(source)
+ with stage(rid,3,f'Reading CAD file ({size_text(source)}) and preserving component placements'):leaves=import_model(source)
  if source.suffix in ('.brep','.brp','.igs','.iges') and len(leaves)==1:leaves[0]['name']=Path(rev['filename']).stem
  scene=trimesh.Scene();parts=[];instances={};assembly_meshes=[];warnings=[];num=0;settings=db.project_settings(rev['project_id'])
  # Engineering data from the current active revision is carried into the new one (by name, then by shape),
@@ -77,7 +101,7 @@ def process_import(rid):
  with db.connect() as c:c.execute('DELETE FROM fits WHERE revision_id=?',(rid,));c.execute('DELETE FROM parts WHERE revision_id=?',(rid,))
  for i,leaf in enumerate(leaves):
   if i==0 and source.suffix.lower() in ('.step','.stp'):
-   progress(rid,5,'Reading materials and properties from STEP');step_mat=step_materials(source);header=step_header(source)
+   with stage(rid,5,'Reading materials and properties from STEP'):step_mat=step_materials(source);header=step_header(source)
   elif i==0:step_mat={};header={}
   progress(rid,5+int(65*i/max(len(leaves),1)),f"Analyzing {i+1}/{len(leaves)}: {leaf['name'][:80]}")
   solids=list(explore(leaf['shape'],TopAbs_SOLID))
@@ -99,6 +123,7 @@ def process_import(rid):
    if supplier and classify_name(name)!='custom':g['category']='purchased';g['recognition_notes'].append('Purchased candidate inferred from supplier assembly ancestry; confirm make/buy classification.')
    by_prefix=classify_prefix(name,settings)
    if by_prefix:g['category']=by_prefix;g['classification_confidence']='workspace prefix rule';g['recognition_notes'].append('Category set by the workspace part-number prefix rule.')
+   elif settings.get('prefix_strict',True) and any(settings.get(k) for k in ('sheet_prefixes','machining_prefixes','purchased_prefixes')):g['classification_confidence']='no part number';g['recognition_notes'].append('No configured part-number prefix in the name; classified as a made part from its name and geometry. Confirm and give it a part number.')
    g['source_component']=leaf['key'];g['source_body']=bi;g['fingerprint']=hashlib.sha256((pf/'shape.brep').read_bytes()).hexdigest();spec=dict(db.DEFAULT_SPEC);spec['k_factor']=rules['k_factor']
    excluded=0;exclusion_reason='';hidden_override=None;excluded_by='';excluded_at=''
    old=previous.get('name:'+name) or previous.get('fp:'+g['fingerprint'])
@@ -134,12 +159,12 @@ def process_import(rid):
    g.pop('_process_template',None);g.pop('_drawing_options',None)
    with db.connect() as c:c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,reviewed,hidden,excluded,exclusion_reason,excluded_by,excluded_at,process_template_id,drawing_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,rid,name,p['category'],p['quantity'],json.dumps(g),json.dumps(spec),0,hidden,excluded,exclusion_reason,excluded_by,excluded_at,ptpl,dopt))
  if not parts:raise ValueError('No usable solid bodies found; export solids as STEP or BREP')
- progress(rid,73,'Writing lightweight assembly mesh');scene.export(folder/'assembly.glb');(folder/'instances.json').write_text(json.dumps(instances));progress(rid,78,'Detecting mating surfaces')
- fits=detect_fits(parts,instances)
+ with stage(rid,73,'Writing lightweight assembly mesh'):scene.export(folder/'assembly.glb');(folder/'instances.json').write_text(json.dumps(instances))
+ with stage(rid,78,f'Detecting mating surfaces between {len(parts)} parts'):fits=detect_fits(parts,instances)
  with db.connect() as c:
   for f in fits:c.execute('INSERT INTO fits VALUES(?,?,?,0)',(db.uid(),rid,json.dumps(f)))
- progress(rid,82,'Rendering assembly documentation')
- if assembly_meshes:render_meshes(assembly_meshes,folder/'assembly.png')
+ with stage(rid,82,'Rendering assembly documentation'):
+  if assembly_meshes:render_meshes(assembly_meshes,folder/'assembly.png')
  manifest={'step_header':header,'rules_snapshot':rules,'part_count':len(parts),'component_definitions':len(leaves),'occurrences':sum(p['quantity'] for p in parts),'triangles':sum(p['geometry']['triangles']*p['quantity'] for p in parts),'warnings':warnings,'units':'mm','mesh_deflection':rules['mesh_deflection'],'fit_candidates':len(fits),'carried_over':carried,'carried_from':prev_rev['number'] if prev_rev else None,'rule_coverage':'Configured geometry and workflow rules only; manual checks explicitly required','unsupported':['Native proprietary CAD formats','General double-curved sheet forming','Automatic structural certification','Automatic thread specification recovery'],'instances_file':'instances.json'}
  # Only promote successful revisions; archive the prior active version atomically.
  with db.connect() as c:
@@ -222,13 +247,12 @@ def process_documents(rid,payload):
    ed=attach_view_lines(p,pf,scene,p.get('drawing_edits') or {})
    render_scene(full_scene(p,rev,settings,scene,ed),ed,c=target)
  for c in combined.values():c.save()
- progress(rid,88,'Generating assembly and mating drawings')
  fits=db.rows('SELECT * FROM fits WHERE revision_id=?',(rid,))
  for f in fits:f['data']=json.loads(f['data'])
- if not payload.get('part_id') or not (folder/'assembly.pdf').exists():assembly_pdf(rev,parts,fits,folder,detailed=not bool(payload.get('part_id')))
+ with stage(rid,88,'Generating assembly and mating drawings'):
+  if not payload.get('part_id') or not (folder/'assembly.pdf').exists():assembly_pdf(rev,parts,fits,folder,detailed=not bool(payload.get('part_id')))
  if not payload.get('part_id'):
-  progress(rid,97,'Packaging manufacturing documents')
-  with zipfile.ZipFile(folder/'manufacturing-pack.zip','w',zipfile.ZIP_DEFLATED) as z:
+  with stage(rid,97,'Packaging manufacturing documents'),zipfile.ZipFile(folder/'manufacturing-pack.zip','w',zipfile.ZIP_DEFLATED) as z:
    z.write(folder/'assembly.pdf','assembly.pdf');
    for extra in ['assembly.dxf','machining-drawings.pdf','sheet-metal-drawings.pdf']:
     if (folder/extra).exists():z.write(folder/extra,extra)

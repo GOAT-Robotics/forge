@@ -5,7 +5,7 @@ import { X, Save, Download, Undo2, Redo2, Plus, Eye, EyeOff, RotateCcw, ZoomIn, 
 import type { Any } from './constants';
 import { ask } from './components';
 
-type Edits = { objects: Record<string, { dx?: number; dy?: number; text?: string; hidden?: boolean; page?: number; hidden_lines?: boolean }>; notes: Any[]; views: Any[]; details: Any[]; page_order?: number[]; extra_pages?: { id: string; size: string }[] };
+type Edits = { objects: Record<string, { dx?: number; dy?: number; text?: string; hidden?: boolean; page?: number; hidden_lines?: boolean; flip?: boolean }>; notes: Any[]; views: Any[]; details: Any[]; page_order?: number[]; extra_pages?: { id: string; size: string }[] };
 const DETAIL_SCALES = [1.5, 2, 2.5, 3, 4, 5, 8, 10];
 const DETAIL_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 /** Hidden-detail edges (dashed, two-element dash); centre and bend lines use a four-element chain. */
@@ -89,10 +89,19 @@ function detailPlan(d: Any, view: Any, children: Any[], objects: Any) {
   return { scaled, moved, calls };
 }
 const SHEET_RE = /^(SHEET\s*:\s*)\d+(\s+OF\s+)\d+/;
-function GoatCallout({ g, lines, dx, dy, px, py, chosen, handlers }: { g: Any; lines: string[]; dx: number; dy: number; px: number; py: number; chosen?: boolean; handlers?: Any }) {
+/** Clickable arrowhead: a click flips the arrow to the other side of the feature (SolidWorks arrow handle). */
+function ArrowHandle({ x, y, chosen, onFlip }: { x: number; y: number; chosen?: boolean; onFlip?: (e: React.PointerEvent) => void }) {
+  if (!onFlip) return null;
+  return <circle className="arrow-handle" cx={x} cy={y} r={2.2 * MM} fill={chosen ? '#f59e0b33' : 'transparent'} stroke={chosen ? '#f59e0b' : 'none'} strokeWidth=".6" style={{ cursor: 'pointer' }} onPointerDown={onFlip}><title>Click to flip the arrow inside / outside</title></circle>;
+}
+function GoatCallout({ g, lines, dx, dy, px, py, chosen, handlers, flip, onFlip }: { g: Any; lines: string[]; dx: number; dy: number; px: number; py: number; chosen?: boolean; handlers?: Any; flip?: boolean; onFlip?: (e: React.PointerEvent) => void }) {
   const k = goatCallout(g, lines, dx, dy, px, py);
-  return <><line x1={k.tx} y1={k.ty} x2={k.ax} y2={k.ay} stroke="#111" strokeWidth={.18 * MM} markerStart="url(#goat-arrow)" pointerEvents="none" />
-    <g {...(handlers || {})}><rect x={k.bx - 2} y={k.by - 3} width={k.w + 4} height={k.top - k.by + 5} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />
+  const d = Math.hypot(k.tx - k.ax, k.ty - k.ay) || 1, ux = (k.tx - k.ax) / d, uy = (k.ty - k.ay) / d, ext = 4.8 * MM;
+  return <>{flip
+      ? <><line x1={k.tx} y1={k.ty} x2={k.ax} y2={k.ay} stroke="#111" strokeWidth={.18 * MM} pointerEvents="none" /><line x1={k.tx} y1={k.ty} x2={k.tx + ux * ext} y2={k.ty + uy * ext} stroke="#111" strokeWidth={.18 * MM} markerStart="url(#goat-arrow)" pointerEvents="none" /></>
+      : <line x1={k.tx} y1={k.ty} x2={k.ax} y2={k.ay} stroke="#111" strokeWidth={.18 * MM} markerStart="url(#goat-arrow)" pointerEvents="none" />}
+    <ArrowHandle x={k.tx} y={k.ty} chosen={chosen} onFlip={onFlip} />
+    <g {...(handlers || {})}><rect className="hit" x={k.bx - 2} y={k.by - 3} width={k.w + 4} height={k.top - k.by + 5} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />
       <line x1={k.bx} y1={k.by} x2={k.bx + k.w} y2={k.by} stroke="#111" strokeWidth={.18 * MM} />
       {lines.map((line: string, i: number) => { const w = textWidth(line, k.size, GOAT_FONT); const y = k.by + .9 * MM + k.pitch * (k.n - 1 - i); const x = k.attachLeft ? k.bx + .5 * MM : k.bx + k.w - .5 * MM - w;
         return <g key={i}>{!chosen && <rect x={x - .25 * MM} y={y - .22 * k.size} width={w + .5 * MM} height={k.size * .98} fill="#fff" />}<text transform={`translate(${x} ${y}) scale(1 -1)`} fontFamily={GOAT_FONT} fontSize={k.size}>{line}</text></g>; })}</g></>;
@@ -165,11 +174,84 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
     change(next);
   }
   function patch(patch: Any) { const next = clone(edits); next.objects[selected] = { ...next.objects[selected], ...patch }; change(next); }
+  /** Toggle one object flag (hidden, flip ...) without leaving empty edit records behind. */
+  function toggleFlag(id: string, key: 'hidden' | 'flip') {
+    const next = clone(edits); const o: Any = { ...(next.objects[id] || {}) };
+    if (o[key]) delete o[key]; else o[key] = true;
+    if (Object.keys(o).length) next.objects[id] = o; else delete next.objects[id];
+    change(next);
+  }
+  function flipArrow(e: React.PointerEvent, id: string) {
+    e.stopPropagation(); if (e.button !== 0) return; select(id); if (writable) toggleFlag(id, 'flip');
+  }
+  function resetPosition(id: string) {
+    const next = clone(edits); const o: Any = { ...(next.objects[id] || {}) }; delete o.dx; delete o.dy;
+    if (Object.keys(o).length) next.objects[id] = o; else delete next.objects[id]; change(next);
+  }
+  /** Arrow-key nudge of the selected item (points; Shift = 10x), as in a CAD drawing. */
+  function nudge(dx: number, dy: number) {
+    if (!writable || !selected) return;
+    const next = clone(edits);
+    const n: Any = next.notes.find(n => n.id === selected); const pv: Any = next.views.find(v => v.id === selected);
+    const det: Any = next.details.find(d => 'detail:' + d.id === selected || 'marker:' + d.id === selected);
+    if (n) { n.x += dx; n.y += dy; }
+    else if (pv) { pv.cx += dx; pv.cy += dy; }
+    else if (det) { if (selected.startsWith('detail:')) { det.cx += dx; det.cy += dy; } else { det.x += dx; det.y += dy; } }
+    else if (groups[selected] && ['view', 'callout'].includes(groups[selected].kind)) { const o = next.objects[selected] || {}; next.objects[selected] = { ...o, dx: (o.dx || 0) + dx, dy: (o.dy || 0) + dy }; }
+    else return;
+    change(next);
+  }
+  function deleteSelected() {
+    if (!writable || !selected) return;
+    if (edits.notes.some(n => n.id === selected)) { change({ ...edits, notes: edits.notes.filter(n => n.id !== selected) }); select(''); return; }
+    if (edits.views.some(v => v.id === selected)) { change({ ...edits, views: edits.views.filter(v => v.id !== selected) }); select(''); return; }
+    const det = edits.details.find(d => 'detail:' + d.id === selected || 'marker:' + d.id === selected);
+    if (det) { change({ ...edits, details: edits.details.filter(d => d !== det) }); select(''); return; }
+    if (groups[selected] && ['view', 'callout'].includes(groups[selected].kind) && !edits.objects[selected]?.hidden) toggleFlag(selected, 'hidden');
+  }
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  function openMenu(e: React.MouseEvent, id: string) { e.preventDefault(); e.stopPropagation(); select(id); setMenu({ x: e.clientX, y: e.clientY, id }); }
+  function fitSheet() { const w = paper.current; if (!w || !sheet) return; setZoom(Math.max(.25, Math.min(8, +(Math.min((w.clientWidth - 32) / sheet.width, (w.clientHeight - 32) / sheet.height)).toFixed(2)))); }
+  // SolidWorks-style keys: Esc deselect, Delete removes/hides, arrows nudge, F fits the sheet, Ctrl/⌘ Z/Y/S.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyRef.current = (e: KeyboardEvent) => {
+    const t = e.target as HTMLElement;
+    if (t && (t.closest('input, textarea, select, [contenteditable="true"]'))) return;
+    if (document.querySelector('.overlay.top')) return; // a confirmation dialog is open
+    const mod = e.metaKey || e.ctrlKey; const k = e.key.toLowerCase();
+    if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+    if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+    if (mod && k === 's') { e.preventDefault(); if (writable && dirty) save(); return; }
+    if (mod) return;
+    if (e.key === 'Escape') { e.stopPropagation(); if (menu) setMenu(null); else if (detailMode) setDetailMode(false); else select(''); return; }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
+    const step = e.shiftKey ? 10 : 1;
+    const arrows: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
+    if (arrows[e.key] && selected) { e.preventDefault(); nudge(...arrows[e.key]); return; }
+    if (k === 'f') { e.preventDefault(); fitSheet(); }
+  };
+  useEffect(() => { const h = (e: KeyboardEvent) => keyRef.current(e); window.addEventListener('keydown', h, true); return () => window.removeEventListener('keydown', h, true); }, []);
+  // Middle-button or Space + drag pans the sheet.
+  const pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null); const space = useRef(false); const [panning, setPanning] = useState(false);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.code === 'Space' && !(e.target as HTMLElement)?.closest?.('input, textarea, select, button')) { space.current = true; setPanning(true); e.preventDefault(); } };
+    const up = (e: KeyboardEvent) => { if (e.code === 'Space') { space.current = false; setPanning(false); } };
+    window.addEventListener('keydown', down); window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  }, []);
+  function panStart(e: React.PointerEvent) {
+    if (!(e.button === 1 || (e.button === 0 && space.current)) || !paper.current) return false;
+    e.preventDefault(); e.stopPropagation(); pan.current = { x: e.clientX, y: e.clientY, l: paper.current.scrollLeft, t: paper.current.scrollTop }; (e.currentTarget as Element).setPointerCapture?.(e.pointerId); setPanning(true); return true;
+  }
+  function panMove(e: React.PointerEvent) { const p0 = pan.current; if (!p0 || !paper.current) return false; paper.current.scrollLeft = p0.l - (e.clientX - p0.x); paper.current.scrollTop = p0.t - (e.clientY - p0.y); return true; }
+  function panEnd() { if (!pan.current) return false; pan.current = null; setPanning(space.current); return true; }
   function notePatch(patch: Any) { const next = clone(edits); next.notes = next.notes.map(n => n.id === selected ? { ...n, ...patch } : n); change(next); }
   function undo() { if (!past.length) return; setFuture(f => [clone(edits), ...f]); setEdits(past[past.length - 1]); setPast(p => p.slice(0, -1)); }
   function redo() { if (!future.length) return; setPast(p => [...p, clone(edits)]); setEdits(future[0]); setFuture(f => f.slice(1)); }
   function position(e: React.PointerEvent): [number, number] { const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.current!.getScreenCTM()!.inverse()); return [p.x, sheet.height - p.y]; }
   function start(e: React.PointerEvent, id: string) {
+    if (e.button === 1 || space.current) return; // let the paper pan
+    if (e.button === 2) { e.stopPropagation(); return; }
     e.stopPropagation(); if (detailMode && writable) { addDetail(e); return; } select(id); if (!writable) return;
     const [x, y] = position(e); dragging.current = { id, x, y, edits: clone(current.current) }; svg.current!.setPointerCapture(e.pointerId);
   }
@@ -390,26 +472,29 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
           <button type="button" disabled={!writable} aria-label={'Add ' + pr.label} onClick={() => placeView(pr)}><Plus size={13} /></button></div>)}</div>
         <div className="palette-custom"><label>Azimuth °<input type="number" step="15" value={customAz} onChange={e => setCustomAz(Number(e.target.value) || 0)} /></label><label>Elevation °<input type="number" step="5" min="-89" max="89" value={customEl} onChange={e => setCustomEl(Math.max(-89, Math.min(89, Number(e.target.value) || 0)))} /></label></div>
       </aside>
-      <main className="drawing-paper-wrap" ref={paper}><svg ref={svg} className="drawing-paper" viewBox={`0 0 ${sheet.width} ${sheet.height}`} style={{ width: `${sheet.width * zoom}px`, height: `${sheet.height * zoom}px` }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onPointerDown={e => { if (detailMode && writable) addDetail(e); else select(''); }} onDragOver={e => { if (writable) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }} onDrop={drop}>
+      <main className={'drawing-paper-wrap' + (panning ? ' panning' : '')} ref={paper} onPointerDownCapture={e => { if (panStart(e)) setMenu(null); }} onPointerMove={e => { panMove(e); }} onPointerUp={() => panEnd()} onAuxClick={e => e.preventDefault()} onContextMenu={e => e.preventDefault()}><svg ref={svg} className="drawing-paper" viewBox={`0 0 ${sheet.width} ${sheet.height}`} style={{ width: `${sheet.width * zoom}px`, height: `${sheet.height * zoom}px` }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onPointerDown={e => { setMenu(null); if (e.button !== 0) return; if (detailMode && writable) addDetail(e); else select(''); }} onDragOver={e => { if (writable) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }} onDrop={drop}>
         <defs><marker id="goat-arrow" viewBox="0 0 10 6" refX="0" refY="3" markerUnits="userSpaceOnUse" markerWidth={3.3 * MM} markerHeight={1.0 * MM} orient="auto-start-reverse"><path d="M 10 0 L 0 3 L 10 6 Z" fill="#111" /></marker><marker id="drawing-arrow" viewBox="0 0 10 6" refX="0" refY="3" markerUnits="userSpaceOnUse" markerWidth={3 * 72 / 25.4} markerHeight={1.8 * 72 / 25.4} orient="auto-start-reverse"><path d="M 10 0 L 0 3 L 10 6 Z" fill="#111" /></marker></defs>
         <g transform={`translate(0 ${sheet.height}) scale(1 -1)`}>
           {shown.map((g: Any) => {
-            const [dx, dy] = offset(g, groups, edits); const chosen = selected === g.id; const movable = ['view', 'callout'].includes(g.kind); const props = { onPointerDown: (e: React.PointerEvent) => start(e, g.id), style: { cursor: writable ? 'move' : 'pointer' } };
+            const [dx, dy] = offset(g, groups, edits); const chosen = selected === g.id; const movable = ['view', 'callout'].includes(g.kind); const props = { onPointerDown: (e: React.PointerEvent) => start(e, g.id), onContextMenu: (e: React.MouseEvent) => openMenu(e, g.id), onDoubleClick: () => { if (g.kind === 'callout') setTimeout(() => (document.querySelector('.drawing-properties textarea') as HTMLTextAreaElement | null)?.focus(), 0); }, style: { cursor: writable ? 'move' : 'pointer' } };
             if (g.kind === 'callout' && g.style === 'goat') {
               const lines = (edits.objects[g.id]?.text ?? g.lines.join('\n')).split('\n');
               const [px, py] = groups[g.parent] ? offset(groups[g.parent], groups, edits) : [0, 0];
-              return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1}><GoatCallout g={g} lines={lines} dx={dx} dy={dy} px={px} py={py} chosen={chosen} handlers={props} /></g>;
+              return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1}><GoatCallout g={g} lines={lines} dx={dx} dy={dy} px={px} py={py} chosen={chosen} handlers={props} flip={!!edits.objects[g.id]?.flip} onFlip={e => flipArrow(e, g.id)} /></g>;
             }
             if (g.kind === 'callout') {
               const lines = (edits.objects[g.id]?.text ?? g.lines.join('\n')).split('\n'); const size = g.size || 7.5; const [x0, , , y1] = g.bounds; const x1 = x0 + Math.max(...lines.map((l: string) => textWidth(l, size))) + 6, y0 = y1 - lines.length * 10 - 3;
               const [px, py] = groups[g.parent] ? offset(groups[g.parent], groups, edits) : [0, 0]; const ax = g.anchor[0] + px, ay = g.anchor[1] + py;
               const ex = Math.max(x0 + dx, Math.min(ax, x1 + dx)), ey = Math.max(y0 + dy, Math.min(ay, y1 + dy));
-              return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1}><line x1={ax} y1={ay} x2={ex} y2={ey} stroke="#111" strokeWidth=".4" markerStart="url(#drawing-arrow)" pointerEvents="none" />
-                <g transform={`translate(${dx} ${dy})`} {...props}><rect x={x0 - 2} y={y0 - 2} width={x1 - x0 + 4} height={y1 - y0 + 4} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />{lines.map((line: string, i: number) => <text key={i} transform={`translate(${x0 + 3} ${y1 - 8.5 - i * 10}) scale(1 -1)`} fontFamily="Helvetica, Arial, sans-serif" fontSize={size}>{line}</text>)}</g></g>;
+              const fl = !!edits.objects[g.id]?.flip, ln = Math.hypot(ex - ax, ey - ay) || 1, ext = 4.5 * MM;
+              return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1}><line x1={ax} y1={ay} x2={ex} y2={ey} stroke="#111" strokeWidth=".4" markerStart={fl ? undefined : 'url(#drawing-arrow)'} pointerEvents="none" />
+                {fl && <line x1={ax} y1={ay} x2={ax - (ex - ax) / ln * ext} y2={ay - (ey - ay) / ln * ext} stroke="#111" strokeWidth=".4" markerStart="url(#drawing-arrow)" pointerEvents="none" />}
+                <ArrowHandle x={ax} y={ay} chosen={chosen} onFlip={e => flipArrow(e, g.id)} />
+                <g transform={`translate(${dx} ${dy})`} {...props}><rect className="hit" x={x0 - 2} y={y0 - 2} width={x1 - x0 + 4} height={y1 - y0 + 4} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />{lines.map((line: string, i: number) => <text key={i} transform={`translate(${x0 + 3} ${y1 - 8.5 - i * 10}) scale(1 -1)`} fontFamily="Helvetica, Arial, sans-serif" fontSize={size}>{line}</text>)}</g></g>;
             }
             const [x0, y0, x1, y1] = bounds(g);
             return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1} transform={`translate(${dx} ${dy})`} {...(movable ? props : { pointerEvents: 'none' as const })}>
-              {movable && <rect x={x0 - 3} y={y0 - 3} width={x1 - x0 + 6} height={y1 - y0 + 6} fill="transparent" stroke={chosen ? '#2470e8' : 'none'} strokeDasharray="3 2" strokeWidth=".7" />}
+              {movable && <rect className="hit" x={x0 - 3} y={y0 - 3} width={x1 - x0 + 6} height={y1 - y0 + 6} fill="transparent" stroke={chosen ? '#2470e8' : 'none'} strokeDasharray="3 2" strokeWidth=".7" />}
               {(g.kind === 'view' && edits.objects[g.id]?.hidden_lines === false ? g.nodes.filter((n: Any) => !isHiddenLine(n)) : g.nodes).map((n: Any, i: number) => <VectorNode key={i} n={g.kind === 'fixed' && n.type === 'text' && SHEET_RE.test(n.text) ? { ...n, text: n.text.replace(SHEET_RE, (_m: string, a: string, b: string) => `${a}${order.indexOf(page) + 1}${b}${order.length}`) } : n} />)}</g>;
           })}
           {edits.views.filter(v => v.page === page && v.lines).map(v => {
@@ -439,10 +524,20 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
                   {plan.calls.map(([g, cdx, cdy, cpx, cpy]) => { const t = edits.objects[g.id]?.text; return <GoatCallout key={g.id} g={{ ...g, radius: (g.radius || 0) * d.scale }} lines={(t ?? g.lines.join('\n')).split('\n')} dx={cdx} dy={cdy} px={cpx} py={cpy} />; })}</>; })()}
               <text transform={`translate(${d.cx} ${d.cy - R - 5 * MM}) scale(1 -1)`} textAnchor="middle" fontSize={3.5 * MM * .72} fontFamily="Helvetica, Arial, sans-serif">{`DETAIL ${d.label} (${scaleText(base)})`}</text></g>;
           })}
-          {edits.notes.filter(n => n.page === page).map(n => <g key={n.id} data-drawing-id={n.id} onPointerDown={e => start(e, n.id)} style={{ cursor: writable ? 'move' : 'pointer' }}>
+          {edits.notes.filter(n => n.page === page).map(n => <g key={n.id} data-drawing-id={n.id} onPointerDown={e => start(e, n.id)} onContextMenu={e => openMenu(e, n.id)} style={{ cursor: writable ? 'move' : 'pointer' }}>
             <rect x={n.x - 3} y={n.y - (n.text.split('\n').length - 1) * 12 - 3} width={Math.max(...n.text.split('\n').map((l: string) => textWidth(l, n.size))) + 6} height={n.text.split('\n').length * 12 + 3} fill={selected === n.id ? '#e4f0ff' : 'transparent'} stroke={selected === n.id ? '#2470e8' : 'none'} />
             {n.text.split('\n').map((line: string, i: number) => <text key={i} transform={`translate(${n.x} ${n.y - i * 12}) scale(1 -1)`} fontSize={n.size} fontFamily="Helvetica, Arial, sans-serif">{line}</text>)}</g>)}
-        </g></svg></main>
+        </g></svg>
+        {menu && (() => { const mg = groups[menu.id]; const mo = edits.objects[menu.id] || {}; const isNote = edits.notes.some(n => n.id === menu.id);
+          const item = (label: string, fn: () => void, disabled = !writable) => <button type="button" role="menuitem" disabled={disabled} onClick={() => { setMenu(null); fn(); }}>{label}</button>;
+          return <div className="drawing-menu" role="menu" style={{ left: menu.x, top: menu.y }} onPointerDown={e => e.stopPropagation()}>
+            {mg?.kind === 'callout' && <>{item(mo.flip ? 'Arrow outside → inside' : 'Flip arrow (inside / outside)', () => toggleFlag(menu.id, 'flip'))}{item('Edit text…', () => setTimeout(() => (document.querySelector('.drawing-properties textarea') as HTMLTextAreaElement | null)?.focus(), 0), false)}</>}
+            {mg && ['view', 'callout'].includes(mg.kind) && <>{item(mo.hidden ? 'Show' : 'Hide', () => toggleFlag(menu.id, 'hidden'))}{item('Reset position', () => resetPosition(menu.id), !writable || !(mo.dx || mo.dy))}</>}
+            {mg?.kind === 'view' && mg.nodes?.some(isHiddenLine) && item(mo.hidden_lines === false ? 'Show hidden lines' : 'Hide hidden lines', () => setHiddenLines([menu.id], mo.hidden_lines === false))}
+            {isNote && item('Delete note', deleteSelected)}
+            <small>Arrows nudge · Del hides · Esc deselects · F fits</small>
+          </div>; })()}
+      </main>
       <aside className="drawing-properties"><h3>{selectedDetail ? `Detail ${selectedDetail.label}` : group?.kind === 'callout' ? 'Hole / feature callout' : group?.kind === 'view' ? group.title + ' view' : note ? 'Drawing note' : 'Drawing properties'}</h3>
         {selectedDetail && <div className="placed-view">
           <label>Label<select value={selectedDetail.label} disabled={!writable} onChange={e => detailPatch({ label: e.target.value, id: e.target.value })}>{[...DETAIL_LETTERS].filter(l => l === selectedDetail.label || !edits.details.some(d => d.label === l)).map(l => <option key={l}>{l}</option>)}</select></label>
@@ -457,7 +552,8 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
           <button type="button" disabled={!writable} onClick={() => { change({ ...edits, details: edits.details.filter(d => d !== selectedDetail) }); select(''); }}><Trash2 size={14} />Remove detail</button>
           <small>Drag the circle on the view to choose the area; drag the enlarged view to place it. The detail shows the part geometry; add dimensions as notes if needed.</small>
         </div>}
-        {!group && !note && !selectedView && !selectedDetail && <p>Select a view, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>}
+        {!group && !note && !selectedView && !selectedDetail && <><p>Select a view, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>
+          <dl className="drawing-keys"><dt>Click arrowhead</dt><dd>flip arrow inside / outside</dd><dt>Right-click</dt><dd>flip, hide, reset</dd><dt>Arrow keys</dt><dd>nudge (Shift ×10)</dd><dt>Delete</dt><dd>hide callout / view, delete note</dd><dt>Middle drag / Space drag</dt><dd>pan</dd><dt>Ctrl/⌘ scroll, pinch</dt><dd>zoom</dd><dt>F</dt><dd>fit sheet</dd><dt>Esc</dt><dd>deselect</dd><dt>⌘/Ctrl Z · Y · S</dt><dd>undo · redo · save</dd></dl></>}
         {selectedView && <div className="placed-view">
           <label>Name<input value={selectedView.label} maxLength={80} disabled={!writable} onChange={e => viewPatch({ label: e.target.value })} /></label>
           <label>Scale<select value={String(selectedView.scale)} disabled={!writable} onChange={e => viewPatch({ scale: Number(e.target.value) })}>{!SCALE_OPTIONS.some(([, v]) => Math.abs(v - selectedView.scale) < 1e-6) && <option value={String(selectedView.scale)}>{scaleText(selectedView.scale)}</option>}{SCALE_OPTIONS.map(([t, v]) => <option key={t} value={String(v)}>{t}</option>)}</select></label>
@@ -478,6 +574,9 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
           {edits.objects[selected]?.hidden && <small>Hidden views (with their dimensions and callouts) are left out of the PDF.</small>}</>}
         {group?.kind === 'callout' && <><label>Callout text<textarea aria-label="Callout text" rows={9} disabled={!writable} value={currentText} onChange={e => patch({ text: e.target.value })} /></label>
           <small>{edits.objects[selected]?.text !== undefined ? 'User-specified callout. Source measurements below are unchanged.' : 'Generated from STEP geometry.'}</small>
+          <div className="placed-actions"><button type="button" disabled={!writable} className={edits.objects[selected]?.flip ? 'selected' : ''} title="Arrow on the other side of the feature (or click the arrowhead on the sheet)" onClick={() => toggleFlag(selected, 'flip')}>Flip arrow</button>
+            <button type="button" disabled={!writable} onClick={() => toggleFlag(selected, 'hidden')}>{edits.objects[selected]?.hidden ? 'Show callout' : 'Hide callout'}</button>
+            <button type="button" disabled={!writable || !(edits.objects[selected]?.dx || edits.objects[selected]?.dy)} onClick={() => resetPosition(selected)}>Reset position</button></div>
           <button disabled={!writable} onClick={() => { const next = clone(edits); delete next.objects[selected]; change(next); }}><RotateCcw size={15} />Reset to generated callout</button>
           {group.measurements?.[0]?.hole_ids && <><details><summary>Thread specification</summary><p>Choose only after confirming the intended thread. A bore diameter does not establish a thread or tolerance class.</p>
             <label>Thread<input aria-label="Thread" disabled={!writable} value={thread} onChange={e => setThread(e.target.value)} list="thread-options" /><datalist id="thread-options">{['M3','M4','M5','M6','M8','M10','M12'].map(t => <option key={t}>{t}</option>)}</datalist></label>

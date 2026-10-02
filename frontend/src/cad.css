@@ -407,6 +407,8 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .doc-release > button.primary { height: 26px; padding: 0 10px; font-size: 12px; border-radius: 13px; gap: 5px; }
 
 /* in-app confirm / prompt */
+/* Confirmations can be raised from full-screen editors (drawing editor z 1600); keep them above everything. */
+.overlay.top { z-index: 3000; }
 .ask-dialog { display: grid; gap: 12px; }
 .ask-message { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .ask-choices { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -428,3 +430,17 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .deadline-stat > small { display: block; margin-top: 4px; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
 .deadline-stat.warning b { color: #b45309; }
 .deadline-stat.danger b { color: var(--danger); }
+.pi-ready-note { margin: 0; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; line-height: 1.4; }
+.pi-ready-note svg { color: var(--success); }
+
+/* Drawing editor: SolidWorks-like hover highlight, arrow handles, context menu, panning */
+.drawing-paper g:hover > .hit { stroke: #f08a24; stroke-dasharray: none; }
+.drawing-paper .arrow-handle:hover { fill: #f59e0b44; stroke: #f59e0b; }
+.drawing-paper-wrap.panning, .drawing-paper-wrap.panning * { cursor: grab !important; }
+.drawing-menu { position: fixed; z-index: 2000; min-width: 210px; display: grid; gap: 1px; padding: 5px; background: var(--surface, #fff); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 12px 32px rgba(0,0,0,.22); }
+.drawing-menu button { justify-content: flex-start; border: 0; background: transparent; padding: 7px 10px; border-radius: 6px; font-size: 13px; text-align: left; }
+.drawing-menu button:hover:not(:disabled) { background: var(--hover, #eef3fb); }
+.drawing-menu small { padding: 6px 10px 2px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); margin-top: 3px; }
+.drawing-keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 12px 0 0; font-size: 12px; }
+.drawing-keys dt { font-weight: 600; white-space: nowrap; }
+.drawing-keys dd { margin: 0; color: var(--muted); }

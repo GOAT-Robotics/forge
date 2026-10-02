@@ -141,3 +141,68 @@ def test_hidden_lines_can_be_switched_off_per_view():
  render_scene(scene,{},c=Rec(_io.BytesIO()));with_hidden=sum(1 for d in drawn if d and len(d)==2)
  drawn.clear();render_scene(scene,edits,c=Rec(_io.BytesIO()));without=sum(1 for d in drawn if d and len(d)==2)
  assert with_hidden>0 and without==0
+
+
+def test_callout_arrow_flips_and_callouts_can_be_hidden():
+ import io as _io
+ from reportlab.lib.units import mm
+ from app import sheet
+ from app.cad import analyze
+ from test_goat_sheet import block
+ s=block();g=analyze(s,'BLOCK');p={'id':'b','name':'BLOCK','category':'machining','quantity':1,'geometry':g,'spec':{}}
+ c=SceneCanvas(_io.BytesIO(),pagesize=(297*mm,210*mm))
+ for sh in sheet.build_sheets(s,p,{'number':1},{}):sheet.render_pdf(sh,c)
+ c.save();scene=c.scene('x')
+ call=next(gr for gr in scene['pages'][0]['groups'] if gr['kind']=='callout')
+ view=next(gr for gr in scene['pages'][0]['groups'] if gr['kind']=='view')
+ assert validate_edits(scene,{call['id']:{'flip':True,'hidden':False}},[])
+ with pytest.raises(ValueError):validate_edits(scene,{view['id']:{'flip':True}},[])
+ with pytest.raises(ValueError):validate_edits(scene,{call['id']:{'flip':'yes'}},[])
+ from reportlab.pdfgen import canvas
+ lines=[]
+ class Rec(canvas.Canvas):
+  def line(self,*a):lines.append(a);super().line(*a)
+ render_scene(scene,{},c=Rec(_io.BytesIO()));plain=len(lines)
+ lines.clear();render_scene(scene,{'objects':{call['id']:{'flip':True}}},c=Rec(_io.BytesIO()))
+ assert len(lines)==plain+1, 'flipped arrow draws the extension beyond the feature'
+ lines.clear();render_scene(scene,{'objects':{call['id']:{'hidden':True}}},c=Rec(_io.BytesIO()))
+ assert len(lines)<plain
+
+
+def test_pocket_depth_slot_and_arc_radius_are_called_out():
+ """Pocket floors get a depth note and are located; outline / cut-out arcs get R notes with centres."""
+ from app import sheet
+ from app.cad import analyze
+ from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox,BRepPrimAPI_MakeCylinder
+ from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+ from OCP.gp import gp_Pnt,gp_Ax2,gp_Dir
+ plate=BRepPrimAPI_MakeBox(200,120,12).Shape()
+ pocket=BRepPrimAPI_MakeBox(gp_Pnt(40,30,8),60,40,10).Shape()
+ moon=BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(200,60,-1),gp_Dir(0,0,1)),30,20).Shape()
+ s=BRepAlgoAPI_Cut(BRepAlgoAPI_Cut(plate,pocket).Shape(),moon).Shape()
+ g=analyze(s,'PLATE')
+ feats=sheet.profile_features(s,g)
+ pk=[f for f in feats if f['kind']=='pocket']
+ assert len(pk)==1 and abs(pk[0]['depth']-4)<1e-6 and not pk[0]['open']
+ _,_,arcs=sheet.edge_notes(s,g)
+ assert 30.0 in arcs and arcs[30.0][0]['angle']<2*3.15
+ p={'id':'p','name':'PLATE','category':'machining','quantity':1,'geometry':g,'spec':{}}
+ shs=sheet.build_sheets(s,p,{'number':1},{})
+ texts=[c['lines'][0] for sh in shs for c in sh.callouts.values()]
+ assert any(t.startswith('POCKET') and '4.00' in t for t in texts), texts
+ assert any(t.startswith('R30.00') for t in texts), texts
+
+
+def test_turned_part_gets_diameters_and_shoulders():
+ from app import sheet
+ from app.cad import analyze
+ from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+ from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+ from OCP.gp import gp_Pnt,gp_Ax2,gp_Dir
+ ax=lambda z:gp_Ax2(gp_Pnt(0,0,z),gp_Dir(0,0,1))
+ s=BRepAlgoAPI_Fuse(BRepAlgoAPI_Fuse(BRepPrimAPI_MakeCylinder(ax(0),8,20).Shape(),BRepPrimAPI_MakeCylinder(ax(20),13,5).Shape()).Shape(),BRepPrimAPI_MakeCylinder(ax(25),11,30).Shape()).Shape()
+ tp=sheet.turned_profile(s)
+ assert tp and sorted({round(r*2) for r,_,_ in tp['segs']})==[16,22,26]
+ g=analyze(s,'PIN');p={'id':'p','name':'PIN','category':'machining','quantity':1,'geometry':g,'spec':{}}
+ texts=[c['lines'][0] for sh in sheet.build_sheets(s,p,{'number':1},{}) for c in sh.callouts.values()]
+ for d in ('16.00','22.00','26.00'):assert any(t.startswith('Ø '+d) for t in texts),texts

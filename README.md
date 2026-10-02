@@ -94,6 +94,7 @@ All settings are environment variables, read from `.env` by Docker Compose. See 
 | `AUTH_MICROSOFT_ENTRA_ID_ID` / `_SECRET` / `_ISSUER` | — | Microsoft Entra ID single-tenant sign-in. Filled by `scripts/entra-register.sh`. |
 | `FORGE_ALLOW_LOCAL_LOGIN` | `false` | Keep password sign-in available as break-glass access once Entra is configured. |
 | `MAX_UPLOAD_MB` | `1024` | Largest CAD upload. |
+| `UPLOAD_CHUNK_MB` | `16` | Uploads are sent in chunks of this size, so reverse proxies and tunnels with request-size limits (Cloudflare: 100 MB) accept files of any size. Keep it well below your proxy's limit. |
 | `FORGE_DRAWING_WORKERS` | `3` | Parallel drawing-generation processes in the worker. |
 | `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | — | Optional S3-compatible mirror for uploads and generated files. |
 | `CAD_EXECUTION_MODE` | `local` | `ephemeral` runs each CAD job on a short-lived DigitalOcean Droplet (see below). |

@@ -184,7 +184,7 @@ def render_scene(scene,edits=None,target=None,c=None):
     # Template leader note: arrow stays on the feature (moves with its view), text/shoulder move with the note.
     from .sheet import paint_callout
     parent=groups.get(g.get('parent'));px,py=group_offset(parent,groups,edits.get('objects',{})) if parent else (0,0)
-    paint_callout(c,g,e.get('text','\n'.join(g['lines'])).splitlines(),dx,dy,px,py)
+    paint_callout(c,g,e.get('text','\n'.join(g['lines'])).splitlines(),dx,dy,px,py,flip=bool(e.get('flip')))
    elif g['kind']=='callout':
     lines,bounds,size=annotation(g,e);x0,y0,x1,y1=bounds
     # Moving a view moves its features; moving a callout moves only the text.
@@ -194,6 +194,8 @@ def render_scene(scene,edits=None,target=None,c=None):
     length=math.hypot(ex-ax,ey-ay)
     if length>1:
      ux,uy=(ex-ax)/length,(ey-ay)/length
+     if e.get('flip'):
+      ext=4.5*72/25.4;c.line(ax,ay,ax-ux*ext,ay-uy*ext);ux,uy=-ux,-uy
      # 3 mm long, 1.8 mm wide; match the editable canvas marker.
      head,half_width=3*72/25.4,.9*72/25.4
      p=c.beginPath();p.moveTo(ax,ay);p.lineTo(ax+ux*head-uy*half_width,ay+uy*head+ux*half_width);p.lineTo(ax+ux*head+uy*half_width,ay+uy*head-ux*half_width);p.close();c.drawPath(p,stroke=0,fill=1)
@@ -366,7 +368,7 @@ def paint_detail(c,d,scene,edits):
  from .sheet import paint_callout
  for g,dx,dy,px,py in calls:
   text=objects.get(g['id'],{}).get('text')
-  paint_callout(c,{**g,'radius':g.get('radius',0)*k},(text if text is not None else '\n'.join(g['lines'])).splitlines(),dx,dy,px,py)
+  paint_callout(c,{**g,'radius':g.get('radius',0)*k},(text if text is not None else '\n'.join(g['lines'])).splitlines(),dx,dy,px,py,flip=bool(objects.get(g['id'],{}).get('flip')))
  c.saveState();c.setStrokeColorRGB(0,0,0);c.setLineWidth(.35*MM*.5);c.setDash([]);c.circle(d['cx'],d['cy'],R,stroke=1,fill=0)
  base=(view.get('scale_used') or (scene.get('frame') or {}).get('scale') or 1)*k
  text=f"DETAIL {d['label']} ({scale_text(base)})";c.setFont('Helvetica',3.5*MM*.72);c.setFillColorRGB(0,0,0)
@@ -405,10 +407,11 @@ def validate_edits(scene,objects,notes):
  for id,edit in objects.items():
   g=groups.get(id)
   if not g or g['kind'] not in ('view','callout'):raise ValueError('Only drawing views and callouts can be edited')
-  if set(edit)-{'dx','dy','text','hidden','page','hidden_lines'}:raise ValueError('Unsupported drawing edit')
+  if set(edit)-{'dx','dy','text','hidden','page','hidden_lines','flip'}:raise ValueError('Unsupported drawing edit')
+  if 'flip' in edit and (g['kind']!='callout' or not isinstance(edit['flip'],bool)):raise ValueError('Only callout arrows can be flipped')
   if 'hidden_lines' in edit and (g['kind']!='view' or not isinstance(edit['hidden_lines'],bool)):raise ValueError('Hidden lines can only be switched on views')
   if 'page' in edit and (g['kind']!='view' or g.get('parent') or not isinstance(edit['page'],int) or isinstance(edit['page'],bool) or not 0<=edit['page']<len(scene['pages'])):raise ValueError('Only drawing views can move to another sheet')
-  if 'hidden' in edit and (g['kind']!='view' or not isinstance(edit['hidden'],bool)):raise ValueError('Only views can be hidden')
+  if 'hidden' in edit and not isinstance(edit['hidden'],bool):raise ValueError('Invalid hidden flag')
   if 'text' in edit and g['kind']!='callout':raise ValueError('STEP geometry and measured dimensions are read-only')
   for k in ('dx','dy'):
    v=edit.get(k,0)
