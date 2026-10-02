@@ -953,7 +953,7 @@ def draw_ordinates(sh, v, gid):
             band_bottom = min(band_bottom, ty - w)
             sh.textrects.append((t - DIM_H / 2 - .2, ty - w - .2, t + DIM_H / 2 + .2, ty + .2))
             sh.dims.append({'axis': 'x', 'origin': (origin_px, yb), 'feature': (p, start), 'leader': (t, ty), 'value': val, 'scale': v.scale,
-                            'origin_right': v.origin_right, 'grp': oid})
+                            'origin_right': v.origin_right, 'grp': oid, 'kind': kind})
         xs = px + tx
         sh.occupy((min(xs) - DIM_H / 2 - .5, band_bottom, max(xs) + DIM_H / 2 + .5, box[1]), .4)
     # ---- vertical positions (text horizontal, beside the view)
@@ -990,7 +990,7 @@ def draw_ordinates(sh, v, gid):
             band_x = max(band_x, x0 + w) if right else min(band_x, x0)
             sh.textrects.append((x0 - .2, t - DIM_H / 2 - .2, x0 + w + .2, t + DIM_H / 2 + .2))
             sh.dims.append({'axis': 'y', 'origin': (xb, origin_py), 'feature': (start, p), 'leader': (tx, t), 'value': val, 'scale': v.scale,
-                            'right': right, 'grp': oid})
+                            'right': right, 'grp': oid, 'kind': kind})
         ys = py + ty_
         sh.occupy((box[2], min(ys) - DIM_H / 2 - .5, band_x, max(ys) + DIM_H / 2 + .5) if right else
                   (band_x, min(ys) - DIM_H / 2 - .5, box[0], max(ys) + DIM_H / 2 + .5), .4)
@@ -1938,6 +1938,9 @@ def draw_hole_table(sh, lay, x0, ytop):
         for i, r in enumerate(rows):
             y = ytop - rh * (i + 1)
             x = bx
+            if r is not None:
+                # inspection characteristics: one balloon per row (location X / Y and the hole size)
+                sh.table_rows = getattr(sh, 'table_rows', []) + [{'kind': 'hole', 'row': r, 'box': (bx, y, bx + lay['bw'], y + rh)}]
             for (t, k), w in zip(lay['cols'], lay['widths']):
                 if r is None:
                     sh.text(x + w / 2, y + 1.15, t, size, 'Helvetica-Bold', 'TITLE', ha='c')
@@ -2326,6 +2329,10 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
         for i, row in enumerate(rows):
             y = ytop - rh * (i + 1)
             x = x0
+            if i:
+                b = flat['bends'][i - 1]
+                sh.table_rows = getattr(sh, 'table_rows', []) + [{'kind': 'bend', 'row': {'tag': row[0], 'angle': b['angle'], 'radius': b['radius'],
+                                                                                      'direction': row[1], 'outside_height': b.get('outside_height')}, 'box': (x0, y, x0 + sum(cw), y + rh)}]
             for j, cell in enumerate(row):
                 sh.text(x + cw[j] / 2, y + 1.3, cell, TB_SIZE, 'Helvetica-Bold' if i == 0 else 'Helvetica', 'TITLE', ha='c')
                 x += cw[j]

@@ -70,7 +70,7 @@ def invalidate(rid,pid=None):
  if pid:
   (d/'parts'/pid/'.drawing-invalid').write_text('Part specification changed; regenerate documents')
   with db.connect() as c:c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?",(pid,))
-  for file in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.glb','flat.json','drawing-scene.json']:(d/'parts'/pid/file).unlink(missing_ok=True)
+  for file in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.glb','flat.json','drawing-scene.json','characteristics.json']:(d/'parts'/pid/file).unlink(missing_ok=True)
 
 def enqueue(c,rid,kind,payload={}):
  id=db.uid();c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(id,rid,kind,'queued',db.now(),'',json.dumps(payload)));return id
@@ -724,6 +724,8 @@ def part_asset(pid:str,filename:str,request:Request):
  return FileResponse(f,filename=p['name'].replace('/','_')+'_'+filename if filename.endswith(('.pdf','.dxf')) else None)
 from .workspace import router as platform_router
 app.include_router(platform_router)
+from .quality import router as quality_router
+app.include_router(quality_router)
 # Built UI is served by the same origin; no CORS, no second production web server.
 STATIC=Path(os.getenv('STATIC_DIR',Path(__file__).resolve().parents[2]/'frontend/dist'))
 if STATIC.exists():

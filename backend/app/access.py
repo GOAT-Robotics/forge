@@ -19,6 +19,7 @@ PERMISSIONS = {
     'joborder.create': 'Create and edit job orders',
     'joborder.update': 'Record production / process progress',
     'qc.record': 'Record inspections',
+    'qc.plan': 'Plan inspection: balloons, critical characteristics, limits, nonconformance disposition',
     'cad.download': 'Download STEP / DXF files',
     'share.manage': 'Create and revoke vendor links',
     'templates.manage': 'Manage process and drawing templates',
@@ -32,7 +33,7 @@ ROLES = {
     'reviewer': ('Design reviewer', {'drawing.review', 'design.review', 'drawing.edit'}),
     'production': ('Production planner', {'joborder.create', 'joborder.update', 'qc.record'}),
     'operator': ('Shop floor operator', {'joborder.update'}),
-    'qc': ('Quality inspector', {'qc.record', 'joborder.update'}),
+    'qc': ('Quality inspector', {'qc.record', 'qc.plan', 'joborder.update'}),
     'viewer': ('Viewer (read only)', set()),
 }
 ALIASES = {'owner': 'admin'}  # installations created before RBAC

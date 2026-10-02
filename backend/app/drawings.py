@@ -533,6 +533,13 @@ def make_part(p,rev,folder,rules,combined=None,settings=None):
  frame=getattr(sheets[0],'frame',None) if sheets else None
  if frame is not None:scene['frame']={'n0':[float(x) for x in frame[0]],'up0':[float(x) for x in frame[1]],'scale':float(sheets[0].meta['scale'])}
  (folder/'drawing-scene.json').write_text(json.dumps(scene))
+ # Inspection characteristics (balloons) of the generated sheets, in scene points
+ try:
+  from . import inspection
+  chars=inspection.to_points(inspection.extract(sheets,settings),scene) if sheets else []
+  (folder/'characteristics.json').write_text(json.dumps({'scene_hash':scene['scene_hash'],'chars':chars}))
+ except Exception:
+  import traceback;traceback.print_exc();(folder/'characteristics.json').unlink(missing_ok=True)
  edits=attach_view_lines(p,folder,scene,p.get('drawing_edits') or {})
  fs=full_scene(p,rev,settings,scene,edits)
  render_scene(fs,edits,target=str(folder/'drawing.pdf'))

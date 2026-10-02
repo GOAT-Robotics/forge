@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { usePinchZoom } from './pinchZoom';
 import { api, asset, saveBlob } from './api';
-import { X, Save, Download, Undo2, Redo2, Plus, Eye, EyeOff, RotateCcw, ZoomIn, ZoomOut, Trash2, CheckCircle2, Circle, FileText, ScanSearch, GripVertical } from 'lucide-react';
+import { X, Save, Download, Undo2, Redo2, Plus, Eye, EyeOff, RotateCcw, ZoomIn, ZoomOut, Trash2, CheckCircle2, Circle, FileText, ScanSearch, GripVertical, Hexagon } from 'lucide-react';
 import type { Any } from './constants';
 import { ask } from './components';
 
@@ -126,7 +126,13 @@ function goatCallout(g: Any, lines: string[], dx: number, dy: number, px: number
   return { size, pitch, n, w, bx, by, ax, ay, tx, ty, attachLeft, top: by + .9 * MM + pitch * (n - 1) + size * .75 };
 }
 
-export default function DrawingEditor({ partId, close, onSaved }: { partId: string; close: () => void; onSaved: () => void }) {
+export default function DrawingEditor({ partId, close, onSaved, balloons: balloonsInitially = false }: { partId: string; close: () => void; onSaved: () => void; balloons?: boolean }) {
+  // Inspection balloons (overlay; saved separately from the drawing arrangement)
+  const [showBalloons, setShowBalloons] = useState(balloonsInitially);
+  const [plan, setPlan] = useState<Any>(null);
+  const balloonDrag = useRef<Any>(null);
+  const loadPlan = () => api(`/parts/${partId}/characteristics`).then(setPlan).catch((e: Any) => { setPlan({ chars: [], editable: false, error: e.message }); });
+  useEffect(() => { if (showBalloons && !plan) loadPlan(); }, [showBalloons]);
   const [data, setData] = useState<Any>(null), [edits, setEdits] = useState<Edits>({ objects: {}, notes: [], views: [], details: [] });
   const [detailMode, setDetailMode] = useState(false);
   const [newSize, setNewSize] = useState('A3');
@@ -259,6 +265,8 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
   const pinching = usePinchZoom(paper, zoom, setZoom, { min: .25, max: 8, active: !!data, onPinchStart: () => { const drag = dragging.current; if (drag) { dragging.current = null; setEdits(drag.edits); } } });
   function move(e: React.PointerEvent) {
     if (pinching.current) return;
+    const bd = balloonDrag.current;
+    if (bd) { const [x, y] = position(e); setPlan((p: Any) => ({ ...p, chars: p.chars.map((c: Any) => c.id === bd.n ? { ...c, dx: bd.dx + x - bd.x, dy: bd.dy + y - bd.y } : c) })); bd.moved = true; return; }
     const drag = dragging.current; if (!drag) return;
     const [x, y] = position(e); const dx = x - drag.x, dy = y - drag.y; const next = clone<Edits>(drag.edits);
     if (drag.id.startsWith('detail:') || drag.id.startsWith('marker:')) {
@@ -273,7 +281,15 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
     else { const edit = next.objects[drag.id] || {}; next.objects[drag.id] = { ...edit, dx: (edit.dx || 0) + dx, dy: (edit.dy || 0) + dy }; }
     setEdits(next);
   }
-  function end() { if (!dragging.current) return; const before = dragging.current.edits; dragging.current = null; if (JSON.stringify(before) !== JSON.stringify(current.current)) { setPast(p => [...p.slice(-49), before]); setFuture([]); } }
+  function end() {
+    const bd = balloonDrag.current;
+    if (bd) {
+      balloonDrag.current = null;
+      const c = plan?.chars.find((c: Any) => c.id === bd.n);
+      if (bd.moved && c) api(`/parts/${partId}/balloons/${c.id}`, 'PUT', { dx: c.dx, dy: c.dy }).catch((e: Any) => setError(e.message));
+      return;
+    }
+    if (!dragging.current) return; const before = dragging.current.edits; dragging.current = null; if (JSON.stringify(before) !== JSON.stringify(current.current)) { setPast(p => [...p.slice(-49), before]); setFuture([]); } }
   async function save() {
     setBusy(true); setError('');
     try {
@@ -440,6 +456,7 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
         <button disabled={!writable} onClick={() => { const id = 'note:' + crypto.randomUUID(); change({ ...edits, notes: [...edits.notes, { id, page, x: 150, y: sheet.height - 180, text: 'Manufacturing note', size: 10 }] }); select(id); }}><Plus size={16} />Note</button>
         {hiddenViews.length > 0 && <button disabled={!writable} className={allHiddenShown ? 'selected' : ''} title={allHiddenShown ? 'Hide the dashed hidden edges (holes, pockets behind faces) in every view' : 'Show the dashed hidden edges in every view'} onClick={() => setHiddenLines(hiddenViews, !allHiddenShown)}>{allHiddenShown ? <Eye size={16} /> : <EyeOff size={16} />}Hidden lines</button>}
         <button disabled={!writable} className={detailMode ? 'selected' : ''} title="Detail view: click a crowded area of a view to enlarge it (ISO 128-3)" onClick={() => setDetailMode(!detailMode)}><ScanSearch size={16} />Detail</button>
+        <button className={showBalloons ? 'selected' : ''} title="Inspection balloons: every dimension and note numbered; click one to mark it critical or set its limits" onClick={() => setShowBalloons(!showBalloons)}><Hexagon size={16} />Balloons</button>
         <button onClick={() => setZoom(z => Math.max(.25, +(z - .2).toFixed(2)))} aria-label="Zoom out"><ZoomOut size={16} /></button><button title="Reset to 100% (pinch or Ctrl/⌘ + scroll to zoom)" style={{ minWidth: 58, fontVariantNumeric: 'tabular-nums' }} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(z => Math.min(8, +(z + .2).toFixed(2)))} aria-label="Zoom in"><ZoomIn size={16} /></button>
         <button onClick={save} disabled={!writable || !dirty}><Save size={16} />Save</button>
         {data?.can_review && (data.doc_reviewed
@@ -527,6 +544,29 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
           {edits.notes.filter(n => n.page === page).map(n => <g key={n.id} data-drawing-id={n.id} onPointerDown={e => start(e, n.id)} onContextMenu={e => openMenu(e, n.id)} style={{ cursor: writable ? 'move' : 'pointer' }}>
             <rect x={n.x - 3} y={n.y - (n.text.split('\n').length - 1) * 12 - 3} width={Math.max(...n.text.split('\n').map((l: string) => textWidth(l, n.size))) + 6} height={n.text.split('\n').length * 12 + 3} fill={selected === n.id ? '#e4f0ff' : 'transparent'} stroke={selected === n.id ? '#2470e8' : 'none'} />
             {n.text.split('\n').map((line: string, i: number) => <text key={i} transform={`translate(${n.x} ${n.y - i * 12}) scale(1 -1)`} fontSize={n.size} fontFamily="Helvetica, Arial, sans-serif">{line}</text>)}</g>)}
+          {showBalloons && plan?.chars?.filter((c: Any) => (c.sg && groups[c.sg] ? pageOf(groups[c.sg]) : c.page) === page).map((c: Any) => {
+            const [ox, oy] = c.sg && groups[c.sg] ? offset(groups[c.sg], groups, edits) : [0, 0];
+            const bx = c.balloon[0] + ox + (c.dx || 0), by = c.balloon[1] + oy + (c.dy || 0), r = c.balloon_r;
+            const [x0, y0, x1, y1] = [c.rect[0] + ox, c.rect[1] + oy, c.rect[2] + ox, c.rect[3] + oy];
+            const chosen = selected === 'balloon:' + c.id;
+            if (!c.selected) {
+              // candidate: a faint "+" — click to inspect this dimension / note
+              return <g key={'b' + c.id} className="balloon candidate" style={{ cursor: plan.editable ? 'copy' : 'pointer' }} onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; select('balloon:' + c.id);
+                if (plan.editable) api(`/parts/${partId}/characteristics`, 'PUT', { keys: c.reqs.map((q: Any) => q.key), inspect: true }).then(loadPlan).catch((er: Any) => setError(er.message)); }}>
+                <rect x={x0 - 1} y={y0 - 1} width={x1 - x0 + 2} height={y1 - y0 + 2} fill="transparent" stroke={chosen ? '#1f5fd6' : '#c5d6f2'} strokeWidth=".5" />
+                <circle cx={bx} cy={by} r={r * .7} fill="#fff" stroke="#9aa6b8" strokeWidth={.15 * MM} strokeDasharray="1.5 1" />
+                <text transform={`translate(${bx} ${by - r * .3}) scale(1 -1)`} textAnchor="middle" fontFamily="Helvetica, Arial, sans-serif" fontWeight="700" fontSize={r * .9} fill="#9aa6b8">+</text>
+                <title>Click to inspect: {c.text}</title></g>;
+            }
+            const nx = Math.max(x0, Math.min(bx, x1)), ny = Math.max(y0, Math.min(by, y1)), d = Math.hypot(nx - bx, ny - by) || 1;
+            const kc = c.reqs.some((q: Any) => q.critical), col = kc ? '#c0392b' : '#1f5fd6';
+            const hex = Array.from({ length: 6 }, (_, k) => { const a = Math.PI / 6 + k * Math.PI / 3; return `${bx + r * 1.12 * Math.cos(a)},${by + r * 1.12 * Math.sin(a)}`; }).join(' ');
+            return <g key={'b' + c.id} className={'balloon' + (chosen ? ' chosen' : '')} style={{ cursor: plan.editable ? 'move' : 'pointer' }}
+              onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; select('balloon:' + c.id); if (plan.editable) { const [x, y] = position(e); balloonDrag.current = { n: c.id, x, y, dx: c.dx || 0, dy: c.dy || 0 }; svg.current!.setPointerCapture(e.pointerId); } }}>
+              {c.source.endsWith('_table') ? null : d > r + .5 && <line x1={bx + (nx - bx) / d * r} y1={by + (ny - by) / d * r} x2={nx} y2={ny} stroke={col} strokeWidth={.18 * MM} />}
+              {kc ? <polygon points={hex} fill={chosen ? '#fde2e2' : '#fff'} stroke={col} strokeWidth={.18 * MM * (chosen ? 2 : 1)} /> : <circle cx={bx} cy={by} r={r} fill={chosen ? '#e4f0ff' : '#fff'} stroke={col} strokeWidth={.18 * MM * (chosen ? 2 : 1)} />}
+              <text transform={`translate(${bx} ${by - r * .36}) scale(1 -1)`} textAnchor="middle" fontFamily="Helvetica, Arial, sans-serif" fontWeight="700" fontSize={r * (String(c.number).length < 3 ? 1 : .8)} fill={col}>{c.number}</text></g>;
+          })}
         </g></svg>
         {menu && (() => { const mg = groups[menu.id]; const mo = edits.objects[menu.id] || {}; const isNote = edits.notes.some(n => n.id === menu.id);
           const item = (label: string, fn: () => void, disabled = !writable) => <button type="button" role="menuitem" disabled={disabled} onClick={() => { setMenu(null); fn(); }}>{label}</button>;
@@ -538,7 +578,26 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
             <small>Arrows nudge · Del hides · Esc deselects · F fits</small>
           </div>; })()}
       </main>
-      <aside className="drawing-properties"><h3>{selectedDetail ? `Detail ${selectedDetail.label}` : group?.kind === 'callout' ? 'Hole / feature callout' : group?.kind === 'view' ? group.title + ' view' : note ? 'Drawing note' : 'Drawing properties'}</h3>
+      <aside className="drawing-properties"><h3>{selected.startsWith('balloon:') ? (() => { const c = plan?.chars.find((c: Any) => 'balloon:' + c.id === selected); return c?.number ? `Balloon ${c.number}` : 'Not inspected'; })() : selectedDetail ? `Detail ${selectedDetail.label}` : group?.kind === 'callout' ? 'Hole / feature callout' : group?.kind === 'view' ? group.title + ' view' : note ? 'Drawing note' : 'Drawing properties'}</h3>
+        {selected.startsWith('balloon:') && plan && (() => { const c = plan.chars.find((c: Any) => 'balloon:' + c.id === selected); if (!c) return null;
+          const putChar = async (q: Any, body: Any) => { try { await api(`/parts/${partId}/characteristics/${q.key}`, 'PUT', body); await loadPlan(); setError(''); } catch (e: Any) { setError(e.message); } };
+          const putBalloon = async (b: Any) => { try { await api(`/parts/${partId}/balloons/${c.id}`, 'PUT', { dx: c.dx || 0, dy: c.dy || 0, ...b }); await loadPlan(); } catch (e: Any) { setError(e.message); } };
+          return <div className="balloon-panel">
+            <small>Zone {c.zone} · sheet {c.page + 1} · “{c.text}”</small>
+            {c.reqs.map((q: Any) => <div key={q.key} className={'balloon-req' + (q.critical ? ' kc' : '')}>
+              <label className="check"><input type="checkbox" checked={!!q.inspect} disabled={!plan.editable} onChange={e => putChar(q, { inspect: e.target.checked })} /><b>{q.no ? q.no + ' · ' : ''}{q.label}{q.qty > 1 ? ` (${q.qty}×)` : ''}</b></label>
+              {q.nominal === null ? <small>Attribute check (pass / fail, gauge)</small> : <div className="lim">
+                <label>Lower<input key={'l' + q.lower} defaultValue={q.lower ?? ''} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(v) && v !== q.lower) putChar(q, { lower: v, upper: q.upper }); }} /></label>
+                <span>{q.nominal}</span>
+                <label>Upper<input key={'u' + q.upper} defaultValue={q.upper ?? ''} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(v) && v !== q.upper) putChar(q, { lower: q.lower, upper: v }); }} /></label></div>}
+              <small>{q.basis}{q.basis === 'specified' && plan.editable && <> · <button className="link" onClick={() => putChar(q, { reset_limits: true })}>use general tolerance</button></>}</small>
+              <label className="check"><input type="checkbox" checked={!!q.critical} disabled={!plan.editable} onChange={e => putChar(q, { critical: e.target.checked })} />Critical (KC) — measured on every part</label>
+              <label>Method / gauge<input key={'m' + q.method} defaultValue={q.method} disabled={!plan.editable} placeholder="e.g. CMM, pin gauge, thread gauge" onBlur={e => { if (e.target.value !== (q.method || '')) putChar(q, { method: e.target.value }); }} /></label>
+            </div>)}
+            {plan.editable && <div className="placed-actions"><button type="button" disabled={!c.selected} onClick={() => api(`/parts/${partId}/characteristics`, 'PUT', { keys: c.reqs.map((q: Any) => q.key), inspect: false }).then(loadPlan).catch((e: Any) => setError(e.message))}>Don't inspect</button><button type="button" disabled={!c.dx && !c.dy} onClick={() => putBalloon({ dx: 0, dy: 0 })}>Reset position</button></div>}
+            <small>Tick what is checked; unticked dimensions get no balloon. Grey “+” marks on the sheet add a dimension. Hexagon = critical. Saves immediately; the ballooned copy is the “Inspection drawing” PDF.</small>
+          </div>; })()}
+        {showBalloons && plan?.error && <div className="drawing-error">{plan.error}</div>}
         {selectedDetail && <div className="placed-view">
           <label>Label<select value={selectedDetail.label} disabled={!writable} onChange={e => detailPatch({ label: e.target.value, id: e.target.value })}>{[...DETAIL_LETTERS].filter(l => l === selectedDetail.label || !edits.details.some(d => d.label === l)).map(l => <option key={l}>{l}</option>)}</select></label>
           {(() => { const vg = groups[selectedDetail.view]; const base = vg?.scale_used || data.scene.frame?.scale || 1; return <>
@@ -552,7 +611,7 @@ export default function DrawingEditor({ partId, close, onSaved }: { partId: stri
           <button type="button" disabled={!writable} onClick={() => { change({ ...edits, details: edits.details.filter(d => d !== selectedDetail) }); select(''); }}><Trash2 size={14} />Remove detail</button>
           <small>Drag the circle on the view to choose the area; drag the enlarged view to place it. The detail shows the part geometry; add dimensions as notes if needed.</small>
         </div>}
-        {!group && !note && !selectedView && !selectedDetail && <><p>Select a view, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>
+        {!group && !note && !selectedView && !selectedDetail && !selected.startsWith('balloon:') && <><p>Select a view, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>
           <dl className="drawing-keys"><dt>Click arrowhead</dt><dd>flip arrow inside / outside</dd><dt>Right-click</dt><dd>flip, hide, reset</dd><dt>Arrow keys</dt><dd>nudge (Shift ×10)</dd><dt>Delete</dt><dd>hide callout / view, delete note</dd><dt>Middle drag / Space drag</dt><dd>pan</dd><dt>Ctrl/⌘ scroll, pinch</dt><dd>zoom</dd><dt>F</dt><dd>fit sheet</dd><dt>Esc</dt><dd>deselect</dd><dt>⌘/Ctrl Z · Y · S</dt><dd>undo · redo · save</dd></dl></>}
         {selectedView && <div className="placed-view">
           <label>Name<input value={selectedView.label} maxLength={80} disabled={!writable} onChange={e => viewPatch({ label: e.target.value })} /></label>

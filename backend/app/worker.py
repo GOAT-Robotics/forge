@@ -157,7 +157,11 @@ def process_import(rid):
     assembly_meshes.append((me,T))
    ptpl=(old or {}).get('process_template_id') or g.pop('_process_template','');dopt=(old or {}).get('drawing_options') or json.dumps(g.pop('_drawing_options',{}))
    g.pop('_process_template',None);g.pop('_drawing_options',None)
-   with db.connect() as c:c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,reviewed,hidden,excluded,exclusion_reason,excluded_by,excluded_at,process_template_id,drawing_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,rid,name,p['category'],p['quantity'],json.dumps(g),json.dumps(spec),0,hidden,excluded,exclusion_reason,excluded_by,excluded_at,ptpl,dopt))
+   with db.connect() as c:
+    c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,reviewed,hidden,excluded,exclusion_reason,excluded_by,excluded_at,process_template_id,drawing_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,rid,name,p['category'],p['quantity'],json.dumps(g),json.dumps(spec),0,hidden,excluded,exclusion_reason,excluded_by,excluded_at,ptpl,dopt))
+    # inspection plan (critical flags, specified limits, balloon positions) follows an unchanged part
+    if old and old['geometry'].get('fingerprint')==g['fingerprint']:
+     c.execute('INSERT OR IGNORE INTO char_overrides(part_id,key,data,actor,updated) SELECT ?,key,data,actor,updated FROM char_overrides WHERE part_id=?',(pid,old['id']))
  if not parts:raise ValueError('No usable solid bodies found; export solids as STEP or BREP')
  with stage(rid,73,'Writing lightweight assembly mesh'):scene.export(folder/'assembly.glb');(folder/'instances.json').write_text(json.dumps(instances))
  with stage(rid,78,f'Detecting mating surfaces between {len(parts)} parts'):fits=detect_fits(parts,instances)
@@ -258,7 +262,12 @@ def process_documents(rid,payload):
     if (folder/extra).exists():z.write(folder/extra,extra)
    z.writestr('parts.json',json.dumps(parts,indent=2));z.writestr('fits.json',json.dumps(fits,indent=2));z.writestr('revision.json',json.dumps(rev,indent=2))
    for p in selected:
-    for fn in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','part.step','drawing-scene.json']:
+    try:
+     # ballooned inspection copy of every drawing (characteristics, limits, critical flags)
+     from .quality import inspection_pdf
+     inspection_pdf(p,rev,settings,str(folder/'parts'/p['id']/'inspection.pdf'))
+    except Exception:traceback.print_exc()
+    for fn in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','part.step','drawing-scene.json','characteristics.json','inspection.pdf']:
      f=folder/'parts'/p['id']/fn
      if f.exists():z.write(f,f"parts/{p['id']}/{fn}")
  if payload.get('release'):
@@ -281,7 +290,7 @@ def run_once():
    # Never leave partial outputs stamped RELEASED after a failed release.
    folder=db.revdir(job['revision_id'])
    for artifact in folder.rglob('*'):
-    if artifact.suffix in ('.pdf','.dxf','.zip') or artifact.name in ('flat.json','flat.glb','projections.json','drawing-scene.json'):artifact.unlink(missing_ok=True)
+    if artifact.suffix in ('.pdf','.dxf','.zip') or artifact.name in ('flat.json','flat.glb','projections.json','drawing-scene.json','characteristics.json'):artifact.unlink(missing_ok=True)
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="failed",error=? WHERE id=?',(str(e)[:1000],job['id']))
    if json.loads(job['payload']).get('release'):c.execute('UPDATE revisions SET status="ready",release_by=NULL,release_at=NULL WHERE id=?',(job['revision_id'],))

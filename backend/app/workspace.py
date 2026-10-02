@@ -966,6 +966,19 @@ def jo_payload(jo, full=False):
             s['required'] += i['required']
             s['done'] += min(i['done'], i['required'])
         jo['stations'] = sorted(stations.values(), key=lambda s: -(s['required'] - s['done']))
+        # inspection status per part: first article, serials inspected, open nonconformances
+        from .quality import _summary, _records, load_chars
+        jo['qc'] = {}
+        for part_id in {i['part_id'] for i in items if i['kind'] not in ('procurement', 'assembly')}:
+            p = db.row('SELECT * FROM parts WHERE id=?', (part_id,))
+            if not p:
+                continue
+            try:
+                s = _summary(p, load_chars(p, required=False), _records(part_id)[0])
+                jo['qc'][part_id] = {'fai': s['fai'], 'inspected': sum(1 for x in s['serials'] if x['status'] == 'complete'),
+                                     'serials': len(s['serials']), 'open_ncr': s['open_ncr'], 'critical': s['critical'], 'characteristics': s['characteristics']}
+            except Exception:
+                pass
     return jo
 
 

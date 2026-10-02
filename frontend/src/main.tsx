@@ -17,6 +17,7 @@ import type { Any } from './constants';
 import { Select } from './controls';
 import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams } from './welding';
 import { ReadinessWizard } from './readiness';
+import { QualityPage } from './quality';
 import './style.css';
 import './cad.css';
 
@@ -63,6 +64,7 @@ function App() {
   const [comparison, setComparison] = useState<Any>(null);
   const [uploadPercent, setUploadPercent] = useState<number | null>(null);
   const [drawingPart, setDrawingPart] = useState<string | null>(null);
+  const [balloonMode, setBalloonMode] = useState(false);
   const [readyFor, setReadyFor] = useState<string | null>(null);
   const [partMenu, setPartMenu] = useState(false);
   const [preview, setPreview] = useState<{ blob: Blob; name: string; title: string } | null>(null);
@@ -181,7 +183,7 @@ function App() {
 
   useEffect(() => {
     if (!rev) return;
-    const endpoint = tab === 'assembly' ? 'fits' : tab === 'qc' ? 'qc' : tab === 'review' ? 'comments' : tab === 'audit' ? 'audit' : tab === 'production' ? 'production' : null;
+    const endpoint = tab === 'assembly' ? 'fits' : tab === 'review' ? 'comments' : tab === 'audit' ? 'audit' : tab === 'production' ? 'production' : null;
     setRelated([]); // never render one tab with another tab's rows
     if (endpoint) api(`/revisions/${rev.id}/${endpoint}`).then(setRelated).catch(fail);
   }, [rev?.id, tab]);
@@ -942,7 +944,13 @@ function App() {
                                     return <button type="button" className="pi-file" key={file} disabled={!has} onClick={() => doc(`/parts/${part.id}/assets/${file}`, part.name + '_' + file, title + ' — ' + part.name)}>
                                       <span className="ext">{String(file).split('.').pop()}</span><span><b>{title}</b><small>{has ? sub : 'Not generated'}</small></span>{has && (previewable ? <Eye size={15} /> : <Download size={15} />)}
                                     </button>;
-                                  })}</div>
+                                  })}
+                                    {(() => { const has = part.assets.includes('drawing.pdf'); return <>
+                                      <button type="button" className="pi-file" disabled={!has} onClick={() => doc(`/parts/${part.id}/inspection.pdf`, part.name + '_inspection.pdf', 'Inspection drawing — ' + part.name)}>
+                                        <span className="ext">pdf</span><span><b>Inspection drawing</b><small>{has ? 'Ballooned · characteristics' : 'Not generated'}</small></span>{has && <Eye size={15} />}</button>
+                                      <button type="button" className="pi-file" disabled={!has} onClick={() => doc(`/parts/${part.id}/characteristics.csv`, part.name + '_characteristics.csv')}>
+                                        <span className="ext">csv</span><span><b>Characteristics</b><small>{has ? 'Inspection plan' : 'Not generated'}</small></span>{has && <Download size={15} />}</button></>; })()}
+                                  </div>
                                 </section>
                                 {!vendor && <button type="button" className="pi-generate" disabled={!!job || rev.status !== 'ready'} onClick={() => generate(part.id)}><RefreshCw size={14} className={job ? 'spin' : ''} />{job ? 'Generating…' : 'Regenerate documents'}</button>}
                               </>
@@ -1063,39 +1071,7 @@ function App() {
                   </section>
                 )}
 
-                {tab === 'qc' && (
-                  <section className="content-page">
-                    <div className="page-title">
-                      <div><h2>Quality control</h2><p>Feature-level measurements against approved limits, with serial and instrument traceability.</p></div>
-                      <div className="flex">
-                        <button onClick={() => doc(`/revisions/${rev.id}/qc.csv`, 'qc-revision-' + rev.number + '.csv')}><Download size={16} />Export QC</button>
-                        {!vendor && can('qc.record') && <button className="primary" disabled={rev.status !== 'released'} onClick={() => setModal('qc')}><Plus size={16} />Record inspection</button>}
-                      </div>
-                    </div>
-                    {rev.status !== 'released' && <div className="notice"><ShieldCheck size={17} />Production inspection opens after this revision is released. Set feature limits in the part specifications first.</div>}
-                    <div className="summary-cards">
-                      <div><span>MEASUREMENTS</span><b>{related.length}</b></div>
-                      <div><span>PASS</span><b className="green">{related.filter(x => x.result === 'PASS').length}</b></div>
-                      <div><span>NONCONFORMING</span><b className="red">{related.filter(x => x.result === 'FAIL').length}</b></div>
-                    </div>
-                    <div className="table-wrap">
-                      <table>
-                        <thead><tr><th>Serial / batch</th><th>Part / feature</th><th>Limits</th><th>Measured</th><th>Result</th><th>Instrument / operator</th></tr></thead>
-                        <tbody>
-                          {related.map(q => (
-                            <tr key={q.id}>
-                              <td>{q.serial}</td><td>{parts.find((p: Any) => p.id === q.part_id)?.name}<small>{q.feature}</small></td>
-                              <td>{fmt(q.lower_limit)} – {fmt(q.upper_limit)} {q.unit}</td><td>{fmt(q.measured)} {q.unit}</td>
-                              <td><Badge kind={q.result === 'PASS' ? 'success' : 'danger'}>{q.result}</Badge></td>
-                              <td>{q.instrument}<small>{q.operator} · {date(q.created)}</small></td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {!related.length && <div className="empty-inline"><ClipboardCheck size={30} /><p>No inspection records for this revision.</p></div>}
-                    </div>
-                  </section>
-                )}
+                {tab === 'qc' && <QualityPage rev={rev} vendor={!!vendor} can={can} action={fn => { void action(fn); }} notify={notify} doc={doc} onPlan={pid => { setBalloonMode(true); setDrawingPart(pid); }} />}
 
                 {tab === 'audit' && (
                   <section className="content-page">
@@ -1126,7 +1102,7 @@ function App() {
         else await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: excluding.map((p: Any) => p.id), excluded: true, exclusion_reason: reason });
         await loadRevision(rev.id); setExcluding(null); notify(excluding.length === 1 ? `${excluding[0].name} marked not for production` : `${excluding.length} parts marked not for production`);
       })} />}
-      {drawingPart && <DrawingEditor partId={drawingPart} close={() => setDrawingPart(null)} onSaved={() => loadRevision(rev.id)} />}
+      {drawingPart && <DrawingEditor partId={drawingPart} balloons={balloonMode} close={() => { setDrawingPart(null); setBalloonMode(false); }} onSaved={() => loadRevision(rev.id)} />}
       {readyFor && !drawingPart && rev && (() => {
         const rp = parts.find((p: Any) => p.id === readyFor);
         if (!rp) return null;

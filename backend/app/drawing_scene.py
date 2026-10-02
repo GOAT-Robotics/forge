@@ -165,7 +165,7 @@ def scale_text(s):
  return f'{s:g}:1' if s>=1 else f'1:{round(1/s,2):g}'
 
 
-def render_scene(scene,edits=None,target=None,c=None):
+def render_scene(scene,edits=None,target=None,c=None,balloons=None):
  edits=edits or {};own=c is None
  order=page_order(scene,edits.get('page_order'))
  if own:c=canvas.Canvas(target or io.BytesIO(),pagesize=(scene['pages'][order[0]]['width'],scene['pages'][order[0]]['height']))
@@ -214,6 +214,9 @@ def render_scene(scene,edits=None,target=None,c=None):
   for d in edits.get('details',[]):
    if view_page(scene,d,objects)==page_index:paint_detail_marker(c,d,scene,edits)
    if d['target_page']==page_index:paint_detail(c,d,scene,edits)
+  if balloons:
+   from .inspection import paint_balloons
+   paint_balloons(c,[b for b in balloons if balloon_page(scene,b,objects)==page_index],{g['id']:g for pg in scene['pages'] for g in pg['groups']},objects)
   for note in edits.get('notes',[]):
    if note['page']!=page_index:continue
    c.setFont('Helvetica',note.get('size',9));c.setFillColorRGB(0,0,0)
@@ -265,6 +268,17 @@ def placements(scene,objects):
    target=target if isinstance(target,int) and 0<=target<len(scene['pages']) else i
    out.setdefault(target,[]).append((g,groups))
  return out
+
+
+def balloon_page(scene,b,objects):
+ """Sheet a balloon is shown on: the sheet its view was moved to, else where it was generated."""
+ if b.get('sg') and b['page']<len(scene['pages']):
+  groups={g['id']:g for g in scene['pages'][b['page']]['groups']}
+  g=groups.get(b['sg'])
+  if g:
+   t=objects.get(root_of(g,groups)['id'],{}).get('page')
+   if isinstance(t,int) and 0<=t<len(scene['pages']):return t
+ return b['page']
 
 
 def view_page(scene,d,objects):
