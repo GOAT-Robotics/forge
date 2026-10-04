@@ -51,6 +51,13 @@ def get_rev(rid):
  r=db.row('SELECT * FROM revisions WHERE id=?',(rid,))
  if not r:raise HTTPException(404,'Revision not found')
  return r
+def classifiable(rid):
+ """Category / not-for-production changes only need an active, ready revision: they are allowed while drawings
+ generate (the documents job re-checks categories when it finishes and marks changed parts for regeneration)."""
+ r=get_rev(rid)
+ if r['state']!='active' or r['status']!='ready':raise HTTPException(409,'Part types can be changed on the active revision before release. Upload a new revision to change a released design.')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="import" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'The CAD import is still running; wait for it to finish')
+ return r
 def mutable(rid):
  r=get_rev(rid)
  if r['state']!='active' or r['status']!='ready':raise HTTPException(409,'Only an active, ready revision can be edited. Upload a new revision for archived or released designs.')
@@ -507,7 +514,7 @@ class BulkParts(BaseModel):
 def bulk_parts(rid:str,a:BulkParts,request:Request):
  """Apply flags / a category to many parts at once (multi-select in the navigator)."""
  u=revision_access(request,rid,True);changes={}
- if a.excluded is not None or a.category is not None:mutable(rid)
+ if a.excluded is not None or a.category is not None:classifiable(rid)
  if a.excluded is not None:
   if a.excluded and len(a.exclusion_reason.strip())<3:raise HTTPException(422,'Give a short reason for excluding parts from production')
   changes['excluded']=int(a.excluded);changes['exclusion_reason']=a.exclusion_reason.strip() if a.excluded else '';changes['excluded_by']=u['name'] if a.excluded else '';changes['excluded_at']=db.now() if a.excluded else ''

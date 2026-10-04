@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   MoreHorizontal, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
   FileText, Layers, Link, LogOut, Settings, ShieldCheck, MessageSquare, ClipboardCheck, GitBranch, LoaderCircle, ExternalLink, X, Eye,
-  Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files, Flame,
+  Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files, Flame, Droplet, Keyboard,
 } from 'lucide-react';
 import Viewer from './Viewer';
 import DrawingEditor from './DrawingEditor';
@@ -18,6 +18,7 @@ import { Select } from './controls';
 import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams } from './welding';
 import { ReadinessWizard } from './readiness';
 import { QualityPage } from './quality';
+import { usePrefs, comboOf, ShortcutsDialog, KeyChip } from './prefs';
 import './style.css';
 import './cad.css';
 
@@ -47,6 +48,15 @@ function App() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [isolate, setIsolate] = useState(false);
+  // personal workspace preferences (navigation, display style, shortcuts) and view state
+  const prefsApi = usePrefs();
+  const { prefs, setPrefs, actionFor, binding } = prefsApi;
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [transparentIds, setTransparentIds] = useState<string[]>([]);
+  const [viewCmd, setViewCmd] = useState<{ name: string; n: number } | null>(null);
+  /** Revision whose 3D workspace was opened: kept mounted behind the other tabs. */
+  const modelSeen = useRef<string | null>(null);
+  const viewCommand = (name: string) => setViewCmd(c => ({ name, n: (c?.n || 0) + 1 }));
   const [solo, setSolo] = useState<number | null>(null);
   const lastOccurrence = useRef<number | undefined>(undefined);
   const [mode, setMode] = useState<ViewMode>('3d');
@@ -140,6 +150,8 @@ function App() {
   const openJobOrder = (id: string) => { setJoId(id); setPage('joborder'); };
   const openProjectId = (id: string, t?: string) => action(async () => { await openProject({ id }); if (t) setTab(t); });
   const openProject = async (p: Any) => {
+    // the same project is still loaded behind the list: just show it again (no reload of the 3D model)
+    if (project?.id === p.id && rev) { setPage('project'); return; }
     const d = await api('/projects/' + p.id);
     setProject(d); setRev(null); setSelected(null); setMode('3d'); setIsolate(false); setComparison(null); setTab('parts'); setPage('project'); setJointDraft(null); setPickMode(null);
     const active = d.revisions.find((r: Any) => r.state === 'active') || d.revisions[0];
@@ -190,7 +202,7 @@ function App() {
 
   useEffect(() => {
     if (multi.length < 2) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !modal && !preview && !document.getElementById('popover-root')?.childElementCount) setMulti(selected ? [selected] : []); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !modal && !preview && !document.querySelector('.overlay') && !document.getElementById('popover-root')?.childElementCount) setMulti(selected ? [selected] : []); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [multi.length, modal, preview, selected]);
@@ -332,16 +344,44 @@ function App() {
     const next = current < 0 ? (delta > 0 ? 0 : filtered.length - 1) : (current + delta + filtered.length) % filtered.length;
     choosePart(filtered[next].id); setIsolate(true);
   }, [filtered.map((p: Any) => p.id).join('|'), selected, mode]);
-  useEffect(() => {
-    const onArrow = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (tab !== 'parts' || modal || preview || target?.matches('input, textarea, select, [contenteditable="true"]')) return;
-      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); stepPart(event.key === 'ArrowDown' ? 1 : -1); }
-      else if ((event.key === 'f' || event.key === 'F') && !event.metaKey && !event.ctrlKey && !event.altKey) setLayoutState(l => ({ ...l, focus: !l.focus }));
-      else if (event.key === 'Escape') { if (layout.focus) setLayoutState(l => ({ ...l, focus: false })); else if (!jointDraft) choosePart(null); }
-    };
-    window.addEventListener('keydown', onArrow); return () => window.removeEventListener('keydown', onArrow);
-  }, [stepPart, tab, modal, preview, layout.focus, !!jointDraft]);
+  // Personal keyboard shortcuts (Shortcuts & navigation dialog); defaults follow SolidWorks where the browser allows.
+  const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  shortcutRef.current = (event: KeyboardEvent) => {
+    const target = event.target as HTMLElement | null;
+    if (page !== 'project' || modal || preview || drawingPart || shortcutsOpen || document.querySelector('.overlay')) return;
+    if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+    const hit = actionFor(comboOf(event)); if (!hit) return;
+    const id = hit.id;
+    const sel = multi.length ? multi : selected ? [selected] : [];
+    const run = (fn: () => void) => { event.preventDefault(); fn(); };
+    if (id === 'help.shortcuts') return run(() => setShortcutsOpen(true));
+    if (tab !== 'parts') return;
+    if (id.startsWith('view.') && id !== 'view.planes') {
+      const v = id.slice(5);
+      return run(() => viewCommand(['front', 'back', 'left', 'right', 'top', 'bottom', 'iso'].includes(v) ? 'view:' + v : v === 'fit' ? 'fit' : v === 'zoomSelected' ? 'zoomSelected' : v === 'normal' ? 'normal' : v + (hit.big ? ':big' : '')));
+    }
+    const modes = ['shaded', 'edges', 'wireframe'] as const;
+    switch (id) {
+      case 'view.planes': return run(() => setPrefs({ showPlanes: !prefs.showPlanes }));
+      case 'display.shaded': case 'display.edges': case 'display.wireframe': return run(() => setPrefs({ displayMode: id.slice(8) as Any }));
+      case 'display.cycle': return run(() => setPrefs({ displayMode: modes[(modes.indexOf(prefs.displayMode) + 1) % 3] }));
+      case 'part.isolate': return run(() => { if (sel.length) { setIsolate(v => !v); setMode('3d'); } });
+      case 'part.hide': return run(() => { if (!sel.length || vendor) return; const hide = !parts.filter((p: Any) => sel.includes(p.id)).every((p: Any) => p.hidden); action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: sel, hidden: hide }); await loadRevision(rev.id); }); });
+      case 'part.showHidden': return run(() => setShowHidden(v => !v));
+      case 'part.transparent': return run(() => { if (!sel.length) return; setTransparentIds(t => sel.every(x => t.includes(x)) ? t.filter(x => !sel.includes(x)) : [...new Set([...t, ...sel])]); });
+      case 'part.opaque': return run(() => setTransparentIds([]));
+      case 'part.ghost': return run(() => viewCommand('ghost'));
+      case 'part.next': return run(() => stepPart(1));
+      case 'part.prev': return run(() => stepPart(-1));
+      case 'part.selectAll': return run(() => { const ids = filtered.map((p: Any) => p.id); setMulti(ids); setSelected(ids[0] || null); });
+      case 'select.clear': return run(() => { if (layout.focus) setLayoutState(l => ({ ...l, focus: false })); else if (!jointDraft) choosePart(null); });
+      case 'tool.measure': return run(() => viewCommand('measure'));
+      case 'tool.section': return run(() => viewCommand('section'));
+      case 'tool.explode': return run(() => viewCommand('explode'));
+      case 'layout.focus': return run(() => setLayoutState(l => ({ ...l, focus: !l.focus })));
+    }
+  };
+  useEffect(() => { const h = (e: KeyboardEvent) => shortcutRef.current(e); window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, []);
   /** Navigator click: plain = select, shift = range from the anchor, ctrl/cmd = toggle. */
   const clickRow = (id: string, ev: React.MouseEvent) => {
     if (ev.shiftKey && anchor.current) {
@@ -383,6 +423,7 @@ function App() {
               <button type="button" className="asm-name" title="Select the whole sub-assembly" onClick={() => { setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; if (mode !== '3d') setMode('3d'); }}>
                 <Folder size={15} /><strong>{g.name}</strong><small>{ids.length} part{ids.length === 1 ? '' : 's'} · {cats.length === 1 ? categories[cats[0]] : 'mixed'}</small>
               </button>
+              <button type="button" className={'icon row-eye' + (chosen && isolate ? ' selected' : '')} title="Isolate this sub-assembly (show only its parts)" onClick={() => { if (chosen && isolate) { setIsolate(false); return; } setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; setIsolate(true); if (mode !== '3d') setMode('3d'); }}><Target size={14} /></button>
               {!vendor && <button type="button" className="icon row-eye" title={allHidden ? 'Show sub-assembly in viewer' : 'Hide sub-assembly in viewer'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids, hidden: !allHidden }); await loadRevision(rev.id); })}>{allHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}
             </div>
             {open && <div className="asm-children">{renderTree(g, depth + 1)}</div>}
@@ -485,7 +526,12 @@ function App() {
   const canvasHud = !rev ? null : jointDraft ? (
     <div className="hud-card"><Flame size={15} className="weld-title-icon" /><span><b>{jointDraft.id ? 'Edit weld' : 'Weld setup'}</b><small>{(jointDraft.parts || []).length} component{(jointDraft.parts || []).length === 1 ? '' : 's'} · {(jointDraft.faces || []).filter((f: Any) => f.selection === 'edge').length} seam(s)</small></span></div>
   ) : multi.length > 1 ? (
-    <div className="hud-card"><Layers size={15} /><span><b>{multi.length} parts selected</b><small>Shift-click a range · Ctrl/Cmd-click to toggle</small></span><button type="button" className="icon" title="Clear selection" onClick={() => choosePart(null)}><X size={14} /></button></div>
+    <div className="hud-card"><Layers size={15} /><span><b>{multi.length} parts selected</b><small>Shift-click a range · Ctrl/Cmd-click to toggle</small></span>
+      <span className="hud-actions">
+        <button type="button" className={isolate ? 'selected' : ''} title={`Show only the selected parts (${binding('part.isolate') || 'no key'})`} onClick={() => { setIsolate(!isolate); setMode('3d'); }}><Target size={14} />Isolate</button>
+        <button type="button" className={multi.every(x => transparentIds.includes(x)) ? 'selected' : ''} title={`See through the selected parts (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => multi.every(x => t.includes(x)) ? t.filter(x => !multi.includes(x)) : [...new Set([...t, ...multi])])}><Droplet size={14} />Transparent</button>
+        <button type="button" className="icon" title="Clear selection" onClick={() => choosePart(null)}><X size={14} /></button>
+      </span></div>
   ) : part ? (
     <div className="hud-card">
       <Swatch hex={part.spec.coating_hex || categoryColors[part.category]} title={part.spec.coating_color || categories[part.category]} size={12} />
@@ -501,6 +547,7 @@ function App() {
           <button type="button" className={mode === 'flat2d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern (2D)'} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 size={14} />Flat</button>
           <button type="button" className={mode === 'flat3d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern in 3D'} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan size={14} />Flat 3D</button>
         </>}
+        <button type="button" className={'icon' + (transparentIds.includes(part.id) ? ' selected' : '')} title={`See through this part (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => t.includes(part.id) ? t.filter(x => x !== part.id) : [...t, part.id])}><Droplet size={14} /></button>
         <button type="button" className="icon" title="Clear selection (Esc)" onClick={() => choosePart(null)}><X size={14} /></button>
       </span>
     </div>
@@ -515,9 +562,12 @@ function App() {
   const canvasToolsEnd = !rev ? null : <>
     <button type="button" className={overview && !part && multi.length < 2 && !jointDraft ? 'selected' : ''} title="Revision overview: drawing sets, readiness, part types" onClick={() => { setOverview(o => !o); if (part || multi.length > 1) choosePart(null); setLayout({ right: true, focus: false }); }}><PanelRight size={16} /><span>Overview</span></button>
     <button type="button" className="icon-only" title={layout.left && !layout.focus ? 'Hide model tree' : 'Show model tree'} onClick={() => setLayout({ left: !(layout.left && !layout.focus), focus: false })}>{layout.left && !layout.focus ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button>
-    <button type="button" className={'icon-only' + (layout.focus ? ' selected' : '')} title={layout.focus ? 'Exit full canvas (Esc)' : 'Full canvas (F)'} onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
+    <button type="button" className={'icon-only' + (layout.focus ? ' selected' : '')} title={layout.focus ? 'Exit full canvas (Esc)' : `Full canvas (${binding('layout.focus')})`} onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
+    <button type="button" className="icon-only" title={`Shortcuts & navigation (${binding('help.shortcuts')})`} onClick={() => setShortcutsOpen(true)}><Keyboard size={16} /></button>
+    {transparentIds.length > 0 && <button type="button" title={`${transparentIds.length} transparent part(s) — make all opaque`} onClick={() => setTransparentIds([])}><Droplet size={16} /><span>{transparentIds.length}</span></button>}
   </>;
   const workspaceTab = (page === 'project' || !!vendor) && tab === 'parts' && !!rev && rev.status !== 'processing';
+  if (rev && tab === 'parts' && rev.status !== 'processing') modelSeen.current = rev.id;
   const ctx = { busy, action, notify };
   const activeJobs = projects.reduce((n: number, p: Any) => n + (p.open_job_orders || 0), 0);
   const signOut = () => action(async () => { await api('/auth/logout', 'POST'); setAuth(await api('/auth/status')); });
@@ -577,8 +627,10 @@ function App() {
               </div>
             </div>
           </div>
-        ) : (
-          <>
+        ) : null}
+        {(vendor || project) && (
+          // The open project stays mounted while other pages are shown, so coming back is instant (no model reload).
+          <div className={'project-host' + (vendor || (page === 'project' && project) ? '' : ' kept-hidden')}>
             <header className="doc-bar">
               <div className="doc-id">
                 {!vendor && <><button type="button" className="doc-crumb" onClick={goHome}>Projects</button><ChevronRight size={13} className="doc-sep" /></>}
@@ -641,8 +693,8 @@ function App() {
                 {rev.status === 'failed' && <div className="error-banner">Import failed: {rev.message}. The previous active revision is preserved.</div>}
                 {rev.state === 'archived' && <div className="notice"><Archive size={15} />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
 
-                {tab === 'parts' && (
-                  <div className={'workspace cad' + (layout.left && !layout.focus ? '' : ' no-left') + (layout.right && !layout.focus && inspectorContent ? '' : ' no-right')}>
+                {(tab === 'parts' || modelSeen.current === rev.id) && (
+                  <div className={(tab === 'parts' ? '' : 'kept-hidden ') + 'workspace cad' + (layout.left && !layout.focus ? '' : ' no-left') + (layout.right && !layout.focus && inspectorContent ? '' : ' no-right')}>
                     <aside className="part-list">
                       <div className="list-heading"><h3>{multi.length > 1 ? `${multi.length} selected` : 'Part navigator'}</h3><div className="flex">{multi.length > 1 && <button type="button" className="mini" onClick={() => choosePart(null)}><X size={12} />Clear</button>}{suppressedIds.length > 0 && <button type="button" className={'mini' + (showHidden ? ' selected' : '')} title={showHidden ? 'Hide purchased and hidden parts' : 'Override: show purchased and hidden parts'} onClick={() => setShowHidden(!showHidden)}>{showHidden ? <Eye size={13} /> : <EyeOff size={13} />}{suppressedIds.length}</button>}{hasTree && <button type="button" className={'mini' + (treeView ? ' selected' : '')} title={treeView ? 'Show a flat list' : 'Show the CAD assembly tree'} onClick={() => { const v = !treeView; setTreeView(v); try { localStorage.setItem('forge-nav-tree', v ? 'tree' : 'list'); } catch { /* ignore */ } }}><ListTree size={13} /></button>}<span>{parts.length}</span></div></div>
                       <div className="search"><Search size={16} /><input aria-label="Search parts" placeholder="Find a part…" value={query} onChange={e => setQuery(e.target.value)} /></div>
@@ -757,6 +809,13 @@ function App() {
                             selected={mode === 'flat3d' || jointDraft ? null : selected}
                             isolated={isolate}
                             flat={mode === 'flat3d'}
+                            navStyle={prefs.navStyle}
+                            displayMode={prefs.displayMode}
+                            onDisplayMode={m => setPrefs({ displayMode: m })}
+                            showPlanes={prefs.showPlanes}
+                            onShowPlanes={v => setPrefs({ showPlanes: v })}
+                            transparentIds={transparentIds}
+                            command={viewCmd}
                             appearance={appearance}
                             hidden={canvasHiddenIds}
                             multi={jointDraft ? (jointDraft.parts || []) : multi}
@@ -1090,12 +1149,13 @@ function App() {
                 )}
               </>
             )}
-          </>
+          </div>
         )}
       </main>
 
       {error && <div className="error-toast" role="alert"><AlertTriangle size={18} /><span>{error}</span><button onClick={() => setError('')}><X size={17} /></button></div>}
       <DialogHost />
+      {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
       {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}
       {excluding && <ExcludeDialog parts={excluding} busy={busy} close={() => setExcluding(null)} onConfirm={reason => action(async () => {
         if (excluding.length === 1) await api('/parts/' + excluding[0].id + '/flags', 'PATCH', { excluded: true, exclusion_reason: reason });

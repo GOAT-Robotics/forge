@@ -220,7 +220,10 @@ def extract(sheets, settings=None):
             if not reqs:
                 continue
             r = text_rect(it)
-            rows.append({'page': pi, 'sg': it.get('sg'), 'text': it['s'].strip(), 'source': kind, 'reqs': reqs, 'rect': r, 'rot': it.get('rot', 0)})
+            sg = it.get('sg')
+            if d is not None and d['axis'] in ('x', 'y', 'angle') and str(sg or '').startswith('view:'):
+                sg = 'dim:' + d['grp']  # the balloon follows its dimension when the value is moved
+            rows.append({'page': pi, 'sg': sg, 'text': it['s'].strip(), 'source': kind, 'reqs': reqs, 'rect': r, 'rot': it.get('rot', 0)})
         # reading order: zone rows top to bottom, then left to right
         rows.sort(key=lambda c: (-round(((c['rect'][1] + c['rect'][3]) / 2) / 12.0), (c['rect'][0] + c['rect'][2]) / 2))
         for c in rows:
@@ -338,8 +341,11 @@ def paint_balloons(c, chars, groups, objects):
         if not ch.get('selected', True) or ch.get('number') is None:
             continue
         ox = oy = 0.0
-        if ch.get('sg') and ch['sg'] in groups:
-            ox, oy = group_offset(groups[ch['sg']], groups, objects)
+        sg = ch.get('sg')
+        if sg and f"p{ch.get('page', 0)}:{sg}" in groups:
+            sg = f"p{ch.get('page', 0)}:{sg}"  # ids repeated on a later sheet carry its prefix
+        if sg and sg in groups:
+            ox, oy = group_offset(groups[sg], groups, objects)
         r = ch.get('balloon_r', BALLOON_R * mm)
         bx, by = ch['balloon'][0] + ox + ch.get('dx', 0), ch['balloon'][1] + oy + ch.get('dy', 0)
         x0, y0, x1, y1 = [ch['rect'][0] + ox, ch['rect'][1] + oy, ch['rect'][2] + ox, ch['rect'][3] + oy]

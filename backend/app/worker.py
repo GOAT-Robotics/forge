@@ -270,6 +270,16 @@ def process_documents(rid,payload):
     for fn in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','part.step','drawing-scene.json','characteristics.json','inspection.pdf']:
      f=folder/'parts'/p['id']/fn
      if f.exists():z.write(f,f"parts/{p['id']}/{fn}")
+ # parts re-typed (or excluded) while this job ran were drawn with their old category: regenerate them later
+ changed=False
+ now={r['id']:r for r in db.rows('SELECT id,category,excluded FROM parts WHERE revision_id=?',(rid,))}
+ for p in parts:
+  cur=now.get(p['id'])
+  if cur and (cur['category']!=p['category'] or int(cur['excluded'] or 0)!=int(p.get('excluded') or 0)):
+   d=folder/'parts'/p['id'];d.mkdir(parents=True,exist_ok=True)
+   (d/'.drawing-invalid').write_text('Part type changed while documents were generated; regenerate')
+   full=False;changed=True
+ if payload.get('release') and changed:raise RuntimeError('Part types changed while the release pack was generated; regenerate documents and release again')
  if payload.get('release'):
   with db.connect() as c:c.execute('UPDATE revisions SET status="released" WHERE id=?',(rid,));db.audit(c,'worker','revision.released',{},rid)
  if full:(folder/'.documents-stale').unlink(missing_ok=True)

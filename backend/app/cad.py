@@ -77,7 +77,7 @@ def face_features(s):
 # component words; custom parts are named after their function (mount, plate, cover ...).
 PURCHASED_WORDS=r'terminal|relay|mcb|rccb|contactor|plc\b|nvidia|jetson|jenson|pcb|nut\b|bolt|screw|washer|rivet|bearing|motor|gearbox|reducer|encoder|caster|castor|fuse|breaker|battery|charger|speaker|buzzer|beacon|lidar|lider|camera|sensor|proximity|switch|duct|connector|\bcon\b|conector|插座|socket|\bport\b|usb|ethernet|hdmi|antenna|module|card\b|\bsim\b|heat.?sink|gland|grommet|converter|inverter|\bhub\b|\bpin\b|spring|rubber|\bpad\b|tyre|tire|cable|harness|\bled\b|lock\b|\brail(?:\b|_)|manifold_solid|mcadid|^part\d+\^|tl-q5|als-0|xb5|zb5|zbe|2eld|hgh\d|hgr\d|^080-|southco|waveshare|xwst|fenner|pizzato|realsense$|arandela|tuerca|rondelle|vis-|tornillo|vossloh'
 STRONG_PURCHASED=r'terminal|relay|mcb|rccb|contactor|plc\b|nvidia|jetson|jenson|pcb|nut\b|bolt|screw|washer|rivet|bearing|motor|gearbox|reducer|encoder|caster|castor|fuse|breaker|manifold_solid|mcadid|^080-|2eld|hgh\d|hgr\d'
-CUSTOM_WORDS=r'mount|plate|block|clamp|cover|covr|bracket|stand|door|hinge|(?<![a-z])rod(?![a-z])|stopper|spacer|shaft|frame|chassis|gusset|stiffener|pillar|closure|trench|(?<![a-z])rib(?![a-z])|guide(?![a-z])|lft1500|chrome|gto-la'
+CUSTOM_WORDS=r'mount|plate|block|clamp|cover|covr|bracket|stand|door|hinge|(?<![a-z])rod(?![a-z])|stopper|spacer|shaft|frame|chassis|gusset|stiffener|pillar|closure|trench|(?<![a-z])rib(?![a-z])|guide(?![a-z])|bush|stud(?![a-z])|pivot|axle|collar|sleeve|(?<![a-z])boss(?![a-z])|(?<![a-z])lug(?![a-z])|channel|lft1500|chrome|gto-la'
 # Catalogue items that are never made in-house, whatever else the name says ("terminal block", "M3 nut").
 NEVER_CUSTOM=r'terminal|relay|mcb|rccb|contactor|plc\b|nvidia|jetson|jenson|pcb|nut\b|bolt|screw|washer|rivet|bearing|fuse|breaker|manifold_solid|mcadid|^080-|2eld|hgh\d|hgr\d'
 def name_tokens(name):
@@ -127,6 +127,11 @@ def classify_prefix(name,settings):
  hit=prefix_match(name,settings)
  if hit:return hit
  if not settings.get('prefix_strict',True) or classify_name(name)=='custom':return None
+ # In-house naming without the full part number ("GT_PIVOT_STUD" when the prefixes are GT-SM / GT-MC): the
+ # family stem of the configured prefixes marks the company's own parts; catalogue words still mean bought.
+ stems={re.split(r'[-_ ]',_norm_pn(pf))[0] for k in ('sheet_prefixes','machining_prefixes') for pf in settings.get(k) or [] if _norm_pn(pf)}
+ low=re.sub(r'\s*/\s*Body \d+$','',name or '').lower()
+ if classify_name(name)!='purchased' and any(len(st)>=2 and re.search(r'(?:^|[^a-z]|iso|mirror)'+re.escape(st)+r'[^a-z0-9]+[a-z]{3}',low) for st in stems):return None
  return 'purchased'
 def geometric_category(g):
  """Sheet / machining guess from stored geometry only (used when re-running classification)."""

@@ -206,3 +206,34 @@ def test_turned_part_gets_diameters_and_shoulders():
  g=analyze(s,'PIN');p={'id':'p','name':'PIN','category':'machining','quantity':1,'geometry':g,'spec':{}}
  texts=[c['lines'][0] for sh in sheet.build_sheets(s,p,{'number':1},{}) for c in sh.callouts.values()]
  for d in ('16.00','22.00','26.00'):assert any(t.startswith('Ø '+d) for t in texts),texts
+
+
+def test_dimensions_move_resize_override_and_hide():
+ import io as _io
+ from reportlab.lib.units import mm
+ from reportlab.pdfgen import canvas
+ from app import sheet
+ from app.cad import analyze
+ from test_goat_sheet import block
+ s=block();g=analyze(s,'BLOCK');p={'id':'b','name':'BLOCK','category':'machining','quantity':1,'geometry':g,'spec':{}}
+ c=SceneCanvas(_io.BytesIO(),pagesize=(297*mm,210*mm))
+ for sh in sheet.build_sheets(s,p,{'number':1},{}):sheet.render_pdf(sh,c)
+ c.save();scene=c.scene('x')
+ groups={gr['id']:gr for gr in scene['pages'][0]['groups']}
+ dims=[gr for gr in groups.values() if gr['kind']=='dim']
+ assert dims and all(groups[d['parent']]['kind']=='view' for d in dims), 'ordinates are dimension groups inside their view'
+ d=next(x for x in dims if x['axis'] in ('x','y') and x['text'] not in ('0',''))
+ ok={d['id']:{'dx':12.0,'dy':-6.0,'size':1.5,'text':'<> TYP'}}
+ assert validate_edits(scene,ok,[])
+ for bad in ({'size':9},{'size':True},{'text':'a\nb'},{'flip':True}):
+  with pytest.raises(ValueError):validate_edits(scene,{d['id']:bad},[])
+ texts=[];paths=[]
+ class Rec(canvas.Canvas):
+  def drawString(self,x,y,t,*a,**k):texts.append((t,self._fontsize));super().drawString(x,y,t,*a,**k)
+ render_scene(scene,{},c=Rec(_io.BytesIO()));plain=list(texts)
+ texts.clear();render_scene(scene,{'objects':ok},c=Rec(_io.BytesIO()))
+ assert any(t==d['text']+' TYP' for t,_ in texts), 'text override keeps the measured value'
+ big=[sz for t,sz in texts if t==d['text']+' TYP'][0];small=[sz for t,sz in plain if t==d['text']][0]
+ assert abs(big-small*1.5)<.01
+ texts.clear();render_scene(scene,{'objects':{d['id']:{'hidden':True}}},c=Rec(_io.BytesIO()))
+ assert len(texts)<len(plain)

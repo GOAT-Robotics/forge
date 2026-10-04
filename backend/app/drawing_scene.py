@@ -185,6 +185,10 @@ def render_scene(scene,edits=None,target=None,c=None,balloons=None):
     from .sheet import paint_callout
     parent=groups.get(g.get('parent'));px,py=group_offset(parent,groups,edits.get('objects',{})) if parent else (0,0)
     paint_callout(c,g,e.get('text','\n'.join(g['lines'])).splitlines(),dx,dy,px,py,flip=bool(e.get('flip')))
+   elif g['kind']=='dim':
+    from .sheet import paint_dim
+    parent=groups.get(g.get('parent'));px,py=group_offset(parent,groups,objects) if parent else (0,0)
+    c.saveState();c.translate(px,py);paint_dim(c,g,e.get('text'),e.get('dx',0),e.get('dy',0),e.get('size',1.0));c.restoreState()
    elif g['kind']=='callout':
     lines,bounds,size=annotation(g,e);x0,y0,x1,y1=bounds
     # Moving a view moves its features; moving a callout moves only the text.
@@ -274,7 +278,7 @@ def balloon_page(scene,b,objects):
  """Sheet a balloon is shown on: the sheet its view was moved to, else where it was generated."""
  if b.get('sg') and b['page']<len(scene['pages']):
   groups={g['id']:g for g in scene['pages'][b['page']]['groups']}
-  g=groups.get(b['sg'])
+  g=groups.get(f"p{b['page']}:{b['sg']}") or groups.get(b['sg'])
   if g:
    t=objects.get(root_of(g,groups)['id'],{}).get('page')
    if isinstance(t,int) and 0<=t<len(scene['pages']):return t
@@ -333,7 +337,8 @@ def detail_plan(d,view,children,objects):
  k=d['scale'];R=d['r']*k
  T=lambda x,y:(d['cx']+k*(x-d['x']),d['cy']+k*(y-d['y']))
  inside=lambda x,y:(x-d['x'])**2+(y-d['y'])**2<=(d['r']*1.02)**2
- scaled=[];moved=[];nodes=view['nodes'];shift=None
+ scaled=[];moved=[];shift=None
+ nodes=view['nodes']+[n for g in children if g.get('kind')=='dim' and not objects.get(g['id'],{}).get('hidden') for n in g['nodes']]
  for i,n in enumerate(nodes):
   if n['type']=='path' and not n.get('doFill'):
    scaled.append(n);shift=None;continue
@@ -420,13 +425,15 @@ def validate_edits(scene,objects,notes):
  groups={g['id']:g for page in scene['pages'] for g in page['groups']};out={}
  for id,edit in objects.items():
   g=groups.get(id)
-  if not g or g['kind'] not in ('view','callout'):raise ValueError('Only drawing views and callouts can be edited')
-  if set(edit)-{'dx','dy','text','hidden','page','hidden_lines','flip'}:raise ValueError('Unsupported drawing edit')
+  if not g or g['kind'] not in ('view','callout','dim'):raise ValueError('Only drawing views, dimensions and callouts can be edited')
+  if set(edit)-{'dx','dy','text','hidden','page','hidden_lines','flip','size'}:raise ValueError('Unsupported drawing edit')
+  if 'size' in edit and (g['kind']!='dim' or not isinstance(edit['size'],(int,float)) or isinstance(edit['size'],bool) or not .5<=edit['size']<=3):raise ValueError('Dimension text size must be 50-300 %')
+  if g['kind']=='dim' and 'text' in edit and (not isinstance(edit['text'],str) or len(edit['text'])>80 or '\n' in edit['text']):raise ValueError('Dimension text must be one line of at most 80 characters')
   if 'flip' in edit and (g['kind']!='callout' or not isinstance(edit['flip'],bool)):raise ValueError('Only callout arrows can be flipped')
   if 'hidden_lines' in edit and (g['kind']!='view' or not isinstance(edit['hidden_lines'],bool)):raise ValueError('Hidden lines can only be switched on views')
   if 'page' in edit and (g['kind']!='view' or g.get('parent') or not isinstance(edit['page'],int) or isinstance(edit['page'],bool) or not 0<=edit['page']<len(scene['pages'])):raise ValueError('Only drawing views can move to another sheet')
   if 'hidden' in edit and not isinstance(edit['hidden'],bool):raise ValueError('Invalid hidden flag')
-  if 'text' in edit and g['kind']!='callout':raise ValueError('STEP geometry and measured dimensions are read-only')
+  if 'text' in edit and g['kind'] not in ('callout','dim'):raise ValueError('STEP geometry is read-only')
   for k in ('dx','dy'):
    v=edit.get(k,0)
    if not isinstance(v,(int,float)) or not math.isfinite(v) or abs(v)>1200:raise ValueError('Invalid position')

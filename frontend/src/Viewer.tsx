@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, Crosshair, Flame, CircleDashed } from 'lucide-react';
+import { CadControls, upFor, type NavStyle } from './cadControls';
+import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, Crosshair, Flame, CircleDashed, Square, Grid3x3, Shapes } from 'lucide-react';
 import { loadSecureModel } from './api';
 import { beadGeometry, beadMaterial, labelSprite, pathLength, pathSection, pointAt, resample, type WeldShape, type WeldSelection } from './weld3d';
 
@@ -55,7 +55,22 @@ type Props = {
   /** Extra tool buttons placed at the start / end of the floating tool palette. */
   toolbarStart?: React.ReactNode;
   toolbarEnd?: React.ReactNode;
+  /** Mouse layout: Forge (left rotates) or SolidWorks (middle rotates, Ctrl+middle pans). */
+  navStyle?: NavStyle;
+  /** Shaded, shaded with edges, or wireframe (all edges, faces see-through). */
+  displayMode?: DisplayMode;
+  onDisplayMode?: (m: DisplayMode) => void;
+  /** Parts drawn see-through (the engineer's "change transparency"), independent of selection. */
+  transparentIds?: string[];
+  /** Front / Top / Right reference planes and the origin triad. */
+  showPlanes?: boolean;
+  onShowPlanes?: (v: boolean) => void;
+  /** Imperative view command from a keyboard shortcut ({ name, n }: n makes repeats distinct). */
+  command?: { name: string; n: number } | null;
 };
+export type DisplayMode = 'shaded' | 'edges' | 'wireframe';
+/** Standard view directions (camera position relative to the model, Z up; front looks along +Y). */
+export const VIEW_DIRS: Record<string, number[]> = { front: [0, -1, 0], back: [0, 1, 0], left: [-1, 0, 0], right: [1, 0, 0], top: [0, 0, 1], bottom: [0, 0, -1], iso: [1, -1, 0.85] };
 
 type AnySelection = { part: string; occurrence?: number; selection?: 'face' | 'edge'; type?: string; point?: number[]; normal?: number[]; start?: number[]; end?: number[]; center?: number[]; axis?: number[]; radius?: number; length?: number; boundaries?: number[][][]; preview_mesh?: { vertices: number[][]; triangles: number[][] } };
 
@@ -71,7 +86,8 @@ type Engine = {
   meshes: THREE.Mesh[];
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
+  controls: CadControls;
+  planeGroup: THREE.Group | null;
   plane: THREE.Plane;
   center: THREE.Vector3;
   radius: number;
@@ -79,7 +95,7 @@ type Engine = {
   maxZ: number;
   explodeCurrent: number;
   explodeTarget: number;
-  fly: { from: THREE.Vector3; to: THREE.Vector3; tFrom: THREE.Vector3; tTo: THREE.Vector3; start: number; duration: number } | null;
+  fly: { from: THREE.Vector3; to: THREE.Vector3; tFrom: THREE.Vector3; tTo: THREE.Vector3; start: number; duration: number; upFrom?: THREE.Vector3; upTo?: THREE.Vector3 } | null;
   hovered: THREE.Mesh | null;
   grid: THREE.GridHelper | null;
   featureGroup: THREE.Group | null;
@@ -96,6 +112,21 @@ type Engine = {
 };
 
 const ease = (t: number) => 1 - Math.pow(1 - t, 3);
+
+/** World-sized text label (reference plane names, triad letters). Width/height ratio is kept in userData.aspect. */
+function textSprite(text: string, color: string, bold = true) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  const font = `${bold ? 700 : 500} 56px Inter, system-ui, sans-serif`;
+  ctx.font = font;
+  const w = Math.ceil(ctx.measureText(text).width) + 12, h = 72;
+  canvas.width = w; canvas.height = h;
+  ctx.font = font; ctx.fillStyle = color; ctx.textBaseline = 'middle'; ctx.fillText(text, 6, h / 2 + 2);
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false, transparent: true }));
+  sprite.userData.aspect = w / h; sprite.renderOrder = 41;
+  return sprite;
+}
 
 function distanceToPath(point: THREE.Vector3, path: THREE.Vector3[]) {
   let best = Infinity;
@@ -115,7 +146,7 @@ function sameCadBoundary(a: THREE.Vector3[], b: THREE.Vector3[], tolerance: numb
 }
 
 
-export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd }: Props) {
+export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, command = null }: Props) {
   const weldClick = useRef(onWeldClick); weldClick.current = onWeldClick;
   const drafting = !!jointPreview || seamCandidates.length > 0;
   const seamToggle = useRef(onSeamToggle); seamToggle.current = onSeamToggle;
@@ -154,6 +185,8 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   measuring.current = measure;
   const appearanceRef = useRef(appearance);
   appearanceRef.current = appearance;
+  const navStyleRef = useRef(navStyle);
+  navStyleRef.current = navStyle;
 
   // ---- Scene lifecycle: one renderer per URL --------------------------------------------------
   useEffect(() => {
@@ -180,9 +213,8 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
 
     const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100000);
     camera.up.set(0, 0, 1);
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.1;
+    const controls = new CadControls(camera, renderer.domElement);
+    controls.style = navStyleRef.current;
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f96, 2.4));
     const key = new THREE.DirectionalLight(0xffffff, 2.6);
@@ -204,7 +236,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const e: Engine = {
       scene, meshes, renderer, camera, controls, plane,
       center: new THREE.Vector3(), radius: 100, minZ: 0, maxZ: 100,
-      explodeCurrent: 0, explodeTarget: 0, fly: null, hovered: null, grid: null, featureGroup: null, weldGroup: null, savedWeldGroup: null, seamGroup: null, references: [], hoverGroup: null, edgeLines: [], loaded: false,
+      explodeCurrent: 0, explodeTarget: 0, fly: null, hovered: null, grid: null, planeGroup: null, featureGroup: null, weldGroup: null, savedWeldGroup: null, seamGroup: null, references: [], hoverGroup: null, edgeLines: [], loaded: false,
       fit: () => {}, applyExplode: () => {},
     };
     engine.current = e;
@@ -232,14 +264,16 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         ? new THREE.Vector3(...dir).normalize()
         : camera.position.clone().sub(controls.target).normalize();
       if (!dir && direction.lengthSq() < 1e-6) direction.set(1, -1, 0.85).normalize();
+      const upTo = dir ? upFor(direction) : camera.up.clone();
       const to = c.clone().add(direction.multiplyScalar(dist));
       camera.near = Math.max(e.radius / 2000, 0.01);
       camera.far = e.radius * 200;
       camera.updateProjectionMatrix();
       if (animate) {
-        e.fly = { from: camera.position.clone(), to, tFrom: controls.target.clone(), tTo: c, start: performance.now(), duration: 650 };
+        e.fly = { from: camera.position.clone(), to, tFrom: controls.target.clone(), tTo: c, start: performance.now(), duration: 650, upFrom: camera.up.clone(), upTo };
       } else {
         camera.position.copy(to);
+        camera.up.copy(upTo);
         controls.target.copy(c);
         controls.update();
       }
@@ -266,19 +300,49 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           };
           const visibleMatrix = chosen >= 0 ? exploded(bases[chosen]) : null;
           const collapsed = visibleMatrix ? new THREE.Matrix4().makeScale(0, 0, 0).setPosition(gc.clone().applyMatrix4(visibleMatrix)) : null;
+          const deltas: (THREE.Vector3 | null)[] = [];
           bases.forEach((base, i) => {
-            mesh.setMatrixAt(i, collapsed && i !== chosen ? collapsed : exploded(base));
+            const m = collapsed && i !== chosen ? collapsed : exploded(base);
+            mesh.setMatrixAt(i, m);
+            deltas.push(collapsed && i !== chosen ? null : new THREE.Vector3(m.elements[12] - base.elements[12], m.elements[13] - base.elements[13], m.elements[14] - base.elements[14]));
           });
+          mesh.userData.deltas = deltas;
           mesh.instanceMatrix.needsUpdate = true;
           mesh.computeBoundingBox();
           mesh.computeBoundingSphere();
         } else {
           mesh.position.copy(mesh.userData.base);
           if (k > 0 && mesh.userData.explode) mesh.position.addScaledVector(mesh.userData.explode, EXPLODE_SPREAD * k);
+          mesh.userData.deltas = [mesh.position.clone().sub(mesh.userData.base)];
         }
+      }
+      // edge lines follow their body (explode, single-occurrence view)
+      const byPart = new Map(meshes.map(m => [String(m.userData.partId), m]));
+      for (const line of e.edgeLines) {
+        const d = (byPart.get(String(line.userData.partId))?.userData.deltas || [])[line.userData.occurrence ?? 0];
+        line.userData.collapsed = d === null;
+        line.position.copy(line.userData.basePos).add(d || new THREE.Vector3());
       }
       // Keep the ground grid under the lowest exploded body.
       if (e.grid) e.grid.position.z = e.minZ - e.radius * (0.04 + EXPLODE_SPREAD * k);
+    };
+
+    // ---- Orientation triad (bottom-right corner): X red, Y green, Z blue, follows the view -------------
+    const triadScene = new THREE.Scene();
+    const triadCam = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
+    for (const [axis, color, label] of [[new THREE.Vector3(1, 0, 0), 0xd63b3b, 'X'], [new THREE.Vector3(0, 1, 0), 0x2f9e44, 'Y'], [new THREE.Vector3(0, 0, 1), 0x2563eb, 'Z']] as const) {
+      triadScene.add(new THREE.ArrowHelper(axis, new THREE.Vector3(), 1, color, 0.32, 0.18));
+      const sprite = textSprite(label, '#' + color.toString(16).padStart(6, '0'));
+      sprite.position.copy(axis.clone().multiplyScalar(1.38)); sprite.scale.set(0.5, 0.5, 1); triadScene.add(sprite);
+    }
+    const drawTriad = () => {
+      const size = 86, w = container.clientWidth;
+      triadCam.position.copy(camera.position).sub(controls.target).setLength(4);
+      triadCam.up.copy(camera.up); triadCam.lookAt(0, 0, 0);
+      renderer.setScissorTest(true);
+      renderer.setScissor(w - size - 10, 10, size, size); renderer.setViewport(w - size - 10, 10, size, size);
+      renderer.autoClear = false; renderer.clearDepth(); renderer.render(triadScene, triadCam); renderer.autoClear = true;
+      renderer.setScissorTest(false); renderer.setViewport(0, 0, w, container.clientHeight);
     };
 
     // ---- Picking ------------------------------------------------------------------------------
@@ -463,7 +527,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           const edgeGeometry = new THREE.EdgesGeometry(g.geometry, 28);
           const addEdges = (matrix: THREE.Matrix4, occurrence: number) => {
             const line = new THREE.LineSegments(edgeGeometry.clone(), new THREE.LineBasicMaterial({ color: 0xb99b7f, transparent: true, opacity: 0.42, depthTest: true }));
-            line.applyMatrix4(matrix); line.userData.partId = g.id; line.userData.occurrence = occurrence; line.visible = false; line.renderOrder = 12; edgeGroup.add(line); e.edgeLines.push(line);
+            line.applyMatrix4(matrix); line.userData.basePos = line.position.clone(); line.userData.partId = g.id; line.userData.occurrence = occurrence; line.visible = false; line.renderOrder = 12; edgeGroup.add(line); e.edgeLines.push(line);
           };
           if (g.matrices.length > 1) g.matrices.forEach(addEdges); else addEdges(g.matrices[0], 0);
           edgeGeometry.dispose();
@@ -511,6 +575,11 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         const k = ease(t);
         camera.position.lerpVectors(e.fly.from, e.fly.to, k);
         controls.target.lerpVectors(e.fly.tFrom, e.fly.tTo, k);
+        if (e.fly.upFrom && e.fly.upTo) {
+          camera.up.lerpVectors(e.fly.upFrom, e.fly.upTo, k);
+          if (camera.up.lengthSq() < 1e-6) camera.up.copy(e.fly.upTo);
+          camera.up.normalize();
+        }
         if (t >= 1) e.fly = null;
       }
       if (Math.abs(e.explodeTarget - e.explodeCurrent) > 0.05) {
@@ -518,8 +587,10 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         if (Math.abs(e.explodeTarget - e.explodeCurrent) <= 0.05) e.explodeCurrent = e.explodeTarget;
         e.applyExplode();
       }
+      if (!container.clientWidth) return; // kept mounted behind another tab: no GPU work
       controls.update();
       renderer.render(scene, camera);
+      drawTriad();
       frames++;
       if (now - last > 800) {
         const rate = frames * 1000 / (now - last);
@@ -558,6 +629,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const hiddenSet = new Set(hidden);
     const multiSet = new Set(multi);
     const focusSet = new Set(focusIds);
+    const seeThrough = new Set(transparentIds);
     const refresh = () => {
       const e = engine.current;
       if (!e) return;
@@ -573,31 +645,109 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           // Keep the part's own (coating) colour and add a warm accent glow so the selection reads on any colour.
           mat.color.copy(base);
           mat.emissive.copy(SELECT_COLOR); mat.emissiveIntensity = 0.18;
-          mat.opacity = 1; mat.depthWrite = true;
+          mat.opacity = seeThrough.has(id) ? 0.3 : 1; mat.depthWrite = !seeThrough.has(id);
         } else {
           mat.color.copy(base);
           mat.emissiveIntensity = 1;
           mat.emissive.copy(hovered ? HOVER_EMISSIVE : new THREE.Color(0x000000));
           const ghosted = ghost && !!selected && !isolated;
-          mat.opacity = ghosted ? GHOST_OPACITY : 1;
-          mat.depthWrite = !ghosted;
+          mat.opacity = ghosted ? GHOST_OPACITY : seeThrough.has(id) ? 0.3 : 1;
+          mat.depthWrite = mat.opacity >= 1;
         }
+        // wireframe: faces are not drawn but stay pickable (the raycast ignores material visibility)
+        mat.visible = displayMode !== 'wireframe' || !!pickMode;
         mesh.renderOrder = active ? 2 : mat.opacity < 1 ? 1 : 0;
         mat.needsUpdate = false;
       }
+      const meshOf = new Map(e.meshes.map(m => [String(m.userData.partId), m]));
+      const drawEdges = displayMode !== 'shaded' && !pickMode;
       for (const line of e.edgeLines) {
-        const sourceVisible = e.meshes.some(m => m.userData.partId === line.userData.partId && m.visible);
-        const representative = representativeOccurrences[String(line.userData.partId)];
-        line.visible = pickMode === 'edge' && sourceVisible && (representative === undefined || line.userData.occurrence === representative);
+        const id = String(line.userData.partId);
+        const src = meshOf.get(id);
+        const sourceVisible = !!src?.visible;
+        const representative = representativeOccurrences[id];
+        const lm = line.material as THREE.LineBasicMaterial;
+        if (pickMode === 'edge') {
+          line.visible = sourceVisible && (representative === undefined || line.userData.occurrence === representative);
+          lm.color.set(0xb99b7f); lm.opacity = 0.42; lm.depthTest = true;
+        } else if (drawEdges) {
+          const active = (!!selected && id === selected) || multiSet.has(id);
+          const faded = (src?.material as THREE.MeshStandardMaterial | undefined)?.opacity ?? 1;
+          line.visible = sourceVisible && !line.userData.collapsed;
+          lm.color.set(active ? 0x1d4ed8 : displayMode === 'wireframe' ? 0x2b3340 : 0x1a1f27);
+          lm.opacity = displayMode === 'wireframe' ? (faded < 1 && !active ? 0.25 : 0.9) : faded < 1 && !active ? 0.12 : 0.55;
+          lm.depthTest = displayMode !== 'wireframe';
+        } else line.visible = false;
       }
       e.plane.constant = section >= 100 ? 1e9 : e.minZ + (e.maxZ - e.minZ) * section / 100;
     };
     if (engine.current) engine.current.refresh = refresh;
     if (engine.current?.loaded) engine.current.applyExplode();
     refresh();
-  }, [selected, isolated, ghost, section, loading, appearance, hidden.join('|'), multi.join('|'), focusIds.join('|'), pickMode, Object.entries(representativeOccurrences).map(([id, occurrence]) => `${id}:${occurrence}`).join('|')]);
+  }, [selected, isolated, ghost, section, loading, appearance, hidden.join('|'), multi.join('|'), focusIds.join('|'), pickMode, displayMode, transparentIds.join('|'), Object.entries(representativeOccurrences).map(([id, occurrence]) => `${id}:${occurrence}`).join('|')]);
 
   useEffect(() => { for (const m of engine.current?.references || []) m.visible = showRefs; }, [showRefs, loading]);
+
+  useEffect(() => { if (engine.current) engine.current.controls.style = navStyle; }, [navStyle, loading]);
+
+  // Reference planes through the model origin (Front = XZ, Top = XY, Right = YZ for this Z-up frame) and an origin triad.
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded) return;
+    if (e.planeGroup) { e.scene.remove(e.planeGroup); disposeGroup(e.planeGroup); e.planeGroup = null; }
+    if (!showPlanes) return;
+    const group = new THREE.Group();
+    const origin = new THREE.Vector3();
+    // size from the model, centred on the origin like a CAD system's default planes
+    const reach = Math.max(e.radius * 0.9, e.center.length() + e.radius * 0.5) ;
+    const size = Math.min(reach, e.radius * 2.5);
+    const defs: [string, THREE.Euler, number][] = [['Front', new THREE.Euler(Math.PI / 2, 0, 0), 0x3b82f6], ['Top', new THREE.Euler(0, 0, 0), 0x22a06b], ['Right', new THREE.Euler(0, Math.PI / 2, 0), 0xe0552d]];
+    for (const [name, rot, color] of defs) {
+      const holder = new THREE.Group(); holder.rotation.copy(rot); holder.position.copy(origin);
+      const fill = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }));
+      const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(size, size)), new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.75 }));
+      fill.renderOrder = 3; edge.renderOrder = 3;
+      holder.add(fill); holder.add(edge);
+      const label = textSprite(name, '#' + color.toString(16).padStart(6, '0'));
+      const h = size * 0.045; label.scale.set(h * label.userData.aspect, h, 1);
+      label.position.set(-size / 2 + h * label.userData.aspect / 2 + h * 0.3, size / 2 - h * 0.8, 0);
+      holder.add(label);
+      group.add(holder);
+    }
+    const len = size * 0.18;
+    for (const [axis, color] of [[new THREE.Vector3(1, 0, 0), 0xd63b3b], [new THREE.Vector3(0, 1, 0), 0x2f9e44], [new THREE.Vector3(0, 0, 1), 0x2563eb]] as const) {
+      const arrow = new THREE.ArrowHelper(axis, origin, len, color, len * 0.22, len * 0.12);
+      arrow.traverse(o => { o.renderOrder = 42; const m = (o as THREE.Mesh).material as THREE.Material | undefined; if (m) { m.depthTest = false; m.transparent = true; } });
+      group.add(arrow);
+    }
+    e.scene.add(group); e.planeGroup = group;
+  }, [showPlanes, loading]);
+
+  // Keyboard view commands (standard views, rotate 15° / 90°, roll, fit, zoom to selection).
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded || !command) return;
+    const [verb, arg] = command.name.split(':');
+    const step = arg === 'big' ? Math.PI / 2 : Math.PI / 12;
+    if (verb === 'view' && VIEW_DIRS[arg]) e.fit(VIEW_DIRS[arg], null);
+    else if (verb === 'fit') e.fit(undefined, null);
+    else if (verb === 'zoomSelected') { const ids = multi.length > 1 ? multi : selected ? [selected] : null; if (ids) e.fit(undefined, ids); }
+    else if (verb === 'rotLeft') e.controls.rotate(step, 0);
+    else if (verb === 'rotRight') e.controls.rotate(-step, 0);
+    else if (verb === 'rotUp') e.controls.rotate(0, step);
+    else if (verb === 'rotDown') e.controls.rotate(0, -step);
+    else if (verb === 'rollLeft') e.controls.roll(step);
+    else if (verb === 'rollRight') e.controls.roll(-step);
+    else if (verb === 'normal' && selected) {
+      // look straight at the selected part's largest face direction: its bounding-box thinnest axis
+      const m = e.meshes.find(x => x.userData.partId === selected);
+      if (m) { const b = new THREE.Box3().setFromObject(m).getSize(new THREE.Vector3()); const axis = b.x <= b.y && b.x <= b.z ? [1, 0, 0] : b.y <= b.z ? [0, -1, 0] : [0, 0, 1]; e.fit(axis, [selected]); }
+    }
+    else if (verb === 'measure') setMeasure(v => !v);
+    else if (verb === 'section') setPopover(p => p === 'section' ? null : 'section');
+    else if (verb === 'explode') setExplode(v => v > 0 ? 0 : 100);
+    else if (verb === 'ghost') setGhost(v => !v);
+  }, [command?.n]);
 
   // Fly the camera to a newly selected part (or the whole multi-selection); re-frame everything when cleared.
   const previousSelection = useRef<string | null | undefined>(undefined);
@@ -643,7 +793,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       e.controls.maxDistance = e.radius * 30;
       e.camera.near = Math.max(e.radius / 4000, 0.01);
     } else {
-      e.controls.zoomToCursor = false;
+      e.controls.zoomToCursor = true; // CAD zooms about the cursor
       e.controls.zoomSpeed = 1;
       e.controls.rotateSpeed = 1;
       e.controls.minDistance = 0;
@@ -964,11 +1114,17 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         </div>
       )}
       <div className="view-cube" role="toolbar" aria-label="View">
-        <button title="Isometric" onClick={() => engine.current?.fit([1, -1, 0.85], null)}><Box size={16} /></button>
-        <button title="Top (Z)" onClick={() => engine.current?.fit([0, 0, 1], null)}>Top</button>
-        <button title="Front (−Y)" onClick={() => engine.current?.fit([0, -1, 0], null)}>Front</button>
-        <button title="Right (X)" onClick={() => engine.current?.fit([1, 0, 0], null)}>Right</button>
+        <button title="Isometric" onClick={() => engine.current?.fit(VIEW_DIRS.iso, null)}><Box size={16} /></button>
+        <button title="Top (Z)" onClick={() => engine.current?.fit(VIEW_DIRS.top, null)}>Top</button>
+        <button title="Front (−Y)" onClick={() => engine.current?.fit(VIEW_DIRS.front, null)}>Front</button>
+        <button title="Right (X)" onClick={() => engine.current?.fit(VIEW_DIRS.right, null)}>Right</button>
+        <span className="view-more">
+          <button title="Back (+Y)" onClick={() => engine.current?.fit(VIEW_DIRS.back, null)}>Bk</button>
+          <button title="Left (−X)" onClick={() => engine.current?.fit(VIEW_DIRS.left, null)}>Lt</button>
+          <button title="Bottom (−Z)" onClick={() => engine.current?.fit(VIEW_DIRS.bottom, null)}>Bt</button>
+        </span>
         <span />
+        {onShowPlanes && <button className={showPlanes ? 'selected' : ''} title="Front / Top / Right planes and origin" onClick={() => onShowPlanes(!showPlanes)}><Square size={15} /></button>}
         <button title="Fit everything" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={16} /></button>
         <button title="Fit selected part" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={16} /></button>
       </div>
@@ -988,6 +1144,10 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         </span>
         <button className={ghost ? 'selected' : ''} title={ghost ? 'Other parts are ghosted while a part is selected' : 'Other parts stay solid while a part is selected'} onClick={() => setGhost(!ghost)}>{ghost ? <EyeOff size={16} /> : <Eye size={16} />}<span>Ghost</span></button>
         {welds.length > 0 && <button className={showWelds ? 'selected' : ''} title={showWelds ? `Hide the ${welds.length} configured weld(s)` : `Show the ${welds.length} configured weld(s)`} onClick={() => setShowWelds(!showWelds)}><Flame size={16} /><span>Beads</span></button>}
+        {onDisplayMode && <span className="display-seg" role="group" aria-label="Display style">
+          {([['shaded', 'Shaded', Box], ['edges', 'Shaded with edges', Shapes], ['wireframe', 'Wireframe', Grid3x3]] as const).map(([m, label, Icon]) =>
+            <button key={m} type="button" className={displayMode === m ? 'selected' : ''} title={label} onClick={() => onDisplayMode(m)}><Icon size={15} /></button>)}
+        </span>}
         {refCount > 0 && <button className={showRefs ? 'selected' : ''} title={showRefs ? 'Hide reference surfaces (sketch circles, boundaries)' : `Show ${refCount} reference surface body(ies) — not solid parts`} onClick={() => setShowRefs(!showRefs)}><CircleDashed size={16} /><span>Refs</span></button>}
         {toolbarEnd ? <i className="sep" /> : null}
         {toolbarEnd}

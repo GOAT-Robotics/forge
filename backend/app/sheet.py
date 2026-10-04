@@ -2622,6 +2622,43 @@ def _paint_item(c, it, ground=False):
         c.restoreState()
 
 
+def _json_item(it):
+    out = {k: v for k, v in it.items() if k not in ('sg', 'grp')}
+    for k in ('pts',):
+        if k in out:
+            out[k] = [[round(float(x), 4), round(float(y), 4)] for x, y in out[k]]
+    if 'c' in out:
+        out['c'] = [round(float(out['c'][0]), 4), round(float(out['c'][1]), 4)]
+    return out
+
+
+def paint_dim(c, g, text=None, dx=0.0, dy=0.0, size=1.0):
+    """One ordinate / angular dimension (points canvas, sheet mm items). (dx, dy) in points moves the value: the
+    extension line keeps its feature end and stretches (with a jog) to the moved value; arcs and arrows of an
+    angular dimension stay on the geometry. text replaces the value ('<>' = the measured value); size scales it."""
+    mx, my = dx / mm, dy / mm
+    moved = abs(mx) > 1e-6 or abs(my) > 1e-6
+    for it in g['items']:
+        if it['k'] == 'text':
+            continue
+        if g['axis'] in ('x', 'y') and it['k'] == 'poly' and moved:
+            pts = [tuple(p) for p in it['pts']]
+            if len(pts) <= 2:
+                pts = pts + [(pts[-1][0] + mx, pts[-1][1] + my)]
+            else:
+                pts = pts[:2] + [(x + mx, y + my) for x, y in pts[2:]]
+            it = {**it, 'pts': pts}
+        _paint_item(c, it)
+    for it in g['items']:
+        if it['k'] != 'text':
+            continue
+        s = it['s'] if text is None else text.replace('<>', it['s'])
+        if not s:
+            continue
+        it = {**it, 's': s, 'x': it['x'] + mx, 'y': it['y'] + my, 'size': it['size'] * size}
+        _paint_item(c, it, ground=True)
+
+
 def render_pdf(sh, c):
     """Paint one sheet. On a SceneCanvas every view (geometry + its ordinates) becomes a movable 'view' group
     and every leader note a 'callout' group nested in its view, for the drawing editor."""
@@ -2632,6 +2669,7 @@ def render_pdf(sh, c):
     c.setFillColorRGB(0, 0, 0)
     order = []
     buckets = {}
+    dim_by_grp = {d['grp']: d for d in sh.dims if d.get('axis') in ('x', 'y', 'angle') and d.get('grp')}
     for it in sh.items:
         if it['k'] == 'labelrect':
             continue
@@ -2652,13 +2690,26 @@ def render_pdf(sh, c):
             meta.setdefault('scale_used', round(float(sh.meta['scale']), 4))
         title = meta.pop('title', None) or titles.get(sg[5:], sg[5:].upper())
         with _group(c, sg, 'view', title=title, **meta):
-            # lines first, then dimension text on a white ground (ISO 129: lines must not cross dimension values)
+            # each ordinate / angular dimension is its own editable 'dim' group inside the view (move, resize, text)
+            own = [it for it in buckets[sg] if it.get('grp') not in dim_by_grp]
+            dims_here = {}
             for it in buckets[sg]:
+                if it.get('grp') in dim_by_grp:
+                    dims_here.setdefault(it['grp'], []).append(it)
+            # lines first, then dimension text on a white ground (ISO 129: lines must not cross dimension values)
+            for it in own:
                 if it['k'] != 'text':
                     _paint_item(c, it)
-            for it in buckets[sg]:
+            for it in own:
                 if it['k'] == 'text':
                     _paint_item(c, it, ground=it.get('layer') == 'DIM')
+            for grp, its in dims_here.items():
+                d = dim_by_grp[grp]
+                texts = [it for it in its if it['k'] == 'text']
+                dmeta = {'axis': d['axis'], 'value': round(float(d.get('value', 0)), 4), 'feature_kind': d.get('kind'),
+                         'text': texts[0]['s'] if texts else '', 'items': [_json_item(it) for it in its]}
+                with _group(c, 'dim:' + grp, 'dim', **dmeta):
+                    paint_dim(c, dmeta)
             for cid, meta in sh.callouts.items():
                 if meta['view'] == sg:
                     with _group(c, cid, 'callout', **meta):

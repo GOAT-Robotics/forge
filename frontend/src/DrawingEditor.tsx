@@ -5,7 +5,7 @@ import { X, Save, Download, Undo2, Redo2, Plus, Eye, EyeOff, RotateCcw, ZoomIn, 
 import type { Any } from './constants';
 import { ask } from './components';
 
-type Edits = { objects: Record<string, { dx?: number; dy?: number; text?: string; hidden?: boolean; page?: number; hidden_lines?: boolean; flip?: boolean }>; notes: Any[]; views: Any[]; details: Any[]; page_order?: number[]; extra_pages?: { id: string; size: string }[] };
+type Edits = { objects: Record<string, { dx?: number; dy?: number; text?: string; hidden?: boolean; page?: number; hidden_lines?: boolean; flip?: boolean; size?: number }>; notes: Any[]; views: Any[]; details: Any[]; page_order?: number[]; extra_pages?: { id: string; size: string }[] };
 const DETAIL_SCALES = [1.5, 2, 2.5, 3, 4, 5, 8, 10];
 const DETAIL_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 /** Hidden-detail edges (dashed, two-element dash); centre and bend lines use a four-element chain. */
@@ -64,7 +64,8 @@ const isGround = (n: Any) => n.type === 'path' && n.doFill && !n.doStroke && n.f
 function detailPlan(d: Any, view: Any, children: Any[], objects: Any) {
   const k = d.scale; const T = (x: number, y: number) => [d.cx + k * (x - d.x), d.cy + k * (y - d.y)];
   const inside = (x: number, y: number) => (x - d.x) ** 2 + (y - d.y) ** 2 <= (d.r * 1.02) ** 2;
-  const scaled: Any[] = [], moved: [Any, number, number][] = []; let shift: number[] | null = null; const nodes = view.nodes;
+  const scaled: Any[] = [], moved: [Any, number, number][] = []; let shift: number[] | null = null;
+  const nodes = [...view.nodes, ...children.filter((g: Any) => g.kind === 'dim').flatMap((g: Any) => g.nodes)];
   nodes.forEach((n: Any, i: number) => {
     if (n.type === 'path' && !n.doFill) { scaled.push(n); shift = null; return; }
     if (isGround(n)) {
@@ -105,6 +106,29 @@ function GoatCallout({ g, lines, dx, dy, px, py, chosen, handlers, flip, onFlip 
       <line x1={k.bx} y1={k.by} x2={k.bx + k.w} y2={k.by} stroke="#111" strokeWidth={.18 * MM} />
       {lines.map((line: string, i: number) => { const w = textWidth(line, k.size, GOAT_FONT); const y = k.by + .9 * MM + k.pitch * (k.n - 1 - i); const x = k.attachLeft ? k.bx + .5 * MM : k.bx + k.w - .5 * MM - w;
         return <g key={i}>{!chosen && <rect x={x - .25 * MM} y={y - .22 * k.size} width={w + .5 * MM} height={k.size * .98} fill="#fff" />}<text transform={`translate(${x} ${y}) scale(1 -1)`} fontFamily={GOAT_FONT} fontSize={k.size}>{line}</text></g>; })}</g></>;
+}
+/** One ordinate / angular dimension (mirrors sheet.paint_dim): dragging the value stretches the extension line
+ * with a jog, the feature end stays on the geometry; text override ('<>' = measured value) and size scale. */
+function DimGroup({ g, e, chosen, handlers }: { g: Any; e: Any; chosen?: boolean; handlers?: Any }) {
+  const mx = (e.dx || 0) / MM, my = (e.dy || 0) / MM, moved = Math.abs(mx) > 1e-6 || Math.abs(my) > 1e-6, scale = e.size ?? 1;
+  const P = (p: number[]) => `${p[0] * MM} ${p[1] * MM}`;
+  return <>{g.items.filter((it: Any) => it.k !== 'text').map((it: Any, i: number) => {
+      if (it.k === 'poly') {
+        let pts: number[][] = it.pts;
+        if (moved && (g.axis === 'x' || g.axis === 'y')) pts = pts.length <= 2 ? [...pts, [pts[pts.length - 1][0] + mx, pts[pts.length - 1][1] + my]] : [...pts.slice(0, 2), ...pts.slice(2).map(p => [p[0] + mx, p[1] + my])];
+        return <path key={i} d={'M' + pts.map(P).join('L') + (it.closed ? 'Z' : '')} fill="none" stroke={chosen ? '#2470e8' : '#111'} strokeWidth={it.w * MM} strokeDasharray={it.dash ? it.dash.map((x: number) => x * MM).join(' ') : undefined} pointerEvents="none" />;
+      }
+      if (it.k === 'circle') return <circle key={i} cx={it.c[0] * MM} cy={it.c[1] * MM} r={it.r * MM} fill={it.fill ? '#111' : 'none'} stroke="#111" strokeWidth={it.w * MM} pointerEvents="none" />;
+      return <path key={i} d={'M' + it.pts.map(P).join('L') + 'Z'} fill={chosen ? '#2470e8' : '#111'} pointerEvents="none" />;
+    })}
+    {g.items.filter((it: Any) => it.k === 'text').map((it: Any, i: number) => {
+      const s = e.text != null ? String(e.text).replace('<>', it.s) : it.s; if (!s) return null;
+      const size = it.size * MM * scale, w = textWidth(s, size, GOAT_FONT) * (it.hscale || 1);
+      const x0 = it.ha === 'r' ? -w : it.ha === 'c' ? -w / 2 : 0;
+      return <g key={'t' + i} transform={`translate(${(it.x + mx) * MM} ${(it.y + my) * MM}) rotate(${it.rot || 0})`} {...(handlers || {})}>
+        <rect className="hit" x={x0 - .6 * MM} y={-.3 * size - .4 * MM} width={w + 1.2 * MM} height={size * 1.05 + .8 * MM} fill={chosen ? '#e4f0ff' : '#fff'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".6" />
+        <text transform="scale(1 -1)" x={x0} fontFamily={GOAT_FONT} fontSize={size} fill={e.text != null ? '#7a3e00' : '#111'}>{s}</text></g>;
+    })}</>;
 }
 function VectorNode({ n }: { n: Any }) {
   return <g transform={`matrix(${n.matrix.join(' ')})`}>
@@ -203,7 +227,7 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
     if (n) { n.x += dx; n.y += dy; }
     else if (pv) { pv.cx += dx; pv.cy += dy; }
     else if (det) { if (selected.startsWith('detail:')) { det.cx += dx; det.cy += dy; } else { det.x += dx; det.y += dy; } }
-    else if (groups[selected] && ['view', 'callout'].includes(groups[selected].kind)) { const o = next.objects[selected] || {}; next.objects[selected] = { ...o, dx: (o.dx || 0) + dx, dy: (o.dy || 0) + dy }; }
+    else if (groups[selected] && ['view', 'callout', 'dim'].includes(groups[selected].kind)) { const o = next.objects[selected] || {}; next.objects[selected] = { ...o, dx: (o.dx || 0) + dx, dy: (o.dy || 0) + dy }; }
     else return;
     change(next);
   }
@@ -213,7 +237,7 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
     if (edits.views.some(v => v.id === selected)) { change({ ...edits, views: edits.views.filter(v => v.id !== selected) }); select(''); return; }
     const det = edits.details.find(d => 'detail:' + d.id === selected || 'marker:' + d.id === selected);
     if (det) { change({ ...edits, details: edits.details.filter(d => d !== det) }); select(''); return; }
-    if (groups[selected] && ['view', 'callout'].includes(groups[selected].kind) && !edits.objects[selected]?.hidden) toggleFlag(selected, 'hidden');
+    if (groups[selected] && ['view', 'callout', 'dim'].includes(groups[selected].kind) && !edits.objects[selected]?.hidden) toggleFlag(selected, 'hidden');
   }
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   function openMenu(e: React.MouseEvent, id: string) { e.preventDefault(); e.stopPropagation(); select(id); setMenu({ x: e.clientX, y: e.clientY, id }); }
@@ -481,7 +505,7 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
             <option value="">Project default</option><option value="A4">A4 landscape</option><option value="A3">A3 landscape</option><option value="A2">A2 landscape</option>
             {(data.drawing_templates || []).map((t: Any) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select></label>}
-        <p>Drag sheets to reorder. Drag views or callouts on the sheet; leaders stay attached to their feature.</p>
+        <p>Drag sheets to reorder. Drag views, dimensions or callouts on the sheet; leaders stay attached to their feature.</p>
         <strong className="palette-title">Views</strong><p>Drag a view onto the sheet, or press + to add it at the centre.</p>
         <div className="view-palette">{palette.map((pr: Any) => <div key={pr.preset} className="palette-item" draggable={!!writable} title={pr.label}
           onDragStart={e => { e.dataTransfer.setData('application/x-forge-view', JSON.stringify(pr)); e.dataTransfer.effectAllowed = 'copy'; }}>
@@ -494,6 +518,11 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
         <g transform={`translate(0 ${sheet.height}) scale(1 -1)`}>
           {shown.map((g: Any) => {
             const [dx, dy] = offset(g, groups, edits); const chosen = selected === g.id; const movable = ['view', 'callout'].includes(g.kind); const props = { onPointerDown: (e: React.PointerEvent) => start(e, g.id), onContextMenu: (e: React.MouseEvent) => openMenu(e, g.id), onDoubleClick: () => { if (g.kind === 'callout') setTimeout(() => (document.querySelector('.drawing-properties textarea') as HTMLTextAreaElement | null)?.focus(), 0); }, style: { cursor: writable ? 'move' : 'pointer' } };
+            if (g.kind === 'dim') {
+              const [px, py] = groups[g.parent] ? offset(groups[g.parent], groups, edits) : [0, 0];
+              const dprops = { ...props, onDoubleClick: () => setTimeout(() => (document.querySelector('.drawing-properties input[aria-label="Dimension text"]') as HTMLInputElement | null)?.select(), 0) };
+              return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1} transform={`translate(${px} ${py})`}><DimGroup g={g} e={edits.objects[g.id] || {}} chosen={chosen} handlers={dprops} /></g>;
+            }
             if (g.kind === 'callout' && g.style === 'goat') {
               const lines = (edits.objects[g.id]?.text ?? g.lines.join('\n')).split('\n');
               const [px, py] = groups[g.parent] ? offset(groups[g.parent], groups, edits) : [0, 0];
@@ -572,13 +601,14 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
           const item = (label: string, fn: () => void, disabled = !writable) => <button type="button" role="menuitem" disabled={disabled} onClick={() => { setMenu(null); fn(); }}>{label}</button>;
           return <div className="drawing-menu" role="menu" style={{ left: menu.x, top: menu.y }} onPointerDown={e => e.stopPropagation()}>
             {mg?.kind === 'callout' && <>{item(mo.flip ? 'Arrow outside → inside' : 'Flip arrow (inside / outside)', () => toggleFlag(menu.id, 'flip'))}{item('Edit text…', () => setTimeout(() => (document.querySelector('.drawing-properties textarea') as HTMLTextAreaElement | null)?.focus(), 0), false)}</>}
-            {mg && ['view', 'callout'].includes(mg.kind) && <>{item(mo.hidden ? 'Show' : 'Hide', () => toggleFlag(menu.id, 'hidden'))}{item('Reset position', () => resetPosition(menu.id), !writable || !(mo.dx || mo.dy))}</>}
+            {mg?.kind === 'dim' && <>{item('Edit dimension text…', () => setTimeout(() => (document.querySelector('.drawing-properties input[aria-label="Dimension text"]') as HTMLInputElement | null)?.select(), 0), false)}{item('Reset text & size', () => { const next = clone(edits); const o: Any = { ...(next.objects[menu.id] || {}) }; delete o.text; delete o.size; if (Object.keys(o).length) next.objects[menu.id] = o; else delete next.objects[menu.id]; change(next); }, !writable || (mo.text == null && mo.size == null))}</>}
+            {mg && ['view', 'callout', 'dim'].includes(mg.kind) && <>{item(mo.hidden ? 'Show' : 'Hide', () => toggleFlag(menu.id, 'hidden'))}{item('Reset position', () => resetPosition(menu.id), !writable || !(mo.dx || mo.dy))}</>}
             {mg?.kind === 'view' && mg.nodes?.some(isHiddenLine) && item(mo.hidden_lines === false ? 'Show hidden lines' : 'Hide hidden lines', () => setHiddenLines([menu.id], mo.hidden_lines === false))}
             {isNote && item('Delete note', deleteSelected)}
             <small>Arrows nudge · Del hides · Esc deselects · F fits</small>
           </div>; })()}
       </main>
-      <aside className="drawing-properties"><h3>{selected.startsWith('balloon:') ? (() => { const c = plan?.chars.find((c: Any) => 'balloon:' + c.id === selected); return c?.number ? `Balloon ${c.number}` : 'Not inspected'; })() : selectedDetail ? `Detail ${selectedDetail.label}` : group?.kind === 'callout' ? 'Hole / feature callout' : group?.kind === 'view' ? group.title + ' view' : note ? 'Drawing note' : 'Drawing properties'}</h3>
+      <aside className="drawing-properties"><h3>{selected.startsWith('balloon:') ? (() => { const c = plan?.chars.find((c: Any) => 'balloon:' + c.id === selected); return c?.number ? `Balloon ${c.number}` : 'Not inspected'; })() : selectedDetail ? `Detail ${selectedDetail.label}` : group?.kind === 'callout' ? 'Hole / feature callout' : group?.kind === 'dim' ? (group.axis === 'angle' ? 'Angle dimension' : 'Ordinate dimension') : group?.kind === 'view' ? group.title + ' view' : note ? 'Drawing note' : 'Drawing properties'}</h3>
         {selected.startsWith('balloon:') && plan && (() => { const c = plan.chars.find((c: Any) => 'balloon:' + c.id === selected); if (!c) return null;
           const putChar = async (q: Any, body: Any) => { try { await api(`/parts/${partId}/characteristics/${q.key}`, 'PUT', body); await loadPlan(); setError(''); } catch (e: Any) { setError(e.message); } };
           const putBalloon = async (b: Any) => { try { await api(`/parts/${partId}/balloons/${c.id}`, 'PUT', { dx: c.dx || 0, dy: c.dy || 0, ...b }); await loadPlan(); } catch (e: Any) { setError(e.message); } };
@@ -611,8 +641,8 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
           <button type="button" disabled={!writable} onClick={() => { change({ ...edits, details: edits.details.filter(d => d !== selectedDetail) }); select(''); }}><Trash2 size={14} />Remove detail</button>
           <small>Drag the circle on the view to choose the area; drag the enlarged view to place it. The detail shows the part geometry; add dimensions as notes if needed.</small>
         </div>}
-        {!group && !note && !selectedView && !selectedDetail && !selected.startsWith('balloon:') && <><p>Select a view, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>
-          <dl className="drawing-keys"><dt>Click arrowhead</dt><dd>flip arrow inside / outside</dd><dt>Right-click</dt><dd>flip, hide, reset</dd><dt>Arrow keys</dt><dd>nudge (Shift ×10)</dd><dt>Delete</dt><dd>hide callout / view, delete note</dd><dt>Middle drag / Space drag</dt><dd>pan</dd><dt>Ctrl/⌘ scroll, pinch</dt><dd>zoom</dd><dt>F</dt><dd>fit sheet</dd><dt>Esc</dt><dd>deselect</dd><dt>⌘/Ctrl Z · Y · S</dt><dd>undo · redo · save</dd></dl></>}
+        {!group && !note && !selectedView && !selectedDetail && !selected.startsWith('balloon:') && <><p>Select a view, dimension, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>
+          <dl className="drawing-keys"><dt>Drag a dimension value</dt><dd>move it (leader follows)</dd><dt>Double-click a value</dt><dd>edit dimension text</dd><dt>Click arrowhead</dt><dd>flip arrow inside / outside</dd><dt>Right-click</dt><dd>flip, hide, reset</dd><dt>Arrow keys</dt><dd>nudge (Shift ×10)</dd><dt>Delete</dt><dd>hide callout / view, delete note</dd><dt>Middle drag / Space drag</dt><dd>pan</dd><dt>Ctrl/⌘ scroll, pinch</dt><dd>zoom</dd><dt>F</dt><dd>fit sheet</dd><dt>Esc</dt><dd>deselect</dd><dt>⌘/Ctrl Z · Y · S</dt><dd>undo · redo · save</dd></dl></>}
         {selectedView && <div className="placed-view">
           <label>Name<input value={selectedView.label} maxLength={80} disabled={!writable} onChange={e => viewPatch({ label: e.target.value })} /></label>
           <label>Scale<select value={String(selectedView.scale)} disabled={!writable} onChange={e => viewPatch({ scale: Number(e.target.value) })}>{!SCALE_OPTIONS.some(([, v]) => Math.abs(v - selectedView.scale) < 1e-6) && <option value={String(selectedView.scale)}>{scaleText(selectedView.scale)}</option>}{SCALE_OPTIONS.map(([t, v]) => <option key={t} value={String(v)}>{t}</option>)}</select></label>
@@ -631,6 +661,18 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
           {group.nodes.some(isHiddenLine) && <label className="check"><input type="checkbox" disabled={!writable} checked={edits.objects[selected]?.hidden_lines !== false} onChange={e => setHiddenLines([selected], e.target.checked)} />Show hidden lines (dashed edges behind faces)</label>}
           <button disabled={!writable} onClick={() => { const next = clone(edits); const o: Any = { ...(next.objects[selected] || {}) }; if (o.hidden) delete o.hidden; else o.hidden = true; if (Object.keys(o).length) next.objects[selected] = o; else delete next.objects[selected]; change(next); }}>{edits.objects[selected]?.hidden ? 'Show view' : 'Hide view'}</button>
           {edits.objects[selected]?.hidden && <small>Hidden views (with their dimensions and callouts) are left out of the PDF.</small>}</>}
+        {group?.kind === 'dim' && (() => { const o: Any = edits.objects[selected] || {}; const sz = o.size ?? 1;
+          const setO = (k: string, v: Any) => { const next = clone(edits); const n: Any = { ...(next.objects[selected] || {}) }; if (v === undefined) delete n[k]; else n[k] = v; if (Object.keys(n).length) next.objects[selected] = n; else delete next.objects[selected]; change(next); };
+          return <div className="placed-view">
+            <label>Dimension text<input aria-label="Dimension text" maxLength={80} disabled={!writable} value={o.text ?? '<>'} onChange={e => setO('text', e.target.value === '<>' ? undefined : e.target.value)} /></label>
+            <small>&lt;&gt; is the measured value ({group.text}); add text around it, e.g. <code>&lt;&gt; TYP</code>, <code>(&lt;&gt;)</code>, <code>&lt;&gt; ±0.05</code>. Replacing it overrides the value on the drawing only — the inspection plan keeps the STEP value.</small>
+            <div className="chips">{['<> TYP', '(<>)', '<> REF', '<> ±0.1'].map(t => <button type="button" key={t} className={'chip' + (o.text === t ? ' chosen' : '')} disabled={!writable} onClick={() => setO('text', t)}>{t}</button>)}</div>
+            <label>Text size ({Math.round(sz * 100)} %)<input type="range" min={50} max={300} step={10} disabled={!writable} value={Math.round(sz * 100)} onChange={e => { const v = Number(e.target.value) / 100; setO('size', Math.abs(v - 1) < 1e-6 ? undefined : v); }} /></label>
+            <div className="chips">{[.75, 1, 1.25, 1.5, 2].map(v => <button type="button" key={v} className={'chip' + (Math.abs(sz - v) < 1e-6 ? ' chosen' : '')} disabled={!writable} onClick={() => setO('size', v === 1 ? undefined : v)}>{v * 100}%</button>)}</div>
+            <div className="placed-actions"><button type="button" disabled={!writable || !(o.dx || o.dy)} onClick={() => resetPosition(selected)}>Reset position</button>
+              <button type="button" disabled={!writable} onClick={() => toggleFlag(selected, 'hidden')}>{o.hidden ? 'Show dimension' : 'Hide dimension'}</button></div>
+            <small>Drag the value to move it — the extension line stays on the feature and stretches with a jog. Arrow keys nudge (Shift ×10).</small>
+          </div>; })()}
         {group?.kind === 'callout' && <><label>Callout text<textarea aria-label="Callout text" rows={9} disabled={!writable} value={currentText} onChange={e => patch({ text: e.target.value })} /></label>
           <small>{edits.objects[selected]?.text !== undefined ? 'User-specified callout. Source measurements below are unchanged.' : 'Generated from STEP geometry.'}</small>
           <div className="placed-actions"><button type="button" disabled={!writable} className={edits.objects[selected]?.flip ? 'selected' : ''} title="Arrow on the other side of the feature (or click the arrowhead on the sheet)" onClick={() => toggleFlag(selected, 'flip')}>Flip arrow</button>

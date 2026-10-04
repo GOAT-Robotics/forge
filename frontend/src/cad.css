@@ -480,3 +480,29 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .drawing-paper .balloon.candidate { opacity: .75; }
 .drawing-paper .balloon.candidate:hover { opacity: 1; }
 .drawing-paper .balloon.candidate:hover circle { stroke: #1f5fd6; }
+
+/* Kept-mounted project / model workspace (instant return from other pages and tabs) */
+.project-host { display: contents; }
+.kept-hidden { display: none !important; }
+
+/* View cube extras, display style, planes */
+.view-cube .view-more { display: flex; gap: 2px; }
+.view-cube .view-more button { min-width: 0; flex: 1; padding: 4px 0; font-size: 10.5px; }
+.cad-palette .display-seg { display: inline-flex; gap: 1px; padding: 0 2px; border-left: 1px solid var(--glass-line); border-right: 1px solid var(--glass-line); margin: 0 2px; }
+
+/* Shortcuts & navigation */
+.prefs { display: grid; gap: 18px; }
+.prefs h4 { margin: 0 0 8px; }
+.nav-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.nav-choice .choice { display: grid; gap: 4px; text-align: left; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.nav-choice .choice.chosen { border-color: var(--accent, #2470e8); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #2470e8) 25%, transparent); }
+.nav-choice .choice small { color: var(--muted); line-height: 1.45; }
+.prefs-head { display: flex; gap: 10px; align-items: center; }
+.prefs-head h4 { margin: 0; flex: 1; }
+.shortcut-group h5 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.shortcut-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; border-radius: 6px; }
+.shortcut-row:hover, .shortcut-row.editing { background: var(--hover, #eef3fb); }
+.key-btn { min-width: 120px; justify-content: flex-end; border: 0; background: transparent; }
+.key-chip { display: inline-flex; gap: 3px; }
+.key-chip kbd { font: 600 11.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 4px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: var(--surface); }
+@media (max-width: 720px) { .nav-choice { grid-template-columns: 1fr; } }
