@@ -63,6 +63,8 @@ class StepIn(BaseModel):
     tools: str = Field(default='', max_length=300)
     check: str = Field(default='', max_length=600)
     approach: str = 'auto'
+    subs: list[str] = Field(default_factory=list, max_length=50)   # sub-assemblies fitted as one unit in this step
+    group: str = ''                                                # sub-assembly the step belongs to ('' = main); set on create
 
 
 def instances_of(rid):
@@ -90,7 +92,7 @@ def fastener_designation(f):
     return f"{f['standard']} {size} {name}".strip()
 
 
-def clean_step(rid, a: StepIn):
+def clean_step(rid, a: StepIn, group='', sid=None):
     if a.method not in METHODS:
         raise HTTPException(422, 'Unknown joining method')
     if a.approach not in APPROACH:
@@ -169,13 +171,44 @@ def clean_step(rid, a: StepIn):
     if a.welds:
         ok = {j['id'] for j in db.rows("SELECT id FROM joints WHERE revision_id=? AND kind='weld'", (rid,))}
         welds = [w for w in dict.fromkeys(a.welds) if w in ok]
+    subs = []
+    if a.subs:
+        groups = {g['id'] for g in db.rows('SELECT id FROM assembly_groups WHERE revision_id=?', (rid,))}
+        used = {x: r['id'] for r in db.rows('SELECT id,data FROM assembly_steps WHERE revision_id=?', (rid,)) for x in load(r['data'], {}).get('subs', [])}
+        for g in dict.fromkeys(a.subs):
+            if g not in groups:
+                raise HTTPException(422, 'Unknown sub-assembly')
+            if g == group or group in sub_closure(rid, g):
+                raise HTTPException(422, 'A sub-assembly cannot be fitted into itself')
+            if used.get(g) and used[g] != sid:
+                raise HTTPException(422, 'That sub-assembly is already fitted in another step')
+            subs.append(g)
     return {'title': a.title.strip(), 'parts': parts, 'method': a.method, 'fasteners': fasteners, 'welds': welds,
-            'notes': a.notes.strip(), 'tools': a.tools.strip(), 'check': a.check.strip(), 'approach': a.approach}
+            'notes': a.notes.strip(), 'tools': a.tools.strip(), 'check': a.check.strip(), 'approach': a.approach, 'subs': subs}
+
+
+def sub_closure(rid, g, seen=None):
+    """Sub-assemblies (transitively) fitted inside sub-assembly g."""
+    seen = seen if seen is not None else set()
+    for r in db.rows('SELECT data FROM assembly_steps WHERE revision_id=? AND grp=?', (rid, g)):
+        for x in load(r['data'], {}).get('subs', []):
+            if x not in seen:
+                seen.add(x)
+                sub_closure(rid, x, seen)
+    return seen
+
+
+def groups_of(rid):
+    return db.rows('SELECT id,name,seq,notes FROM assembly_groups WHERE revision_id=? ORDER BY seq,created', (rid,))
 
 
 def steps_of(rid):
-    return [{'id': r['id'], 'seq': r['seq'], **load(r['data'], {}), 'updated': r['updated'], 'author': r['author']}
-            for r in db.rows('SELECT * FROM assembly_steps WHERE revision_id=? ORDER BY seq,created', (rid,))]
+    """Build order: every sub-assembly's steps (in sub-assembly order), then the main assembly."""
+    rank = {g['id']: i for i, g in enumerate(groups_of(rid))}
+    rows = db.rows('SELECT * FROM assembly_steps WHERE revision_id=? ORDER BY seq,created', (rid,))
+    rows.sort(key=lambda r: (rank.get(r['grp'] or '', len(rank)), r['seq']))
+    return [{'id': r['id'], 'seq': r['seq'], 'group': r['grp'] or '', 'subs': [], **load(r['data'], {}), 'updated': r['updated'], 'author': r['author']}
+            for r in rows]
 
 
 def touch(rid):
@@ -207,19 +240,22 @@ def writable(request, rid):
 @router.post('/api/revisions/{rid}/assembly-steps')
 def create_step(rid: str, a: StepIn, request: Request, at: int | None = None):
     u = writable(request, rid)
-    data = clean_step(rid, a)
+    grp = a.group or ''
+    if grp and not db.row('SELECT id FROM assembly_groups WHERE id=? AND revision_id=?', (grp, rid)):
+        raise HTTPException(422, 'Unknown sub-assembly')
+    data = clean_step(rid, a, grp)
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
-        n = c.execute('SELECT COUNT(*) FROM assembly_steps WHERE revision_id=?', (rid,)).fetchone()[0]
-        if n >= 500:
+        if c.execute('SELECT COUNT(*) FROM assembly_steps WHERE revision_id=?', (rid,)).fetchone()[0] >= 500:
             raise HTTPException(422, 'At most 500 steps')
+        n = c.execute('SELECT COUNT(*) FROM assembly_steps WHERE revision_id=? AND grp=?', (rid, grp)).fetchone()[0]
         seq = n if at is None else max(0, min(n, at))
-        c.execute('UPDATE assembly_steps SET seq=seq+1 WHERE revision_id=? AND seq>=?', (rid, seq))
+        c.execute('UPDATE assembly_steps SET seq=seq+1 WHERE revision_id=? AND grp=? AND seq>=?', (rid, grp, seq))
         sid = db.uid()
-        c.execute('INSERT INTO assembly_steps(id,revision_id,seq,data,created,author,updated) VALUES(?,?,?,?,?,?,?)', (sid, rid, seq, json.dumps(data), db.now(), u['name'], db.now()))
-        db.audit(c, u['name'], 'assembly.step.created', {'id': sid, 'seq': seq + 1, 'title': data['title']}, rid)
+        c.execute('INSERT INTO assembly_steps(id,revision_id,seq,data,created,author,updated,grp) VALUES(?,?,?,?,?,?,?,?)', (sid, rid, seq, json.dumps(data), db.now(), u['name'], db.now(), grp))
+        db.audit(c, u['name'], 'assembly.step.created', {'id': sid, 'seq': seq + 1, 'title': data['title'], 'group': grp}, rid)
     touch(rid)
-    return {'id': sid, 'seq': seq, **data}
+    return {'id': sid, 'seq': seq, 'group': grp, **data}
 
 
 @router.put('/api/assembly-steps/{sid}')
@@ -228,12 +264,12 @@ def update_step(sid: str, a: StepIn, request: Request):
     if not s:
         raise HTTPException(404, 'Step not found')
     u = writable(request, s['revision_id'])
-    data = clean_step(s['revision_id'], a)
+    data = clean_step(s['revision_id'], a, s['grp'] or '', sid)
     with db.connect() as c:
         c.execute('UPDATE assembly_steps SET data=?,updated=?,author=? WHERE id=?', (json.dumps(data), db.now(), u['name'], sid))
         db.audit(c, u['name'], 'assembly.step.updated', {'id': sid, 'title': data['title']}, s['revision_id'])
     touch(s['revision_id'])
-    return {'id': sid, 'seq': s['seq'], **data}
+    return {'id': sid, 'seq': s['seq'], 'group': s['grp'] or '', **data}
 
 
 @router.delete('/api/assembly-steps/{sid}')
@@ -244,7 +280,7 @@ def delete_step(sid: str, request: Request):
     u = writable(request, s['revision_id'])
     with db.connect() as c:
         c.execute('DELETE FROM assembly_steps WHERE id=?', (sid,))
-        c.execute('UPDATE assembly_steps SET seq=seq-1 WHERE revision_id=? AND seq>?', (s['revision_id'], s['seq']))
+        c.execute('UPDATE assembly_steps SET seq=seq-1 WHERE revision_id=? AND grp=? AND seq>?', (s['revision_id'], s['grp'] or '', s['seq']))
         db.audit(c, u['name'], 'assembly.step.deleted', {'id': sid, **load(s['data'], {})}, s['revision_id'])
     touch(s['revision_id'])
     return {'ok': True}
@@ -253,20 +289,114 @@ def delete_step(sid: str, request: Request):
 class Order(BaseModel):
     model_config = ConfigDict(extra='forbid')
     ids: list[str] = Field(max_length=500)
+    group: str = ''
 
 
 @router.post('/api/revisions/{rid}/assembly-steps/order')
 def reorder(rid: str, a: Order, request: Request):
     u = writable(request, rid)
-    have = [r['id'] for r in db.rows('SELECT id FROM assembly_steps WHERE revision_id=? ORDER BY seq', (rid,))]
+    have = [r['id'] for r in db.rows('SELECT id FROM assembly_steps WHERE revision_id=? AND grp=? ORDER BY seq', (rid, a.group or ''))]
     if sorted(have) != sorted(a.ids):
-        raise HTTPException(422, 'The order must list every step once')
+        raise HTTPException(422, 'The order must list every step of the (sub-)assembly once')
     with db.connect() as c:
         for i, sid in enumerate(a.ids):
             c.execute('UPDATE assembly_steps SET seq=? WHERE id=?', (i, sid))
         db.audit(c, u['name'], 'assembly.steps.reordered', {'count': len(a.ids)}, rid)
     touch(rid)
     return {'ok': True}
+
+
+class GroupIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=120)
+    notes: str = Field(default='', max_length=1000)
+
+
+@router.get('/api/revisions/{rid}/assembly-groups')
+def list_groups(rid: str, request: Request):
+    revision_access(request, rid)
+    return groups_of(rid)
+
+
+@router.post('/api/revisions/{rid}/assembly-groups')
+def create_group(rid: str, a: GroupIn, request: Request):
+    u = writable(request, rid)
+    gid = db.uid()
+    with db.connect() as c:
+        n = c.execute('SELECT COUNT(*) FROM assembly_groups WHERE revision_id=?', (rid,)).fetchone()[0]
+        if n >= 100:
+            raise HTTPException(422, 'At most 100 sub-assemblies')
+        c.execute('INSERT INTO assembly_groups(id,revision_id,seq,name,notes,created,author) VALUES(?,?,?,?,?,?,?)', (gid, rid, n, a.name.strip(), a.notes.strip(), db.now(), u['name']))
+        db.audit(c, u['name'], 'assembly.group.created', {'id': gid, 'name': a.name}, rid)
+    touch(rid)
+    return {'id': gid, 'name': a.name.strip(), 'seq': n, 'notes': a.notes.strip()}
+
+
+@router.put('/api/assembly-groups/{gid}')
+def rename_group(gid: str, a: GroupIn, request: Request):
+    g = db.row('SELECT * FROM assembly_groups WHERE id=?', (gid,))
+    if not g:
+        raise HTTPException(404, 'Sub-assembly not found')
+    u = writable(request, g['revision_id'])
+    with db.connect() as c:
+        c.execute('UPDATE assembly_groups SET name=?,notes=? WHERE id=?', (a.name.strip(), a.notes.strip(), gid))
+        db.audit(c, u['name'], 'assembly.group.updated', {'id': gid, 'name': a.name}, g['revision_id'])
+    touch(g['revision_id'])
+    return {'ok': True}
+
+
+@router.delete('/api/assembly-groups/{gid}')
+def delete_group(gid: str, request: Request):
+    """Deletes the sub-assembly with its steps; steps that fitted it no longer do."""
+    g = db.row('SELECT * FROM assembly_groups WHERE id=?', (gid,))
+    if not g:
+        raise HTTPException(404, 'Sub-assembly not found')
+    rid = g['revision_id']
+    u = writable(request, rid)
+    with db.connect() as c:
+        c.execute('DELETE FROM assembly_steps WHERE revision_id=? AND grp=?', (rid, gid))
+        for r in c.execute('SELECT id,data FROM assembly_steps WHERE revision_id=?', (rid,)).fetchall():
+            d = load(r['data'], {})
+            if gid in d.get('subs', []):
+                d['subs'] = [x for x in d['subs'] if x != gid]
+                c.execute('UPDATE assembly_steps SET data=? WHERE id=?', (json.dumps(d), r['id']))
+        c.execute('DELETE FROM assembly_groups WHERE id=?', (gid,))
+        c.execute('UPDATE assembly_groups SET seq=seq-1 WHERE revision_id=? AND seq>?', (rid, g['seq']))
+        db.audit(c, u['name'], 'assembly.group.deleted', {'id': gid, 'name': g['name']}, rid)
+    touch(rid)
+    return {'ok': True}
+
+
+def build_states(steps):
+    """For every step of the build order: the occurrences visible ((part, occ) -> 'done' | 'new'). A sub-assembly
+    step shows only that sub-assembly; fitting a sub-assembly brings all of its parts in as one unit."""
+    own = {}
+    for s in steps:
+        own.setdefault(s.get('group', ''), []).append(s)
+
+    def all_of(g, seen=()):
+        out = []
+        for s in own.get(g, []):
+            out += [(e['part'], o) for e in s.get('parts', []) for o in e.get('occurrences', [0])]
+            for x in s.get('subs', []):
+                if x not in seen:
+                    out += all_of(x, seen + (g,))
+        return out
+
+    states = []
+    for s in steps:
+        g = s.get('group', '')
+        st = {}
+        for p in own.get(g, []):
+            new = p is s
+            items = [(e['part'], o) for e in p.get('parts', []) for o in e.get('occurrences', [0])] + [x for sub in p.get('subs', []) for x in all_of(sub, (g,))]
+            for k in items:
+                if new or k not in st:
+                    st[k] = 'new' if new else 'done'
+            if new:
+                break
+        states.append(st)
+    return states
 
 
 # ============================================================================ work instruction PDF
@@ -363,16 +493,16 @@ def instructions_pdf(rid):
         c.drawString(20 * mm, H / 2, 'No assembly steps have been written for this revision yet.')
         c.save()
         return out
-    done = []
+    states = build_states(steps)
+    gname = {g['id']: g['name'] for g in groups_of(rid)}
     for k, s in enumerate(steps):
-        header(f'Step {k + 1} of {len(steps)}')
-        new = [(e['part'], o) for e in s.get('parts', []) for o in e.get('occurrences', [0])]
+        header(f"{('Sub-assembly ' + gname.get(s.get('group'), '') + ' · ') if s.get('group') else 'Main assembly · '}Step {k + 1} of {len(steps)}")
         meshes = []
-        for pid, o in done + new:
+        for (pid, o), state in states[k].items():
             md = part_mesh(rid, pid)
             if md is None:
                 continue
-            meshes.append(placed(md, matrix(pid, o), NEW if (pid, o) in new else DONE))
+            meshes.append(placed(md, matrix(pid, o), NEW if state == 'new' else DONE))
         box = (12 * mm, 16 * mm, 182 * mm, H - 34 * mm)
         markers = []
         if meshes:
@@ -438,6 +568,12 @@ def instructions_pdf(rid):
             c.setFillColorRGB(.06, .09, .16)
             c.drawString(x0 + 4.5 * mm, y, (nm[:52] + '…' if len(nm) > 53 else nm) + f"  ×{len(e.get('occurrences', [0]))}")
             y -= 5 * mm
+        for x in s.get('subs', []):
+            c.setFillColorRGB(*NEW)
+            c.rect(x0, y - .4 * mm, 2.6 * mm, 2.6 * mm, stroke=0, fill=1)
+            c.setFillColorRGB(.06, .09, .16)
+            c.drawString(x0 + 4.5 * mm, y, f"Sub-assembly: {gname.get(x, '?')}")
+            y -= 5 * mm
         if s.get('fasteners'):
             y -= 2 * mm
             section('Fasteners')
@@ -472,7 +608,6 @@ def instructions_pdf(rid):
         c.drawString(12 * mm, 8 * mm, 'Blue: fitted in this step · grey: already assembled · red letters: fastener positions')
         c.drawRightString(W - 12 * mm, 8 * mm, f'Page {k + 1}/{len(steps)}')
         c.showPage()
-        done += [x for x in new if x not in done]
     c.save()
     return out
 

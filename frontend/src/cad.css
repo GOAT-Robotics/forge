@@ -105,7 +105,6 @@ body { background: var(--bg); }
 .doc-actions .primary { padding: 0 14px; gap: 6px; }
 .doc-note { font-size: 12px; color: var(--muted); }
 main.canvas-focus .doc-bar { display: none; }
-@media (max-width: 1180px) { .doc-tabs button svg { display: none; } .doc-tabs button { padding: 0 9px; } }
 
 /* ---------------------------------------------------------------- CAD workspace grid */
 .workspace.cad { grid-template-columns: 280px minmax(360px, 1fr) 344px; background: var(--bg); }
@@ -207,7 +206,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-ink); border-colo
 .doc-id { flex: 0 1 auto; min-width: 180px; }
 .doc-name { max-width: 320px; }
 .doc-tabs { flex: 1 1 auto; min-width: 0; justify-content: center; margin: 0; }
-@media (max-width: 1500px) { .doc-tabs button svg { display: none; } .doc-tabs button { padding: 0 10px; } }
 
 /* ---------------------------------------------------------------- loading states */
 .loading-page { color: var(--muted); }
@@ -528,8 +526,6 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .doc-status small { font-weight: 500; opacity: .8; }
 .doc-release { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .doc-release .primary { height: 28px; min-height: 0; padding: 0 10px; gap: 5px; font-size: 12.5px; white-space: nowrap; }
-@media (max-width: 1440px) { .doc-status small { display: none; } .doc-bar { gap: 12px; } }
-@media (max-width: 1320px) { .doc-crumb, .doc-sep { display: none; } .doc-tabs button svg { display: none; } .doc-tabs button { padding: 0 9px; } }
 @media (max-width: 1180px) { .doc-actions .primary { width: 32px; padding: 0; justify-content: center; font-size: 0; gap: 0; } .doc-release .primary { font-size: 0; width: 28px; padding: 0; justify-content: center; } }
 
 /* navigator heading: never wraps; the total count gives way to the selection controls */
@@ -887,3 +883,41 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .as-fgrid { gap: 6px 8px; }
 .as-fgrid label { gap: 2px; }
 .as-fgrid input, .as-fgrid select, .as-fgrid .wc-num { height: 32px; min-height: 0; }
+
+/* document bar fitting (main.tsx measures and adds t1..t4 until the tabs fit without scrolling) */
+.doc-tabs { flex: 0 0 auto; overflow: visible; }
+.doc-status { flex: 0 1 auto; }
+.doc-bar.t1 { gap: 12px; }
+.doc-bar.t1 .doc-tabs button svg, .doc-bar.t1 .doc-status small { display: none; }
+.doc-bar.t1 .doc-tabs button { padding: 0 10px; }
+.doc-bar.t2 .doc-crumb, .doc-bar.t2 .doc-sep { display: none; }
+.doc-bar.t2 .doc-tabs button { padding: 0 8px; }
+.doc-bar.t3 .doc-status { font-size: 0; gap: 0; padding: 0 8px; }
+.doc-bar.t3 .doc-status i { width: 9px; height: 9px; }
+.doc-bar.t3 .doc-actions .primary { width: 32px; padding: 0; justify-content: center; font-size: 0; gap: 0; }
+.doc-bar.t3 .doc-name { max-width: 160px; }
+.doc-bar.t4 .doc-tabs button { padding: 0 6px; font-size: 12px; }
+.doc-bar.t4 .doc-name { max-width: 110px; }
+.doc-bar.t4 .doc-actions { gap: 2px; }
+
+/* sub-assemblies in the build order */
+.as-list-add { margin-left: auto; display: flex; gap: 4px; }
+.as-list-head .as-list-add .mini { margin-left: 0; }
+.as-sec-list { padding: 4px 6px 2px; }
+.as-sec-list + .as-sec-list { border-top: 1px solid var(--line); }
+.as-sec-head { display: flex; align-items: center; gap: 6px; padding: 6px 6px 2px; font-size: 12px; color: #475569; }
+.as-sec-head b { font-weight: 650; color: var(--ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.as-sec-list.sub .as-sec-head svg { color: #8b5cf6; }
+.as-sec-list.main .as-sec-head svg { color: #2563eb; }
+.as-sec-tools { margin-left: auto; display: flex; gap: 1px; flex: none; }
+.as-sec-tools .icon { width: 24px; height: 24px; min-height: 0; padding: 0; }
+.as-sec-list ol { padding: 2px 0 4px; }
+.as-sec-empty { display: block; padding: 2px 8px 8px 28px; color: var(--muted); font-size: 12px; }
+.as-card-asm, .as-edit-asm { display: inline-flex; align-items: center; gap: 5px; margin: 4px 0 2px; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; background: #eef4ff; color: #1d4ed8; }
+.as-card-asm.sub, .as-edit-asm.sub { background: #f3efff; color: #6d28d9; }
+.as-edit-asm { align-self: flex-start; margin: 0; }
+.as-sub-ico { color: #8b5cf6; flex: none; margin-top: 3px; }
+.as-subname { margin: 0 !important; color: #0f172a !important; }
+.as-sub-select { width: 100%; }
+.as-list-head { flex-wrap: wrap; row-gap: 6px; }
+.as-list-head b { white-space: nowrap; }

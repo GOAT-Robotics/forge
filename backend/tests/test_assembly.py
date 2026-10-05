@@ -68,3 +68,39 @@ def test_assembly_steps_crud_order_and_instructions(tmp_path, monkeypatch):
         assert 'Fit both brackets' in text and 'ISO 4762 M5' in text
         assert client.delete(f"/api/assembly-steps/{c['id']}", headers=H).status_code == 200
         assert [s['seq'] for s in client.get(url).json()] == [0, 1]
+
+
+def test_sub_assemblies_build_then_fit_into_main(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, 'ROOT', tmp_path)
+    with TestClient(app) as client:
+        rid = _fixture(client)
+        H = {'X-Forge-Request': '1'}
+        url = f'/api/revisions/{rid}/assembly-steps'
+        g = client.post(f'/api/revisions/{rid}/assembly-groups', headers=H, json={'name': 'Bracket pair'}).json()
+        assert client.get(f'/api/revisions/{rid}/assembly-groups').json()[0]['name'] == 'Bracket pair'
+        s1 = client.post(url, headers=H, json={'title': 'Bracket 1', 'group': g['id'], 'parts': [{'part': 'bracket', 'occurrences': [0]}]}).json()
+        client.post(url, headers=H, json={'title': 'Bracket 2', 'group': g['id'], 'parts': [{'part': 'bracket', 'occurrences': [1]}]})
+        m1 = client.post(url, headers=H, json={'title': 'Base', 'parts': [{'part': 'base', 'occurrences': [0]}]}).json()
+        m2 = client.post(url, headers=H, json={'title': 'Fit the bracket pair', 'method': 'screw', 'subs': [g['id']]})
+        assert m2.status_code == 200, m2.text
+        steps = client.get(url).json()
+        assert [s['title'] for s in steps] == ['Bracket 1', 'Bracket 2', 'Base', 'Fit the bracket pair']   # sub-assemblies first
+        assert steps[0]['group'] == g['id'] and steps[3]['group'] == '' and steps[3]['subs'] == [g['id']]
+        # a sub-assembly is fitted once and never into itself
+        assert client.put(f"/api/assembly-steps/{m1['id']}", headers=H, json={'title': 'Base', 'subs': [g['id']]}).status_code == 422
+        assert client.put(f"/api/assembly-steps/{s1['id']}", headers=H, json={'title': 'Bracket 1', 'subs': [g['id']]}).status_code == 422
+        from app.assembly import build_states, steps_of
+        st = build_states(steps_of(rid))
+        assert st[1] == {('bracket', 0): 'done', ('bracket', 1): 'new'}                     # only the sub-assembly
+        assert st[2] == {('base', 0): 'new'}                                                   # main starts on its own
+        assert st[3] == {('base', 0): 'done', ('bracket', 0): 'new', ('bracket', 1): 'new'}   # whole unit fitted
+        pdf = client.get(f'/api/revisions/{rid}/assembly-instructions.pdf')
+        assert pdf.status_code == 200 and pdf.content[:4] == b'%PDF'
+        # reorder inside the sub-assembly only
+        sub_ids = [s['id'] for s in steps if s['group'] == g['id']]
+        assert client.post(url + '/order', headers=H, json={'ids': sub_ids[::-1], 'group': g['id']}).status_code == 200
+        assert client.post(url + '/order', headers=H, json={'ids': sub_ids[::-1]}).status_code == 422
+        # deleting the sub-assembly removes its steps and the fitting reference
+        assert client.delete(f"/api/assembly-groups/{g['id']}", headers=H).status_code == 200
+        left = client.get(url).json()
+        assert [s['title'] for s in left] == ['Base', 'Fit the bracket pair'] and left[1]['subs'] == []

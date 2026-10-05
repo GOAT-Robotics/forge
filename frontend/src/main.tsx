@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   MoreHorizontal, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
@@ -176,6 +176,22 @@ function App() {
     if (vendorId) { loadRevision(vendorId).catch(fail); setAuth({ user: { name: 'Vendor', role: 'vendor' } }); if (route.current.tab) setTab(route.current.tab); if (route.current.part) setSelected(route.current.part); }
     else api('/auth/status').then(a => { setAuth(a); if (a.user) afterSignIn().catch(fail); }).catch(fail);
   }, []);
+
+  // document bar: tabs never scroll or clip; details give way step by step until everything fits
+  const docBar = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const el = docBar.current; if (!el) return;
+    const fit = () => {
+      const nav = el.querySelector('.doc-tabs') as HTMLElement | null;
+      const status = el.querySelector('.doc-status') as HTMLElement | null;
+      const ok = () => (!nav || nav.scrollWidth <= nav.clientWidth + 1) && el.scrollWidth <= el.clientWidth + 1 && (!status || status.scrollWidth <= status.clientWidth + 1);
+      el.classList.remove('t1', 't2', 't3', 't4');
+      for (const c of ['t1', 't2', 't3', 't4']) { if (ok()) break; el.classList.add(c); }
+    };
+    fit();
+    const ro = new ResizeObserver(fit); ro.observe(el);
+    return () => ro.disconnect();
+  });
 
   // account-wide preferences (shortcuts, navigation, display) follow the signed-in user
   useEffect(() => { if (!vendorId) prefsApi.adopt(auth?.user?.id ? (auth.user.prefs || {}) : null); }, [auth?.user?.id]);
@@ -572,6 +588,7 @@ function App() {
           <button type="button" className={mode === 'flat2d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern (2D)'} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 size={14} />Flat</button>
           <button type="button" className={mode === 'flat3d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern in 3D'} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan size={14} />Flat 3D</button>
         </>}
+        {!vendor && editable && <button type="button" title="Add this part as the next assembly step" onClick={() => addToSteps([part.id])}><ListPlus size={14} />Add step</button>}
         <button type="button" className={'icon' + (transparentIds.includes(part.id) ? ' selected' : '')} title={`See through this part (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => t.includes(part.id) ? t.filter(x => x !== part.id) : [...t, part.id])}><Droplet size={14} /></button>
         <button type="button" className="icon" title="Clear selection (Esc)" onClick={() => choosePart(null)}><X size={14} /></button>
       </span>
@@ -658,7 +675,7 @@ function App() {
         {(vendor || project) && (
           // The open project stays mounted while other pages are shown, so coming back is instant (no model reload).
           <div className={'project-host' + (vendor || (page === 'project' && project) ? '' : ' kept-hidden')}>
-            <header className="doc-bar">
+            <header className="doc-bar" ref={docBar}>
               <div className="doc-id">
                 {!vendor && <><button type="button" className="doc-crumb" onClick={goHome}>Projects</button><ChevronRight size={13} className="doc-sep" /></>}
                 <span className="doc-name" title={project?.name || rev?.filename}>{project?.code && <em>{project.code}</em>}{project?.name || rev?.filename || 'Shared design'}</span>

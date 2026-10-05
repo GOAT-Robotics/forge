@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
-  X, Plus, Trash2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play, Pause, RotateCcw, FileDown, Pencil, Eye, Crosshair, Search, Wrench, ListOrdered, Check,
+  X, Plus, Trash2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play, Pause, RotateCcw, FileDown, Pencil, Eye, Crosshair, Search, Wrench, ListOrdered, Check, Boxes, Package,
 } from 'lucide-react';
 import PartScene, { type SceneApi, type SceneBody } from './partScene';
 import { api, assetJson, download } from './api';
@@ -11,7 +11,34 @@ import type { NavStyle } from './cadControls';
 type Occ = { part: string; occurrences: number[] };
 type HoleRef = { part: string; occurrence: number; hole: string };
 type Fastener = { kind: string; standard?: string; size?: string; length?: number; item?: string; name?: string; pn?: string; qty: number; torque?: string; threadlock?: string; note?: string; holes: HoleRef[]; designation?: string; _qtyManual?: boolean };
-export type Step = { id: string; seq: number; title: string; parts: Occ[]; method: string; fasteners: Fastener[]; welds: string[]; notes: string; tools: string; check: string; approach: string };
+export type Step = { id: string; seq: number; group: string; subs: string[]; title: string; parts: Occ[]; method: string; fasteners: Fastener[]; welds: string[]; notes: string; tools: string; check: string; approach: string };
+type Group = { id: string; name: string; seq: number; notes?: string };
+type State = Map<string, 'new' | 'done'>;
+
+/** What is on the bench at every step: a sub-assembly step shows only that sub-assembly; a step that fits a
+ * sub-assembly brings all of its parts in as one unit (same rule as the PDF, backend assembly.build_states). */
+function buildStates(steps: Step[]) {
+  const own = new Map<string, Step[]>();
+  steps.forEach(s => { const g = s.group || ''; if (!own.has(g)) own.set(g, []); own.get(g)!.push(s); });
+  const allOf = (g: string, seen: string[]): string[] => (own.get(g) || []).flatMap(s => [
+    ...s.parts.flatMap(e => e.occurrences.map(o => occKey(e.part, o))),
+    ...(s.subs || []).filter(x => !seen.includes(x)).flatMap(x => allOf(x, [...seen, g])),
+  ]);
+  const units: Map<string, string>[] = [];   // per step: occKey -> sub-assembly fitted as one unit in that step
+  const states: State[] = steps.map(s => {
+    const g = s.group || ''; const st: State = new Map(); const unit = new Map<string, string>();
+    for (const p of own.get(g) || []) {
+      const isNew = p === s;
+      const items = p.parts.flatMap(e => e.occurrences.map(o => occKey(e.part, o)));
+      for (const k of items) if (isNew || !st.has(k)) st.set(k, isNew ? 'new' : 'done');
+      for (const x of p.subs || []) for (const k of allOf(x, [g])) { if (isNew || !st.has(k)) st.set(k, isNew ? 'new' : 'done'); if (isNew) unit.set(k, x); }
+      if (isNew) break;
+    }
+    units.push(unit);
+    return st;
+  });
+  return { states, units };
+}
 type Config = { methods: Record<string, string>; fasteners: Record<string, { standard: string; name: string }[]>; threadlock: string[]; approach: string[]; hardware: { id: string; name: string; type: string; pn: string }[] };
 
 const KINDS: [string, string][] = [['screw', 'Screw'], ['bolt', 'Bolt'], ['nut', 'Nut'], ['washer', 'Washer'], ['rivet', 'Rivet'], ['pin', 'Pin'], ['insert', 'Hardware'], ['custom', 'Custom']];
@@ -40,6 +67,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
 }) {
   const [cfg, setCfg] = useState<Config | null>(null);
   const [steps, setSteps] = useState<Step[] | null>(null);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [inst, setInst] = useState<Record<string, { matrix: number[][] }[]>>({});
   const [cur, setCur] = useState(0);
   const [edit, setEdit] = useState(editable);
@@ -59,7 +87,10 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
   const [loaded, setLoaded] = useState(false);
 
   // ------------------------------------------------------------------ load
-  const reload = async () => { const s = await api(`/revisions/${revision}/assembly-steps`); setSteps(s); return s as Step[]; };
+  const reload = async () => {
+    const [s, g] = await Promise.all([api(`/revisions/${revision}/assembly-steps`), api(`/revisions/${revision}/assembly-groups`)]);
+    setGroups(g); setSteps(s); return s as Step[];
+  };
   useEffect(() => {
     configCache = configCache || api('/assembly-config');
     Promise.all([configCache, reload(), assetJson(`/revisions/${revision}/assets/instances.json`).catch(() => ({}))])
@@ -80,7 +111,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
       return { part: pid, occurrences: free.length ? free : [0] };
     });
     const first = byId[addParts[0]];
-    api(`/revisions/${revision}/assembly-steps`, 'POST', { title: addParts.length === 1 ? `Fit ${first?.name || 'component'}` : `Fit ${addParts.length} components`, parts: list, method: 'place' })
+    api(`/revisions/${revision}/assembly-steps`, 'POST', { title: addParts.length === 1 ? `Fit ${first?.name || 'component'}` : `Fit ${addParts.length} components`, parts: list, method: 'place', group: steps[cur]?.group || '' })
       .then(async made => { const all = await reload(); setCur(Math.max(0, all.findIndex(x => x.id === made.id))); setEdit(true); })
       .catch(e => setError(e.message));
   }, [loaded, addKey]);
@@ -91,6 +122,10 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     (steps || []).forEach((s, i) => s.parts.forEach(e => e.occurrences.forEach(o => { const k = occKey(e.part, o); if (!m.has(k)) m.set(k, i); })));
     return m;
   }, [steps]);
+
+  const { states, units } = useMemo(() => buildStates(steps || []), [steps]);
+  const stateAt = (i: number): State => states[i] || new Map();
+  const groupName = (g: string) => g ? (groups.find(x => x.id === g)?.name || 'Sub-assembly') : 'Main assembly';
 
   // bodies: every occurrence used by any step (stable key so editing text does not reload the scene)
   const bodies: SceneBody[] = useMemo(() => [...placedBefore.keys()].sort().map(k => {
@@ -117,18 +152,22 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
 
   /** a body's box at its assembled position (independent of the fly-in offset) */
   const homeBox = (b: SceneApi['bodies'][number]) => { const g = b.mesh.geometry; if (!g.boundingBox) g.computeBoundingBox(); return g.boundingBox!.clone().applyMatrix4(b.matrix); };
-  /** scene centre of what is built up to (and including) step i */
-  const builtCenter = (i: number) => {
-    const s = scene.current; const box = new THREE.Box3();
-    s?.bodies.forEach(b => { const k = placedBefore.get(occKey(b.body.part, b.body.occurrence || 0)); if (k !== undefined && k <= i) box.union(homeBox(b)); });
-    return box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
+  /** scene centre of the bodies on the bench at step i (only those already fitted when `doneOnly`) */
+  const builtCenter = (i: number, doneOnly = false) => {
+    const s = scene.current; const box = new THREE.Box3(); const st = stateAt(i);
+    s?.bodies.forEach(b => { const v = st.get(occKey(b.body.part, b.body.occurrence || 0)); if (v && (!doneOnly || v === 'done')) box.union(homeBox(b)); });
+    return box.isEmpty() ? null : box.getCenter(new THREE.Vector3());
   };
 
   const approachDir = (b: SceneApi['bodies'][number], i: number, st: Step) => {
     const map: Record<string, number[]> = { '+x': [1, 0, 0], '-x': [-1, 0, 0], '+y': [0, 1, 0], '-y': [0, -1, 0], '+z': [0, 0, 1], '-z': [0, 0, -1] };
     if (map[st.approach]) return new THREE.Vector3(...map[st.approach]);
-    const c = builtCenter(i - 1);
-    const own = homeBox(b).getCenter(new THREE.Vector3());
+    const c = builtCenter(i, true) || new THREE.Vector3();
+    // a sub-assembly fitted in this step moves as one unit: one direction for all its parts
+    const unit = units[i]?.get(occKey(b.body.part, b.body.occurrence || 0));
+    let own = homeBox(b).getCenter(new THREE.Vector3());
+    if (unit && scene.current) { const ub = new THREE.Box3(); scene.current.bodies.forEach(x => { if (units[i].get(occKey(x.body.part, x.body.occurrence || 0)) === unit) ub.union(homeBox(x)); }); if (!ub.isEmpty()) own = ub.getCenter(new THREE.Vector3()); }
+    if (!builtCenter(i, true)) return new THREE.Vector3(0, 0, 1);
     const d = own.sub(c); d.z = Math.max(d.z, d.length() * 0.35);
     return d.lengthSq() < 1e-6 ? new THREE.Vector3(0, 0, 1) : d.normalize();
   };
@@ -139,7 +178,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     const s = scene.current; if (!s || !step) return;
     for (const g of [fastenerGroup.current, holeGroup.current]) if (g) { s.overlay.remove(g); g.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose?.(); (m.material as THREE.Material | undefined)?.dispose?.(); }); }
     const fg = new THREE.Group(), hg = new THREE.Group();
-    const center = builtCenter(cur);
+    const center = builtCenter(cur) || new THREE.Vector3();
     step.fasteners.forEach((f, fi) => {
       const col = new THREE.Color(FCOL[fi % FCOL.length]);
       for (const r of f.holes) {
@@ -181,7 +220,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     if (pick === null || !step) { s.invalidate(); return; }
     const g = new THREE.Group();
     for (const b of s.bodies) {
-      const k = placedBefore.get(occKey(b.body.part, b.body.occurrence || 0)); if (k === undefined || k > cur) continue;
+      if (!stateAt(cur).has(occKey(b.body.part, b.body.occurrence || 0))) continue;
       for (const h of byId[b.body.part]?.geometry?.holes || []) {
         const r: HoleRef = { part: b.body.part, occurrence: b.body.occurrence || 0, hole: h.id };
         const w = worldHole(r); if (!w) continue;
@@ -206,19 +245,19 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
   useEffect(() => {
     const s = scene.current; const st = steps?.[cur]; dirs.current.clear();
     if (!s || !st) return;
-    for (const b of s.bodies) if (placedBefore.get(occKey(b.body.part, b.body.occurrence || 0)) === cur) dirs.current.set(occKey(b.body.part, b.body.occurrence || 0), approachDir(b, cur, st));
-  }, [cur, steps, ready, placedBefore]);
+    for (const b of s.bodies) if (stateAt(cur).get(occKey(b.body.part, b.body.occurrence || 0)) === 'new') dirs.current.set(occKey(b.body.part, b.body.occurrence || 0), approachDir(b, cur, st));
+  }, [cur, steps, ready, states]);
   // frame what is built so far (this step included), keeping the reader's viewing direction
   useEffect(() => {
     const s = scene.current; if (!s || !steps?.length) return;
     const box = new THREE.Box3();
-    s.bodies.forEach(b => { const k = placedBefore.get(occKey(b.body.part, b.body.occurrence || 0)); if (k !== undefined && k <= cur) box.union(homeBox(b)); });
+    s.bodies.forEach(b => { if (stateAt(cur).has(occKey(b.body.part, b.body.occurrence || 0))) box.union(homeBox(b)); });
     if (box.isEmpty()) return;
     const sph = box.getBoundingSphere(new THREE.Sphere());
     s.center.copy(sph.center); s.radius = Math.max(sph.radius, 1);
     const dir = s.camera.position.clone().sub(s.controls.target).normalize();
     s.fit(dir.lengthSq() > 0.5 ? dir : undefined); s.invalidate();
-  }, [cur, ready, placedBefore.size]);
+  }, [cur, ready, states]);
 
   // animation loop: body visibility / colour / fly-in, fasteners dropping in, auto-advance while playing
   useEffect(() => {
@@ -234,12 +273,11 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
       const fly = ease(t / FLY), fasten = ease((t - FLY) / FASTEN);
       const st = steps[cur];
       for (const b of s.bodies) {
-        const k = placedBefore.get(occKey(b.body.part, b.body.occurrence || 0));
-        const vis = k !== undefined && k <= cur;
-        b.mesh.visible = vis;
-        if (!vis || !st) continue;
+        const state = stateAt(cur).get(occKey(b.body.part, b.body.occurrence || 0));
+        b.mesh.visible = !!state;
+        if (!state || !st) continue;
         const mat = b.mesh.material as THREE.MeshStandardMaterial;
-        if (k === cur) {
+        if (state === 'new') {
           mat.color.setHex(NEW_COLOR);
           const d = (dirs.current.get(occKey(b.body.part, b.body.occurrence || 0)) || new THREE.Vector3(0, 0, 1)).clone().multiplyScalar(s.radius * 0.6 * (1 - fly));
           b.mesh.matrix.copy(b.matrix).premultiply(new THREE.Matrix4().makeTranslation(d.x, d.y, d.z));
@@ -253,7 +291,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [steps, cur, placedBefore, pick, ready, ghost]);
+  }, [steps, cur, states, pick, ready, ghost]);
 
   // ------------------------------------------------------------------ editing
   const timer = useRef<number | undefined>(undefined);
@@ -263,7 +301,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     if (!s) return;
     setSaving(true);
     try {
-      const body = { title: s.title, parts: s.parts, method: s.method, fasteners: s.fasteners.map(({ designation: _d, _qtyManual: _q, ...f }) => f), welds: s.welds, notes: s.notes, tools: s.tools, check: s.check, approach: s.approach };
+      const body = { title: s.title, parts: s.parts, method: s.method, fasteners: s.fasteners.map(({ designation: _d, _qtyManual: _q, ...f }) => f), welds: s.welds, notes: s.notes, tools: s.tools, check: s.check, approach: s.approach, subs: s.subs || [] };
       const saved = await api(`/assembly-steps/${s.id}`, 'PUT', body);
       setSteps(list => list ? list.map(x => x.id === s.id ? { ...x, fasteners: saved.fasteners.map((f: Fastener, i: number) => ({ ...f, _qtyManual: s.fasteners[i]?._qtyManual })) } : x) : list);
       setError('');
@@ -296,8 +334,8 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     change({ fasteners: [...step.fasteners, f] }, true); setPick(step.fasteners.length);
   };
   const run = async (fn: () => Promise<void>) => { try { await flush(); await fn(); setError(''); } catch (e: unknown) { setError((e as Error).message); } };
-  const newStep = (at?: number) => run(async () => {
-    const made = await api(`/revisions/${revision}/assembly-steps${at !== undefined ? '?at=' + at : ''}`, 'POST', { title: '', parts: [], method: 'place' });
+  const newStep = (group = '') => run(async () => {
+    const made = await api(`/revisions/${revision}/assembly-steps`, 'POST', { title: '', parts: [], method: 'place', group });
     const all = await reload(); setCur(all.findIndex(x => x.id === made.id)); setEdit(true);
   });
   const removeStep = (s: Step) => run(async () => {
@@ -305,9 +343,24 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     await api(`/assembly-steps/${s.id}`, 'DELETE'); const all = await reload(); setCur(c => Math.max(0, Math.min(c, all.length - 1)));
   });
   const move = (i: number, d: number) => run(async () => {
-    if (!steps) return; const j = i + d; if (j < 0 || j >= steps.length) return;
-    const ids = steps.map(s => s.id); [ids[i], ids[j]] = [ids[j], ids[i]];
-    await api(`/revisions/${revision}/assembly-steps/order`, 'POST', { ids }); await reload(); setCur(j);
+    if (!steps) return; const j = i + d; if (j < 0 || j >= steps.length || steps[j].group !== steps[i].group) return;
+    const g = steps[i].group; const moved = steps[i].id;
+    const list = steps.filter(x => x.group === g).map(x => x.id); const a = list.indexOf(steps[i].id), b = list.indexOf(steps[j].id); [list[a], list[b]] = [list[b], list[a]];
+    await api(`/revisions/${revision}/assembly-steps/order`, 'POST', { ids: list, group: g }); const all = await reload(); setCur(all.findIndex(x => x.id === moved));
+  });
+  const newGroup = () => run(async () => {
+    const name = window.prompt('Name of the sub-assembly (e.g. Front door unit)'); if (!name?.trim()) return;
+    const g = await api(`/revisions/${revision}/assembly-groups`, 'POST', { name: name.trim() });
+    const made = await api(`/revisions/${revision}/assembly-steps`, 'POST', { title: '', parts: [], method: 'place', group: g.id });
+    const all = await reload(); setCur(all.findIndex(x => x.id === made.id)); setEdit(true);
+  });
+  const renameGroup = (g: Group) => run(async () => {
+    const name = window.prompt('Rename the sub-assembly', g.name); if (!name?.trim() || name.trim() === g.name) return;
+    await api(`/assembly-groups/${g.id}`, 'PUT', { name: name.trim(), notes: g.notes || '' }); await reload();
+  });
+  const removeGroup = (g: Group) => run(async () => {
+    if (!window.confirm(`Delete the sub-assembly “${g.name}” and its steps?`)) return;
+    await api(`/assembly-groups/${g.id}`, 'DELETE'); const all = await reload(); setCur(c => Math.max(0, Math.min(c, all.length - 1)));
   });
 
   // ------------------------------------------------------------------ 3D picking of holes
@@ -350,7 +403,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     <div className={page ? 'as-page cfg-overlay' : 'overlay top cfg-overlay'} role={page ? 'region' : 'dialog'} aria-label="Assembly steps" onMouseDown={e => { if (!page && e.target === e.currentTarget) { void flush(); close(); } }}>
       <div className={page ? 'as-dialog as-page-inner' : 'cfg-dialog as-dialog'}>
         <header className="cfg-head">
-          <div className="cfg-title"><b>Assembly steps</b><small>{editable ? 'Select parts in the Model view and use “Add step”, or add components here · ' : ''}{total ? `${total} step${total === 1 ? '' : 's'}` : 'No steps yet'}{saving ? ' · saving…' : ''}</small></div>
+          <div className="cfg-title"><b>Assembly steps</b><small>{editable && step ? `“Add step” in the Model view adds to: ${groupName(step.group)} · ` : editable ? 'Select parts in the Model view and use “Add step”, or add components here · ' : ''}{total ? `${total} step${total === 1 ? '' : 's'}` : 'No steps yet'}{saving ? ' · saving…' : ''}</small></div>
           {editable && <div className="as-mode" role="tablist">
             <button type="button" className={edit ? 'on' : ''} onClick={() => setEdit(true)}><Pencil size={14} />Build</button>
             <button type="button" className={!edit ? 'on' : ''} onClick={() => { void flush(); setEdit(false); setPick(null); }}><Eye size={14} />Shop floor view</button>
@@ -360,21 +413,40 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
         </header>
         <div className={'as-body' + (edit ? ' editing' : '')}>
           <aside className="as-list">
-            <div className="as-list-head"><ListOrdered size={15} /><b>Build order</b>{editable && edit && <button type="button" className="mini" onClick={() => newStep()}><Plus size={13} />Step</button>}</div>
+            <div className="as-list-head"><ListOrdered size={15} /><b>Build order</b>{editable && edit && <span className="as-list-add"><button type="button" className="mini" title="A unit built on its own (e.g. a door with its hinges), fitted later as one piece" onClick={newGroup}><Package size={13} />Sub-assembly</button><button type="button" className="mini" onClick={() => newStep(step?.group || '')}><Plus size={13} />Step</button></span>}</div>
             {!total && <div className="as-empty"><b>No steps yet</b><small>{editable ? 'Select components in the 3D view and use “Add step”, or add an empty step here.' : 'The designer has not written the assembly steps yet.'}</small></div>}
-            <ol>
-              {(steps || []).map((s, i) => (
-                <li key={s.id} className={i === cur ? 'on' : i < cur ? 'done' : ''} onClick={() => { void flush(); setCur(i); setPlaying(false); }}>
-                  <span className="as-num">{i < cur ? <Check size={12} /> : i + 1}</span>
-                  <span className="as-li-text"><b>{s.title || cfg?.methods[s.method] || 'Step'}</b><small>{cfg?.methods[s.method]} · {s.parts.reduce((n, e) => n + e.occurrences.length, 0)} comp.{s.fasteners.length ? ` · ${s.fasteners.reduce((n, f) => n + (f.qty || 0), 0)} fasteners` : ''}</small></span>
-                  {editable && edit && i === cur && <span className="as-li-tools" onClick={e => e.stopPropagation()}>
-                    <button type="button" className="icon" title="Move up" disabled={i === 0} onClick={() => move(i, -1)}><ChevronUp size={14} /></button>
-                    <button type="button" className="icon" title="Move down" disabled={i === total - 1} onClick={() => move(i, 1)}><ChevronDown size={14} /></button>
-                    <button type="button" className="icon danger" title="Delete step" onClick={() => removeStep(s)}><Trash2 size={14} /></button>
-                  </span>}
-                </li>
-              ))}
-            </ol>
+            {[...groups.map(g => g.id), ''].map(gid => {
+              const g = groups.find(x => x.id === gid);
+              const list = (steps || []).map((s, i) => ({ s, i })).filter(x => (x.s.group || '') === gid);
+              if (!gid && !list.length && !groups.length) return null;
+              return (
+                <div key={gid || 'main'} className={'as-sec-list' + (gid ? ' sub' : ' main')}>
+                  <div className="as-sec-head">
+                    {gid ? <Package size={14} /> : <Boxes size={14} />}
+                    <b title={gid ? 'Sub-assembly: built on its own, then fitted into another assembly' : 'Main assembly'}>{gid ? g?.name : 'Main assembly'}</b>
+                    {editable && edit && <span className="as-sec-tools">
+                      <button type="button" className="icon" title={gid ? 'Add a step to this sub-assembly' : 'Add a step to the main assembly'} onClick={() => newStep(gid)}><Plus size={13} /></button>
+                      {g && <button type="button" className="icon" title="Rename" onClick={() => renameGroup(g)}><Pencil size={12} /></button>}
+                      {g && <button type="button" className="icon danger" title="Delete the sub-assembly and its steps" onClick={() => removeGroup(g)}><Trash2 size={12} /></button>}
+                    </span>}
+                  </div>
+                  {!list.length && <small className="as-sec-empty">No steps yet</small>}
+                  <ol>
+                    {list.map(({ s, i }, n) => (
+                      <li key={s.id} className={i === cur ? 'on' : i < cur ? 'done' : ''} onClick={() => { void flush(); setCur(i); setPlaying(false); }}>
+                        <span className="as-num">{i < cur ? <Check size={12} /> : n + 1}</span>
+                        <span className="as-li-text"><b>{s.title || cfg?.methods[s.method] || 'Step'}</b><small>{cfg?.methods[s.method]}{(s.subs || []).length ? ` · fits ${(s.subs || []).map(x => groups.find(g2 => g2.id === x)?.name || 'sub-assembly').join(', ')}` : ''} · {s.parts.reduce((t, e) => t + e.occurrences.length, 0)} comp.{s.fasteners.length ? ` · ${s.fasteners.reduce((t, f) => t + (f.qty || 0), 0)} fasteners` : ''}</small></span>
+                        {editable && edit && i === cur && <span className="as-li-tools" onClick={e => e.stopPropagation()}>
+                          <button type="button" className="icon" title="Move up" disabled={n === 0} onClick={() => move(i, -1)}><ChevronUp size={14} /></button>
+                          <button type="button" className="icon" title="Move down" disabled={n === list.length - 1} onClick={() => move(i, 1)}><ChevronDown size={14} /></button>
+                          <button type="button" className="icon danger" title="Delete step" onClick={() => removeStep(s)}><Trash2 size={14} /></button>
+                        </span>}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              );
+            })}
           </aside>
 
           <section className="as-stage">
@@ -385,9 +457,12 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
             </PartScene> : <div className="as-stage-empty">{steps === null ? <><span className="spinner" />Loading…</> : 'Add components to a step to see it here.'}</div>}
             {step && !edit && <div className="as-card">
               <div className="as-card-num">Step {cur + 1}<small>/ {total}</small></div>
+              <div className={'as-card-asm' + (step.group ? ' sub' : '')}>{step.group ? <Package size={13} /> : <Boxes size={13} />}{step.group ? `Sub-assembly · ${groupName(step.group)}` : 'Main assembly'}</div>
               <h3>{step.title || cfg?.methods[step.method]}</h3>
               <span className="as-method">{cfg?.methods[step.method]}</span>
-              {step.parts.length > 0 && <div className="as-sec"><h5>Components</h5>{step.parts.map(e => <div key={e.part} className="as-comp"><i style={{ background: '#4f8ff7' }} />{byId[e.part]?.name || e.part}<b>×{e.occurrences.length}</b></div>)}</div>}
+              {(step.parts.length > 0 || (step.subs || []).length > 0) && <div className="as-sec"><h5>Components</h5>
+                {(step.subs || []).map(x => <div key={x} className="as-comp"><Package size={13} className="as-sub-ico" /><span>Sub-assembly <b className="as-subname">{groupName(x)}</b></span></div>)}
+                {step.parts.map(e => <div key={e.part} className="as-comp"><i style={{ background: '#4f8ff7' }} />{byId[e.part]?.name || e.part}<b>×{e.occurrences.length}</b></div>)}</div>}
               {step.fasteners.length > 0 && <div className="as-sec"><h5>Fasteners</h5>{step.fasteners.map((f, i) => <div key={i} className="as-fast"><i style={{ background: FCOL[i % FCOL.length] }} /><span><b>{f.qty} × {label(f)}</b>{(f.torque || f.threadlock || f.note) && <small>{[f.torque && 'Torque ' + f.torque, f.threadlock, f.note].filter(Boolean).join(' · ')}</small>}</span></div>)}</div>}
               {step.tools && <div className="as-sec"><h5>Tools</h5><p>{step.tools}</p></div>}
               {step.notes && <div className="as-sec"><h5>Instructions</h5><p className="as-notes">{step.notes}</p></div>}
@@ -405,6 +480,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
           {edit && editable && <aside className="as-edit">
             {error && <div className="cfg-error">{error}</div>}
             {!step ? <div className="as-empty"><b>Start the build order</b><small>Select components in the 3D view and use “Add step”, or add an empty step.</small><button type="button" className="primary" onClick={() => newStep()}><Plus size={14} />Add step</button></div> : <>
+              <div className={'as-edit-asm' + (step.group ? ' sub' : '')}>{step.group ? <Package size={13} /> : <Boxes size={13} />}{groupName(step.group)}</div>
               <label className="as-field"><span>Step {cur + 1} title</span><input value={step.title} placeholder={`e.g. Fit ${byId[step.parts[0]?.part]?.name || 'the bracket'} to the frame`} maxLength={160} onChange={e => change({ title: e.target.value })} /></label>
 
               <div className="as-field"><span>How is it joined?</span>
@@ -420,6 +496,18 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
                 <PartPicker open={addOpen} setOpen={setAddOpen} parts={unusedParts} used={new Set(step.parts.map(e => e.part))} placed={placedBefore}
                   onPick={pid => { const n = Math.max(inst[pid]?.length || 0, byId[pid]?.quantity || 1, 1); const free = Array.from({ length: n }, (_, k) => k).filter(k => !placedBefore.has(occKey(pid, k))); change({ parts: [...step.parts, { part: pid, occurrences: free.length ? free : [0] }] }, true); }} />
               </div>
+
+              {groups.length > 0 && <div className="as-field"><span>Sub-assemblies fitted in this step</span>
+                {(step.subs || []).map(x => <div key={x} className="as-comp-edit"><Package size={13} /><span>{groupName(x)}</span><button type="button" className="icon" title="Remove" onClick={() => change({ subs: (step.subs || []).filter(y => y !== x) }, true)}><X size={13} /></button></div>)}
+                {(() => {
+                  const fittedElsewhere = new Set((steps || []).filter(x => x.id !== step.id).flatMap(x => x.subs || []));
+                  const inside = (g: string, seen: string[] = []): string[] => (steps || []).filter(x => x.group === g).flatMap(x => (x.subs || []).filter(y => !seen.includes(y)).flatMap(y => [y, ...inside(y, [...seen, y])]));
+                  const options = groups.filter(g => g.id !== step.group && !(step.subs || []).includes(g.id) && !fittedElsewhere.has(g.id) && !inside(g.id).includes(step.group));
+                  return options.length ? <select className="as-sub-select" value="" onChange={e => { if (e.target.value) change({ subs: [...(step.subs || []), e.target.value] }, true); }}>
+                    <option value="">Fit a finished sub-assembly…</option>{options.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}</select>
+                    : !(step.subs || []).length ? <small className="muted">{step.group ? 'Other sub-assemblies can be fitted here once they exist and are not fitted elsewhere.' : 'Every sub-assembly is already fitted in a step.'}</small> : null;
+                })()}
+              </div>}
 
               <div className="as-field"><span>Fasteners</span>
                 {cfg && step.fasteners.map((f, i) => <FastenerCard key={i} f={f} i={i} cfg={cfg} picking={pick === i} onPick={() => setPick(pick === i ? null : i)} set={p => setFastener(i, p)} remove={() => { change({ fasteners: step.fasteners.filter((_, k) => k !== i) }, true); setPick(null); }} />)}

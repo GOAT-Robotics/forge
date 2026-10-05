@@ -228,7 +228,7 @@ def process_import(rid):
 def carry_assembly_steps(old_rid,rid,pid_map):
  """Assembly steps follow the design: components matched by name / shape keep their step; fastener holes only
  where the shape is unchanged (hole ids are stable); weld links are dropped (welds belong to one revision)."""
- out=[]
+ out=[];gmap={g['id']:db.uid() for g in db.rows('SELECT id FROM assembly_groups WHERE revision_id=?',(old_rid,))}
  for r in db.rows('SELECT * FROM assembly_steps WHERE revision_id=? ORDER BY seq',(old_rid,)):
   d=json.loads(r['data']);parts=[]
   for e in d.get('parts',[]):
@@ -237,11 +237,14 @@ def carry_assembly_steps(old_rid,rid,pid_map):
    occ=[o for o in e.get('occurrences',[0]) if o<max(m[2],1)]
    if occ:parts.append({'part':m[0],'occurrences':occ})
   for f in d.get('fasteners',[]):f['holes']=[{**h,'part':pid_map[h['part']][0]} for h in f.get('holes',[]) if pid_map.get(h['part']) and pid_map[h['part']][1]]
-  if not parts and not d.get('notes'):continue
-  d['parts']=parts;d['welds']=[];out.append(d)
+  if not parts and not d.get('notes') and not d.get('subs'):continue
+  d['parts']=parts;d['welds']=[];d['subs']=[gmap[x] for x in d.get('subs',[]) if x in gmap];out.append((gmap.get(r['grp'] or '',''),r['seq'],d))
  with db.connect() as c:
-  c.execute('DELETE FROM assembly_steps WHERE revision_id=?',(rid,))
-  for i,d in enumerate(out):c.execute('INSERT INTO assembly_steps(id,revision_id,seq,data,created,author,updated) VALUES(?,?,?,?,?,?,?)',(db.uid(),rid,i,json.dumps(d),db.now(),'carried over',db.now()))
+  c.execute('DELETE FROM assembly_steps WHERE revision_id=?',(rid,));c.execute('DELETE FROM assembly_groups WHERE revision_id=?',(rid,))
+  for g in db.rows('SELECT * FROM assembly_groups WHERE revision_id=?',(old_rid,)):c.execute('INSERT INTO assembly_groups(id,revision_id,seq,name,notes,created,author) VALUES(?,?,?,?,?,?,?)',(gmap[g['id']],rid,g['seq'],g['name'],g['notes'] or '',db.now(),'carried over'))
+  seqs={}
+  for grp,_,d in out:
+   seqs[grp]=seqs.get(grp,-1)+1;c.execute('INSERT INTO assembly_steps(id,revision_id,seq,data,created,author,updated,grp) VALUES(?,?,?,?,?,?,?,?)',(db.uid(),rid,seqs[grp],json.dumps(d),db.now(),'carried over',db.now(),grp))
 
 def drawing_options(p):
  opts=json.loads(p.get('drawing_options') or '{}') if isinstance(p.get('drawing_options'),str) else dict(p.get('drawing_options') or {})
