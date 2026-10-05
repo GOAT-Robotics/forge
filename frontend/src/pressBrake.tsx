@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { Pause, Play, RotateCcw, X, Maximize, Wrench, ListOrdered, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 import { CadControls, type NavStyle } from './cadControls';
 import { api, loadSecureModel } from './api';
+import { rollCentres } from './rollGeometry';
 
 /** Server data (backend/app/bendsim.py): developed blank split into flanges and curling bend strips. */
 type SimBend = { id: string; L: number[]; u: number[]; v: number[]; n: number[]; w: number; angle: number; radius: number; s: number; length: number; twin: number | null; stroke?: { center: number; span: number; ids: string[] } };
@@ -72,7 +73,7 @@ const ease = (x: number) => x < 0 ? 0 : x > 1 ? 1 : x * x * (3 - 2 * x);
  * after another in the bending order. Tooling is illustrative (generic punch and V-die sized from the sheet
  * thickness), the folding is the part's real developed geometry and bend data.
  */
-const CLASH: Record<string, string> = { punch: 'punch', die: 'die', beam: 'upper beam', bed: 'lower beam', roll: 'top roll' };
+const CLASH: Record<string, string> = { punch: 'punch', die: 'die', beam: 'upper beam', bed: 'lower beam', roll: 'top roll', bottom_roll: 'lower rolls' };
 const toolLabel = (st: PlanStep, tl: Tooling) => st.process === 'roll'
   ? `Plate roll · top roll Ø${Math.round((st.roll?.top || 0) * 2)} · ${st.roll?.passes || 2} passes`
   : [
@@ -163,7 +164,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
     /** 3-roll plate roll: top roll inside the curve, two bottom rolls outside, end housings */
     const rollMat = new THREE.MeshStandardMaterial({ color: 0x8a96a3, roughness: 0.35, metalness: 0.6 });
     const markMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.5, metalness: 0.3 });
-    const makeRolls = (r: RollSetup, clash: boolean) => {
+    const makeRolls = (r: RollSetup, clash: Record<string, number>) => {
       const roll = (rad: number, mat: THREE.Material) => {
         const g = new THREE.CylinderGeometry(rad, rad, r.length, 64, 1); g.rotateZ(Math.PI / 2);
         const spin = new THREE.Group(); spin.add(new THREE.Mesh(g, mat));
@@ -174,7 +175,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
         }
         const holder = new THREE.Group(); holder.add(spin); return { holder, spin };
       };
-      const top = roll(r.top, clash ? clashMat : rollMat), b1 = roll(r.bottom, rollMat), b2 = roll(r.bottom, rollMat);
+      const top = roll(r.top, clash.roll ? clashMat : rollMat), b1 = roll(r.bottom, clash.bottom_roll ? clashMat : rollMat), b2 = roll(r.bottom, clash.bottom_roll ? clashMat : rollMat);
       const group = new THREE.Group(); group.add(top.holder, b1.holder, b2.holder);
       const span = r.pitch + r.bottom + 14 * k, hz = r.top * 2 + r.bottom * 2 + 40 * k;
       for (const sx of [-1, 1]) {
@@ -187,7 +188,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
     };
     // one set of tools per stroke: sectional punch and die as long as the bend line, beams full length
     const stepTools = sim.plan.map(st => {
-      if (st.process === 'roll') return { upper: new THREE.Group(), lower: new THREE.Group(), rolls: st.roll ? makeRolls(st.roll, !!(st.clash || {}).roll) : null };
+      if (st.process === 'roll') return { upper: new THREE.Group(), lower: new THREE.Group(), rolls: st.roll ? makeRolls(st.roll, st.clash || {}) : null };
       const P = TL.punches[st.punch] || TL.punches.straight, D = TL.dies[st.die] || TL.dies.die;
       const c = st.clash || {};
       const upper = new THREE.Group(), lower = new THREE.Group();
@@ -299,10 +300,9 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
         // rolls: top roll on the inside at the line of contact, bottom rolls follow the curvature of this pass
         const R = stepTools[step].rolls!; const r = R.r; const b = sim.bends[bi];
         const rho = a > 1e-6 ? 2 * b.w / a : 1e7;
-        const D = Math.min(rho, 1e7) + t / 2 + r.bottom, sn = Math.min(r.pitch / D, 0.95);
-        const y = D * sn, zc = Math.min(rho, 1e7) - D * Math.sqrt(1 - sn * sn);
+        const [c1, c2] = rollCentres(rho, t, r, a, rs.at, b.s);
         R.top.holder.position.set(0, 0, t / 2 + r.top);
-        R.b1.holder.position.set(0, -y, zc); R.b2.holder.position.set(0, y, zc);
+        R.b1.holder.position.set(0, ...c1); R.b2.holder.position.set(0, ...c2);
         const feed = rs.feed * 2 * b.w;
         R.top.spin.rotation.x = -feed / r.top; R.b1.spin.rotation.x = R.b2.spin.rotation.x = feed / r.bottom;
         return;
@@ -373,6 +373,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
   const cur = sim && seq.length ? sim.bends[seq[Math.max(0, step)]] : null;
   const curStep = sim && seq.length ? sim.plan[Math.max(0, step)] : null;
   const nRoll = sim ? sim.plan.filter(x => x.process === 'roll').length : 0;
+  const unchecked = sim?.plan.some(s => s.unchecked);
   const clashes = sim ? sim.plan.filter(s => Object.keys(s.clash || {}).length).length : 0;
   const saveOrder = async (ids: string[], process: Record<string, string>) => {
     const r = await api(`/revisions/${revision}/parts/${part}/bend-order`, 'PUT', { order: ids, process });
@@ -403,8 +404,8 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
             {curStep && <span className="pb-tool">{toolLabel(curStep, sim!.tooling)}</span>}
             {curStep && Object.keys(curStep.clash || {}).length > 0 && <span className="pb-clash"><AlertTriangle size={13} />Hits the {Object.keys(curStep.clash).map(k => CLASH[k] || k).join(' and ')} — needs special tooling or another sequence</span>}
           </div>}
-          {sim && !seqOpen && <div className={'pb-plan' + (clashes ? ' bad' : '')} onClick={() => setSeqOpen(true)}>
-            {clashes ? <><AlertTriangle size={13} />{clashes} stroke{clashes === 1 ? '' : 's'} with a tool clash</> : <>Collision-checked sequence</>}{sim.sequence === 'custom' ? ' · shop order' : ''}
+          {sim && !seqOpen && <div className={'pb-plan' + (clashes || unchecked ? ' bad' : '')} onClick={() => setSeqOpen(true)}>
+            {clashes ? <><AlertTriangle size={13} />{clashes} stroke{clashes === 1 ? '' : 's'} with a tool clash</> : <>{unchecked ? 'Tool collisions not checked' : 'No tool clash found in sampled poses'}</>}{sim.sequence === 'custom' ? ' · shop order' : ''}
           </div>}
         </div>
         <footer className="pb-bar">
@@ -443,7 +444,7 @@ function Sequence({ sim, current, canEdit, notice, go, save, close }: { sim: Ben
   const apply = () => run(orderChanged || sim.sequence === 'custom' ? draft.map(bi => sim.bends[bi].id) : [], procIds());
   return (
     <div className="pb-seq" onMouseDown={e => e.stopPropagation()}>
-      <header><b>Forming sequence</b><small>{sim.sequence === 'custom' ? 'Shop order, checked against the tooling' : 'Planned: rolling first, then outer and short flanges, no tool clashes'}</small>
+      <header><b>Forming sequence</b><small>{sim.sequence === 'custom' ? 'Shop order, checked against the tooling' : 'Planned forming order · sampled tool checks'}</small>
         <button type="button" className="icon" aria-label="Close" onClick={close}><X size={15} /></button></header>
       <ol>{draft.map((bi, i) => {
         const b = sim.bends[bi], st = stepOf(bi), bad = !changed && Object.keys(st.clash || {}).length > 0;

@@ -78,14 +78,19 @@ def roll_setup(radius, angle, span, t):
             'length': round(span + 2 * max(15.0, .1 * span), 3), 'passes': int(min(5, max(2, math.ceil(angle / 45))))}
 
 
-def roll_centres(rho, t, r):
-    """Bottom roll centres (y, z) in the stroke frame for the current neutral radius rho (inside = +Z)."""
+def roll_centres(rho, t, r, angle=math.pi, at=.5, direction=1):
+    """Supports tangent to the finite arc or its straight tangent extensions, in the mid-plane frame."""
     rho = min(rho, 1e7)
     D = rho + t / 2 + r['bottom']
-    sn = min(r['pitch'] / D, .95)
-    y = D * sn
-    z = rho - D * math.sqrt(1 - sn * sn)
-    return (-y, z), (y, z)
+    bounds = sorted((-direction * angle * at, direction * angle * (1 - at)))
+    out = []
+    for y in (-r['pitch'], r['pitch']):
+        theta = math.asin(max(-.95, min(.95, y / D)))
+        theta = max(bounds[0], min(bounds[1], theta))
+        # Past an arc endpoint, continue its tangent rather than the imaginary full circle.
+        z = rho - D * math.cos(theta) + math.tan(theta) * (y - D * math.sin(theta))
+        out.append((y, z))
+    return tuple(out)
 
 
 def sink(a, W, vdepth, t):
@@ -298,19 +303,23 @@ class Planner:
     def evaluate_roll(self, done, p):
         """Rolling: the top roll sits inside the curve, so formed flanges on the inside are what can hit it."""
         r = self.roll_of(p)
-        top = shapely.Point(0, self.t / 2 + r['top']).buffer(r['top'] + max(.05, self.t / 2 - .15), 48)
-        hits = 0
-        for frac in (.5, 1.0):
+        hits = {'roll': 0, 'bottom_roll': 0}
+        grow = max(.05, self.t / 2 - .15)
+        for frac in np.linspace(0, 1, 9):
             ang = self.angles(done, p, frac)
-            for at in (0.0, .5, 1.0):
+            P = np.vstack([q for q in self.folded(ang) if len(q)])
+            a = ang[p]
+            rho = 2 * self.bends[p]['w'] / a if a > 1e-6 else 1e7
+            for at in np.linspace(0, 1, 9):
                 R, contact = self.frame(p, ang, at)
-                P = np.vstack([q for q in self.folded(ang) if len(q)])
-                W_ = (P - (contact + R[2] * self.t / 2)) @ R.T     # origin on the mid-plane under the top roll
+                W_ = (P - (contact + R[2] * self.t / 2)) @ R.T
                 x, y, z = W_[:, 0], W_[:, 1], W_[:, 2]
                 ins = np.abs(x) < r['length'] / 2
-                if ins.any():
-                    hits += int(shapely.contains_xy(top, y[ins], z[ins]).sum())
-        return {'variant': ('roll', False, 'roll'), 'clash': {'roll': hits} if hits else {}, 'score': hits}
+                centres = [('roll', (0, self.t / 2 + r['top']), r['top'])]
+                centres += [('bottom_roll', c, r['bottom']) for c in roll_centres(rho, self.t, r, a, at, self.bends[p]['s'])]
+                for key, (cy, cz), rad in centres:
+                    hits[key] += int((ins & ((y - cy)**2 + (z - cz)**2 < (rad + grow)**2)).sum())
+        return {'variant': ('roll', False, 'roll'), 'clash': {k: n for k, n in hits.items() if n}, 'score': sum(hits.values())}
 
     # -------------------------------------------------------------------------------------------- sequence
     def ranked(self, done, last_s):

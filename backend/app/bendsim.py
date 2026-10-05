@@ -243,7 +243,7 @@ def build(poly, bend_lines, thickness, above=False, root_point=None, order_ids=N
     depth = {i: len(chain_of[parent_bend[i]]) for i in range(len(bends))}
     order = sorted((i for i in range(len(bends)) if i not in twin), key=lambda i: (-depth[i], bends[i]['length']))
     sim = {
-        'version': 2, 'thickness': t,
+        'version': 3, 'thickness': t,
         'bends': [{'id': bd['id'], 'L': bd['L'], 'u': bd['u3'], 'v': bd['v3'], 'n': [0.0, 0.0, 1.0], 'w': bd['w'], 'angle': bd['angle'],
                    'radius': bd['radius'], 's': bd['s'], 'length': bd['length'], 'twin': twin.get(i), **({'stroke': stroke[i]} if i in stroke else {})} for i, bd in enumerate(bends)],
         'regions': regions, 'order': order,

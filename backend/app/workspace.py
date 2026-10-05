@@ -1002,8 +1002,8 @@ def model_stream(token: str, request: Request):
         storage.restore(rid, rel, path)
     if file == 'bend-sim.json' and path.exists():
         with open(path, 'rb') as f:
-            if not f.read(40).startswith(b'{"version":2'):
-                path.unlink()   # built before the collision-checked sequence: plan it again
+            if not f.read(40).startswith(b'{"version":3'):
+                path.unlink()   # old rolling geometry or tool checks: plan it again
     if not path.exists() and file == 'bend-sim.json':
         bend_sim_build(rid, get_part(part), path)
     if not path.exists():
