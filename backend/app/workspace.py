@@ -47,7 +47,7 @@ def editable_revision(rid):
     r = get_rev(rid)
     if r['state'] != 'active' or r['status'] != 'ready':
         raise HTTPException(409, 'Only an active, ready revision can be edited. Upload a new revision for released designs.')
-    if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind!="instructions" AND status IN ("queued","running")', (rid,)):
+    if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")', (rid,)):
         raise HTTPException(409, 'A CAD job is active; wait for completion')
     return r
 

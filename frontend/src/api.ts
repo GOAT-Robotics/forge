@@ -36,7 +36,7 @@ export async function asset(path: string) {
   const r = await fetch('/api' + path, { headers: headers() });
   if (!r.ok) {
     const a = await r.json().catch(() => ({}));
-    throw new Error(a.detail || 'File unavailable; generate the document first');
+    throw new Error(a.detail || (r.status >= 500 ? `The server could not produce this file (error ${r.status}); try again or regenerate documents` : 'File unavailable; generate the document first'));
   }
   return r.blob();
 }

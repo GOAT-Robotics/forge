@@ -371,13 +371,17 @@ def process_instructions(rid):
  instructions_pdf(rid,progress=lambda k,n:progress(rid,int(100*k/max(n,1)),f'Assembly instructions: page {k}/{n}'))
  progress(rid,100,'Assembly instructions ready')
 
+def process_welding(rid):
+ from .welding import welding_pdf
+ progress(rid,20,'Drawing the welding document');welding_pdf(rid);progress(rid,100,'Welding document ready')
+
 def run_once():
  with db.connect() as c:
   c.execute('BEGIN IMMEDIATE');job=c.execute('SELECT * FROM jobs WHERE status="queued" ORDER BY created LIMIT 1').fetchone()
   if not job:return False
   job=dict(job);c.execute('UPDATE jobs SET status="running" WHERE id=?',(job['id'],))
  try:
-  (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_documents(job['revision_id'],json.loads(job['payload'])))
+  (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else process_documents(job['revision_id'],json.loads(job['payload'])))
   storage.sync_revision(job['revision_id'],db.revdir(job['revision_id']))
   with db.connect() as c:c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
  except Exception as e:

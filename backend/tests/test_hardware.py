@@ -148,7 +148,7 @@ def test_welding_document(tmp_path, monkeypatch):
     with TestClient(app) as client:
         rid, pid, shape, g = _fixture(tmp_path, client)
         H = {'X-Forge-Request': '1'}
-        assert client.get(f'/api/revisions/{rid}/welding.pdf').status_code == 404
+        assert client.get(f'/api/revisions/{rid}/welding').json()['state'] == 'no-welds'
         seam = {'part': pid, 'occurrence': 0, 'selection': 'edge', 'index': 3, 'type': 'line', 'length': 100.0,
                 'boundaries': [[[0, 0, 0], [100, 0, 0]]], 'joint': 'fillet', 'other_part': pid, 'other_occurrence': 0}
         base = {'process': 'MIG/MAG (135)', 'size': '3'}
@@ -156,8 +156,17 @@ def test_welding_document(tmp_path, monkeypatch):
         from app.welding import weld_rows
         r = weld_rows(rid)[0]
         assert r['symbol'] == 'a3 fillet 3 × 20 (40)' and r['weld_length'] == 60 and r['seam'] == 100 and r['ground']
+        assert client.get(f'/api/revisions/{rid}/welding').json()['state'] == 'missing'
+        assert client.post(f'/api/revisions/{rid}/welding', headers=H).json()['state'] == 'generating'
+        assert client.get(f'/api/revisions/{rid}/welding.pdf').status_code == 409
+        from app import worker
+        assert worker.run_once()
+        assert client.get(f'/api/revisions/{rid}/welding').json()['state'] == 'ready'
         pdf = client.get(f'/api/revisions/{rid}/welding.pdf')
         assert pdf.status_code == 200 and pdf.content[:4] == b'%PDF'
+        # older welds stored free text sizes: still documented
+        from app.welding import num
+        assert num('50 mm') == 50 and num('3,5') == 3.5 and num(None, 7) == 7
         from pypdf import PdfReader
         import io
         assert 'W1' in PdfReader(io.BytesIO(pdf.content)).pages[0].extract_text()

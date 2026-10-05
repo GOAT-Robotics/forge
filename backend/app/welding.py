@@ -27,6 +27,15 @@ def load(v, default):
         return default
 
 
+def num(v, default=0.0):
+    """First number in a value ('50', 50, '50 mm', '3,5') — older welds stored free text."""
+    import re
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    m = re.search(r'[-+]?\d+(?:[.,]\d+)?', str(v or ''))
+    return float(m.group(0).replace(',', '.')) if m else default
+
+
 def _path_len(path):
     p = np.asarray(path, float)
     return float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum()) if len(p) > 1 else 0.0
@@ -67,18 +76,24 @@ def weld_rows(rid):
             joint = joint or f.get('joint', '')
             lst = inst.get(f['part']) or []
             M = np.array(lst[occ]['matrix'], float) if occ < len(lst) else np.eye(4)
+            if f.get('selection') != 'edge':
+                continue   # face-pair welds: the faces are listed, the seam itself is drawn by the viewer
             for path in f.get('boundaries') or []:
-                if len(path) < 2:
+                try:
+                    path = np.asarray(path, float)
+                except (TypeError, ValueError):
+                    continue
+                if path.ndim != 2 or path.shape[1] != 3 or len(path) < 2:
                     continue
                 L = _path_len(path)
-                a, b = (f.get('range') or [0, L])[:2]
+                a, b = [num(x) for x in (f.get('range') or [0, L])[:2]]
                 sec = _section(path, a, b) if (a > 1e-6 or b < L - 1e-6) else np.asarray(path, float)
                 world = sec @ M[:3, :3].T + M[:3, 3]
                 paths.append((world, a, b))
                 length += max(0.0, b - a)
         t = w.get('type', 'linear')
-        pitch = float(w.get('pitch') or 0)
-        seg = float(w.get('length') or 0)
+        pitch = num(w.get('pitch'))
+        seg = num(w.get('length'))
         if t == 'stitch' and pitch > 0:
             n = max(1, int(math.floor((length - seg) / pitch + 1e-6)) + 1) if length > seg else 1
             pattern = f"{n} × {seg:g} ({pitch:g})"
@@ -140,7 +155,7 @@ def welding_pdf(rid):
     from reportlab.pdfgen import canvas
     from reportlab.pdfbase.pdfmetrics import stringWidth
     from .assembly import part_mesh, placed, merge, instances_of, DONE, VIEW_N
-    from .render import view_image
+    from .render import view_image, best_view, frame
     rows = weld_rows(rid)
     rev = db.row('SELECT r.*, p.name AS project_name, p.code AS project_code FROM revisions r JOIN projects p ON p.id=r.project_id WHERE r.id=?', (rid,))
     out = db.revdir(rid) / 'welding.pdf'
@@ -248,11 +263,15 @@ def welding_pdf(rid):
         box = (12 * mm, 16 * mm, 196 * mm, H - 28 * mm)
         if meshes:
             md = merge(meshes)
+            # camera per weldment: the side from which most of its welds are seen (not hidden behind the parts)
+            pts = np.vstack([p for r in grp for p, _, _ in r['paths']]) if any(r['paths'] for r in grp) else None
+            view_n = best_view(md, points=pts) if pts is not None else VIEW_N
+            right, up = frame(view_n)
             P2 = np.c_[md['v'] @ right, md['v'] @ up]
             lo, hi = P2.min(0), P2.max(0)
             pad = (hi - lo) * .06 + 1
             lo, hi = lo - pad, hi + pad
-            img = view_image(md, VIEW_N, right, lo, hi, px_per_mm=1500 / max(hi - lo), max_px=1500)
+            img = view_image(md, view_n, right, lo, hi, px_per_mm=1500 / max(hi - lo), max_px=1500)
             bw, bh = box[2] - box[0], box[3] - box[1]
             sc = min(bw / (hi - lo)[0], bh / (hi - lo)[1])
             iw, ih = (hi - lo)[0] * sc, (hi - lo)[1] * sc
@@ -330,12 +349,59 @@ def touch(rid):
     (db.revdir(rid) / 'welding.pdf').unlink(missing_ok=True)
 
 
+def welding_job(rid):
+    return db.row("SELECT * FROM jobs WHERE revision_id=? AND kind='welding' ORDER BY created DESC LIMIT 1", (rid,))
+
+
+def _file(rid):
+    out = db.revdir(rid) / 'welding.pdf'
+    if not out.exists():
+        try:
+            storage.restore(rid, 'welding.pdf', out)
+        except Exception:
+            pass
+    return out
+
+
+@router.get('/api/revisions/{rid}/welding')
+def welding_status(rid: str, request: Request):
+    revision_access(request, rid)
+    j = welding_job(rid)
+    if j and j['status'] in ('queued', 'running'):
+        r = db.row('SELECT progress,message FROM revisions WHERE id=?', (rid,))
+        return {'state': 'generating', 'progress': r['progress'] if j['status'] == 'running' else 0, 'message': r['message'] if j['status'] == 'running' else 'Waiting for the worker'}
+    if _file(rid).exists():
+        return {'state': 'ready'}
+    if j and j['status'] == 'failed':
+        return {'state': 'failed', 'error': j['error']}
+    has = bool(db.row("SELECT id FROM joints WHERE revision_id=? AND kind='weld' LIMIT 1", (rid,)))
+    return {'state': 'missing' if has else 'no-welds'}
+
+
+@router.post('/api/revisions/{rid}/welding')
+def welding_generate(rid: str, request: Request):
+    u = revision_access(request, rid)
+    if u.get('role') == 'vendor':
+        raise HTTPException(403, 'Vendor links are read-only')
+    if not db.row("SELECT id FROM joints WHERE revision_id=? AND kind='weld' LIMIT 1", (rid,)):
+        raise HTTPException(422, 'No welds are configured for this revision')
+    j = welding_job(rid)
+    if j and j['status'] in ('queued', 'running'):
+        return {'state': 'generating'}
+    (db.revdir(rid) / 'welding.pdf').unlink(missing_ok=True)
+    with db.connect() as c:
+        c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)', (db.uid(), rid, 'welding', 'queued', db.now(), '', '{}'))
+        db.audit(c, u['name'], 'welding.document.requested', {}, rid)
+    return {'state': 'generating'}
+
+
 @router.get('/api/revisions/{rid}/welding.pdf')
 def welding(rid: str, request: Request):
     revision_access(request, rid)
-    out = db.revdir(rid) / 'welding.pdf'
+    out = _file(rid)
     if not out.exists():
-        if not db.row("SELECT id FROM joints WHERE revision_id=? AND kind='weld' LIMIT 1", (rid,)):
-            raise HTTPException(404, 'No welds are configured for this revision')
-        welding_pdf(rid)
+        j = welding_job(rid)
+        if j and j['status'] in ('queued', 'running'):
+            raise HTTPException(409, 'The welding document is being generated')
+        raise HTTPException(404, 'Create the welding document first')
     return FileResponse(out, media_type='application/pdf', filename='welding.pdf')

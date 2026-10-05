@@ -61,7 +61,7 @@ def classifiable(rid):
 def mutable(rid):
  r=get_rev(rid)
  if r['state']!='active' or r['status']!='ready':raise HTTPException(409,'Only an active, ready revision can be edited. Upload a new revision for archived or released designs.')
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind!="instructions" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'A CAD job is active; wait for completion')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'A CAD job is active; wait for completion')
  return r
 def deserialize(p):
  p['geometry']=json.loads(p['geometry']);p['spec']=json.loads(p['spec']);return p
@@ -708,7 +708,7 @@ def set_production(rid:str,pid:str,a:ProductionEdit,request:Request):
 async def documents(rid:str,request:Request):
  u=revision_access(request,rid,True,'drawing.edit');r=get_rev(rid)
  if r['status']!='ready':raise HTTPException(409,'Only draft revisions can regenerate documents; released artifacts are locked')
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind!="instructions" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Job already active')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Job already active')
  body=await request.json()
  if set(body)-{'part_id'}:raise HTTPException(422,'Only part_id is accepted; use the release workflow for releases')
  if body.get('part_id') and get_part(body['part_id'])['revision_id']!=rid:raise HTTPException(422,'Part outside revision')

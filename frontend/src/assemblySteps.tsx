@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import PartScene, { type SceneApi, type SceneBody } from './partScene';
 import { api, assetJson, download, vendorId } from './api';
+import { ask } from './components';
 import type { Any } from './constants';
 import type { NavStyle } from './cadControls';
 
@@ -78,6 +79,8 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
   const [saving, setSaving] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [ghost, setGhost] = useState(false);   // see through what is already built
+  const [autoCam, setAutoCamState] = useState(() => { try { return localStorage.getItem('forge-steps-autocam') !== 'off'; } catch { return true; } });
+  const setAutoCam = (v: boolean) => { setAutoCamState(v); try { localStorage.setItem('forge-steps-autocam', v ? 'on' : 'off'); } catch { /* ignore */ } };
   const scene = useRef<SceneApi | null>(null);
   const [ready, setReady] = useState(0);
   const dirs = useRef(new Map<string, THREE.Vector3>());
@@ -255,9 +258,17 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     if (box.isEmpty()) return;
     const sph = box.getBoundingSphere(new THREE.Sphere());
     s.center.copy(sph.center); s.radius = Math.max(sph.radius, 1);
-    const dir = s.camera.position.clone().sub(s.controls.target).normalize();
+    let dir = s.camera.position.clone().sub(s.controls.target).normalize();
+    if (autoCam) {
+      // look from the side the new components come from (they are never hidden behind the build)
+      const sum = new THREE.Vector3(); dirs.current.forEach(d => sum.add(d));
+      if (sum.lengthSq() > 1e-6) {
+        const d = sum.normalize(); const side = new THREE.Vector3(0, 0, 1).cross(d);
+        dir = d.clone().addScaledVector(side, 0.55).add(new THREE.Vector3(0, 0, 0.45)).normalize();
+      }
+    }
     s.fit(dir.lengthSq() > 0.5 ? dir : undefined); s.invalidate();
-  }, [cur, ready, states]);
+  }, [cur, ready, states, autoCam]);
 
   // animation loop: body visibility / colour / fly-in, fasteners dropping in, auto-advance while playing
   useEffect(() => {
@@ -339,7 +350,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     const all = await reload(); setCur(all.findIndex(x => x.id === made.id)); setEdit(true);
   });
   const removeStep = (s: Step) => run(async () => {
-    if (!window.confirm(`Delete step ${(steps || []).indexOf(s) + 1}${s.title ? ' “' + s.title + '”' : ''}?`)) return;
+    if (await ask({ title: `Delete step ${(steps || []).indexOf(s) + 1}?`, message: s.title ? `“${s.title}” and its fasteners and notes are removed.` : 'Its components, fasteners and notes are removed.', confirm: 'Delete step', danger: true }) === null) return;
     await api(`/assembly-steps/${s.id}`, 'DELETE'); const all = await reload(); setCur(c => Math.max(0, Math.min(c, all.length - 1)));
   });
   const move = (i: number, d: number) => run(async () => {
@@ -349,17 +360,21 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     await api(`/revisions/${revision}/assembly-steps/order`, 'POST', { ids: list, group: g }); const all = await reload(); setCur(all.findIndex(x => x.id === moved));
   });
   const newGroup = () => run(async () => {
-    const name = window.prompt('Name of the sub-assembly (e.g. Front door unit)'); if (!name?.trim()) return;
+    const name = await ask({ title: 'New sub-assembly', message: 'A unit built on its own — for example a door with its hinges — and fitted into the main assembly as one piece.', confirm: 'Create', input: { label: 'Name', placeholder: 'e.g. Front door unit', required: true } }); if (!name?.trim()) return;
     const g = await api(`/revisions/${revision}/assembly-groups`, 'POST', { name: name.trim() });
     const made = await api(`/revisions/${revision}/assembly-steps`, 'POST', { title: '', parts: [], method: 'place', group: g.id });
     const all = await reload(); setCur(all.findIndex(x => x.id === made.id)); setEdit(true);
   });
+  const fitIntoMain = (gid: string) => run(async () => {
+    const made = await api(`/revisions/${revision}/assembly-steps`, 'POST', { title: `Fit ${groupName(gid)}`, parts: [], method: 'screw', group: '', subs: [gid] });
+    const all = await reload(); setCur(all.findIndex(x => x.id === made.id)); setEdit(true);
+  });
   const renameGroup = (g: Group) => run(async () => {
-    const name = window.prompt('Rename the sub-assembly', g.name); if (!name?.trim() || name.trim() === g.name) return;
+    const name = await ask({ title: 'Rename sub-assembly', confirm: 'Rename', input: { label: 'Name', initial: g.name, required: true } }); if (!name?.trim() || name.trim() === g.name) return;
     await api(`/assembly-groups/${g.id}`, 'PUT', { name: name.trim(), notes: g.notes || '' }); await reload();
   });
   const removeGroup = (g: Group) => run(async () => {
-    if (!window.confirm(`Delete the sub-assembly “${g.name}” and its steps?`)) return;
+    if (await ask({ title: `Delete “${g.name}”?`, message: 'The sub-assembly and all of its steps are deleted. A main-assembly step that fitted it keeps its other contents.', confirm: 'Delete sub-assembly', danger: true }) === null) return;
     await api(`/assembly-groups/${g.id}`, 'DELETE'); const all = await reload(); setCur(c => Math.max(0, Math.min(c, all.length - 1)));
   });
 
@@ -446,6 +461,13 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
                       {g && <button type="button" className="icon danger" title="Delete the sub-assembly and its steps" onClick={() => removeGroup(g)}><Trash2 size={12} /></button>}
                     </span>}
                   </div>
+                  {gid && (() => {
+                    const at = (steps || []).findIndex(x => (x.subs || []).includes(gid));
+                    return at >= 0
+                      ? <button type="button" className="as-fitted" onClick={() => { void flush(); setCur(at); }} title="Open the step that fits this sub-assembly"><Check size={12} />Fitted into {groupName(steps![at].group)} · step {at + 1}</button>
+                      : editable && edit ? <button type="button" className="as-fit-btn" disabled={!list.length} title={list.length ? 'Add a main-assembly step that fits this whole sub-assembly as one unit' : 'Add its steps first'} onClick={() => fitIntoMain(gid)}><Boxes size={12} />Fit into main assembly</button>
+                      : <small className="as-sec-empty">Not fitted into an assembly yet</small>;
+                  })()}
                   {!list.length && <small className="as-sec-empty">No steps yet</small>}
                   <ol>
                     {list.map(({ s, i }, n) => (
@@ -468,6 +490,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
           <section className="as-stage">
             {bodies.length > 0 ? <PartScene revision={revision} bodies={bodies} navStyle={navStyle} onReady={a => { scene.current = a; restart(); setReady(r => r + 1); }}
               onHover={onHover} onClick={onClick} cursor={pick !== null && hoverHole ? 'pointer' : undefined}>
+              <button type="button" className={'as-ghost as-autocam' + (autoCam ? ' on' : '')} title="Turn the view to the side each step's components are fitted from" onClick={() => setAutoCam(!autoCam)}><Crosshair size={14} />Auto camera</button>
               <button type="button" className={'as-ghost' + (ghost ? ' on' : '')} title="See through the parts already assembled" onClick={() => { setGhost(g => !g); scene.current?.invalidate(); }}><Eye size={14} />X-ray built parts</button>
               {pick !== null && step && <div className="cfg-chip warn as-pick-chip"><Crosshair size={14} />Click holes for <b>{label(step.fasteners[pick])}</b> · {step.fasteners[pick]?.holes.length || 0} picked<button type="button" className="mini" onClick={() => setPick(null)}>Done</button></div>}
             </PartScene> : <div className="as-stage-empty">{steps === null ? <><span className="spinner" />Loading…</> : 'Add components to a step to see it here.'}</div>}

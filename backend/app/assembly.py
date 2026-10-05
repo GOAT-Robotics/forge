@@ -443,7 +443,7 @@ def instructions_pdf(rid, progress=None):
     from reportlab.lib.units import mm
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
-    from .render import view_image
+    from .render import view_image, best_view, frame
     steps = steps_of(rid)
     rev = db.row('SELECT r.*, p.name AS project_name, p.code AS project_code FROM revisions r JOIN projects p ON p.id=r.project_id WHERE r.id=?', (rid,))
     parts = {p['id']: p for p in db.rows('SELECT id,name,category,geometry FROM parts WHERE revision_id=?', (rid,))}
@@ -500,20 +500,26 @@ def instructions_pdf(rid, progress=None):
             progress(k + 1, len(steps))
         header(f"{('Sub-assembly ' + gname.get(s.get('group'), '') + ' · ') if s.get('group') else 'Main assembly · '}Step {k + 1} of {len(steps)}")
         meshes = []
+        flags = []
         for (pid, o), state in states[k].items():
             md = part_mesh(rid, pid)
             if md is None:
                 continue
             meshes.append(placed(md, matrix(pid, o), NEW if state == 'new' else DONE))
+            flags.append(state == 'new')
         box = (12 * mm, 16 * mm, 182 * mm, H - 34 * mm)
         markers = []
         if meshes:
             md = merge(meshes)
+            # camera per step: the side from which the parts fitted in this step are best seen
+            new_tri = np.concatenate([np.full(len(m['f']), fl) for m, fl in zip(meshes, flags)])
+            view_n = best_view(md, focus=new_tri) if new_tri is not None and new_tri.any() and not new_tri.all() else VIEW_N
+            right, up = frame(view_n)
             P2 = np.c_[md['v'] @ right, md['v'] @ up]
             lo, hi = P2.min(0), P2.max(0)
             pad = (hi - lo) * .04 + 1
             lo, hi = lo - pad, hi + pad
-            img = view_image(md, VIEW_N, right, lo, hi, px_per_mm=1600 / max(hi - lo), max_px=1600)
+            img = view_image(md, view_n, right, lo, hi, px_per_mm=1600 / max(hi - lo), max_px=1600)
             bw, bh = box[2] - box[0], box[3] - box[1]
             sc = min(bw / (hi - lo)[0], bh / (hi - lo)[1])
             iw, ih = (hi - lo)[0] * sc, (hi - lo)[1] * sc
@@ -531,7 +537,7 @@ def instructions_pdf(rid, progress=None):
                     ax = np.asarray(hole['axis'], float)
                     ends = [np.asarray(hole['origin'], float) + ax * hole.get(e, 0) for e in ('start', 'end')]
                     ends = [M[:3, :3] @ e + M[:3, 3] for e in ends]
-                    e = max(ends, key=lambda q: q @ VIEW_N)
+                    e = max(ends, key=lambda q: q @ view_n)
                     markers.append((fi, to_paper(e)))
         c.setStrokeColorRGB(.85, .2, .1)
         c.setFillColorRGB(.85, .2, .1)

@@ -169,3 +169,52 @@ def view_image(md, n, right, lo, hi, px_per_mm=8.0, max_px=1800, ss=2, fmt='JPEG
     out = io.BytesIO()
     im.save(out, fmt, quality=90) if fmt == 'JPEG' else im.save(out, fmt, optimize=True)
     return out.getvalue()
+
+
+CANDIDATES = [np.array(d, float) / np.linalg.norm(d) for d in
+              [(sx * 1.0, sy * 1.25, sz * 0.9) for sz in (1, -1) for sx in (1, -1) for sy in (-1, 1)]
+              + [(0, -1, .35), (0, 1, .35), (1, 0, .35), (-1, 0, .35)]]
+
+
+def frame(n):
+    """right / up of a view along -n with Z kept up on the page."""
+    n = np.asarray(n, float) / np.linalg.norm(n)
+    right = np.cross([0, 0, 1.0], n)
+    if np.linalg.norm(right) < 1e-6:
+        right = np.array([1.0, 0, 0])
+    right /= np.linalg.norm(right)
+    return right, np.cross(n, right)
+
+
+def best_view(md, focus=None, points=None, px=240):
+    """View direction (toward the reader) that shows the most of what matters: the triangles flagged in `focus`
+    (new parts of a step) and/or the 3D `points` (weld paths) not hidden behind other geometry. All candidates
+    are drawn at the same scale, so an edge-on view (a plate seen as a line) scores low; views from above win
+    ties and the classic isometric wins when nothing is hidden."""
+    v, F = md['v'], md['f']
+    c = (v.min(0) + v.max(0)) / 2
+    R = max(float(np.linalg.norm(v.max(0) - v.min(0))) / 2, 1e-6)
+    s = px / (2 * R)
+    W = H = px + 2
+    best, best_score = CANDIDATES[0], -1.0
+    for k, n in enumerate(CANDIDATES):
+        right, up = frame(n)
+        sx = ((v - c) @ right) * s + W / 2
+        sy = H / 2 - ((v - c) @ up) * s
+        tid, _, _, zbuf = _raster(sx, sy, v @ n, F, W, H)
+        covered = float(np.count_nonzero(tid >= 0))
+        score = 0.0
+        if focus is not None and focus.any():
+            hit = tid[tid >= 0]
+            score += float(focus[hit].sum()) + .05 * covered
+        if points is not None and len(points):
+            q = np.asarray(points, float)
+            qx = np.clip(((q - c) @ right) * s + W / 2, 0, W - 1).astype(int)
+            qy = np.clip(H / 2 - ((q - c) @ up) * s, 0, H - 1).astype(int)
+            zb = zbuf[qy * W + qx]
+            visible = float(np.mean(q @ n >= zb - (2.5 / s + 1e-3)))
+            score += (.25 + visible) * covered
+        score *= 1.0 + .08 * (n[2] > 0) + (.02 if k == 0 else 0)
+        if score > best_score:
+            best, best_score = n, score
+    return best

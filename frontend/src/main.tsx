@@ -19,6 +19,7 @@ import { Select } from './controls';
 import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams } from './welding';
 import { ReadinessWizard } from './readiness';
 import BulkReady from './bulkReady';
+import { JobDocButton } from './docJob';
 import { QualityPage } from './quality';
 import HoleConfig from './holeConfig';
 import WeldConfig from './weldConfig';
@@ -344,7 +345,7 @@ function App() {
   const releaseParts = (rev?.parts || []).filter((p: Any) => !p.excluded && p.category !== 'purchased');
   const readyCount = releaseParts.filter(partReady).length;
   const blocking = findings.filter((f: Any) => f.severity === 'blocker' && !f.waiver).length;
-  const job = rev?.jobs?.find((j: Any) => ['queued', 'running'].includes(j.status) && j.kind !== 'instructions');
+  const job = rev?.jobs?.find((j: Any) => ['queued', 'running'].includes(j.status) && !['instructions', 'welding'].includes(j.kind));
   const appearance = useMemo<Record<string, PartAppearance>>(() => {
     const out: Record<string, PartAppearance> = {};
     for (const p of parts) out[p.id] = { color: (colorBy === 'coating' && p.spec.coating_hex) || categoryColors[p.category] || categoryColors.other, category: p.category, name: p.name };
@@ -1112,7 +1113,8 @@ function App() {
                       <div><h2>Assembly & welding</h2><p>Joints and welds on the assembly from the STEP file. Build order and fasteners are in Steps.</p></div>
                       <div className="flex">
                         <button onClick={() => doc(`/revisions/${rev.id}/assets/assembly.pdf`, 'assembly.pdf', 'Assembly & mating record')}><Eye size={16} />Assembly document</button>
-                        <button disabled={!(rev.joints || []).some((j: Any) => j.kind === 'weld')} title="Weld schedule and one page per weldment with every weld numbered (ISO 2553 sizes)" onClick={() => doc(`/revisions/${rev.id}/welding.pdf`, 'welding.pdf', 'Welding document')}><Flame size={16} />Welding document</button>
+                        <JobDocButton key={(rev.joints || []).map((j: Any) => j.id + j.updated).join()} revision={rev.id} kind="welding" label="Welding document" icon={<Flame size={16} />} notify={notify}
+                          disabled={!(rev.joints || []).some((j: Any) => j.kind === 'weld')} open={path => doc(path, 'welding.pdf', 'Welding document')} />
                         {editable && <button onClick={() => { setTab('parts'); startWeld(multi.length ? [...multi] : []); notify('Click the components to weld in the 3D view — Forge finds the seams where they touch.'); }}><Plus size={16} />Add joint / weld</button>}
                       </div>
                     </div>
