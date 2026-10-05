@@ -2286,7 +2286,12 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets, sequence=Non
     stroke_of = lambda gr: min((seq_of[flat['bends'][i].get('id')] for i in gr if flat['bends'][i].get('id') in seq_of), key=lambda r: r['seq'], default=None)
     if seq_of:   # tags and table follow the press-brake bending order: B1 is bent first
         groups = sorted(groups, key=lambda gr: (stroke_of(gr)['seq'] if stroke_of(gr) else 10 ** 6, gr[0]))
-        notes.append(f"BEND IN SEQUENCE B1-B{len(groups)} - V{sequence['die']} DIE" + (' - SHOP ORDER' if sequence.get('custom') else ' - COLLISION-CHECKED'))
+        brake = any(r.get('process') != 'roll' for r in seq_of.values())
+        notes.append((f"FORM IN SEQUENCE B1-B{len(groups)}" if len(groups) > 1 else 'FORM B1') + (f" - V{sequence['die']} DIE" if brake else '')
+                     + (' - SHOP ORDER' if sequence.get('custom') else ' - COLLISION-CHECKED'))
+        rolled = [f'B{k + 1}' for k, gr in enumerate(groups) if stroke_of(gr) and stroke_of(gr).get('process') == 'roll']
+        if rolled:
+            notes.append(f"{', '.join(rolled[:6])}: ROLL BETWEEN ZONE LINES - CHECK RADIUS WITH TEMPLATE")
         clash = [f'B{k + 1}' for k, gr in enumerate(groups) if stroke_of(gr) and stroke_of(gr)['clash']]
         if clash:
             notes.append(f"{', '.join(clash[:6])}: TOOL CLASH IN SIMULATION - SPECIAL TOOLING / REVIEW")
@@ -2321,7 +2326,8 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets, sequence=Non
                 u = -u
                 a, z = z, a
             nrm = np.array([-u[1], u[0]])
-            label = f"{b.get('direction', '').upper()} {b['angle']:.0f}° R{b['radius']:.2f}".strip()
+            rolled = (stroke_of(groups[group_of[bi]]) or {}).get('process') == 'roll'
+            label = ('ROLL ' if rolled else '') + f"{b.get('direction', '').upper()} {b['angle']:.0f}° R{b['radius']:.2f}".strip()
             n_seg = len(groups[group_of[bi]])
             if n_seg > 1:
                 label += f' ({n_seg}×)'
@@ -2396,6 +2402,11 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets, sequence=Non
                 continue
             a, z, u, label, best = t
             sh.line(a, z, THIN, 'BEND', dash=PHANTOM_DASH)
+            if label.startswith('ROLL ') and b.get('allowance'):
+                # rolled zone: both ends of the curve, where the rolls start and stop
+                off = np.array([-u[1], u[0]]) * (b['allowance'] / 2 * v.scale)
+                for sg in (1, -1):
+                    sh.line(a + sg * off, z + sg * off, THIN, 'BEND', dash=PHANTOM_DASH)
             if ok:
                 ang = math.degrees(math.atan2(u[1], u[0]))
                 sh.text(best[0][0], best[0][1], label, ds, DIM_FONT, 'BEND', rot=ang, ha='c')
@@ -2462,17 +2473,18 @@ def bend_sequence(shape, p, options=None):
         from .bendsim import for_part
         opts = options if isinstance(options, dict) else (p.get('drawing_options') if isinstance(p.get('drawing_options'), dict) else {})
         spec = p.get('spec') or {}
-        sim = for_part(shape, p['geometry'], spec, float(spec.get('k_factor') or .4), (opts or {}).get('bend_order') or None)
+        sim = for_part(shape, p['geometry'], spec, float(spec.get('k_factor') or .4), (opts or {}).get('bend_order') or None, (opts or {}).get('bend_process') or None)
     except Exception:
         return None
     out = {}
     for n, st in enumerate(sim.get('plan') or [], 1):
         if st.get('unchecked'):
             return None
-        tool = ('TALL ' if st['punch'].startswith('tall-') else '') + ('GOOSE' if st['punch'].endswith('goose') else 'STD') + (' / TALL DIE' if st['die'].startswith('tall-') else '')
+        roll = st.get('process') == 'roll'
+        tool = f"PLATE ROLL {st['roll']['passes']} PASS" if roll else ('TALL ' if st['punch'].startswith('tall-') else '') + ('GOOSE' if st['punch'].endswith('goose') else 'STD') + (' / TALL DIE' if st['die'].startswith('tall-') else '')
         b = sim['bends'][st['bend']]
         for bid in (b.get('stroke') or {}).get('ids') or [b['id']]:
-            out[bid] = {'seq': n, 'tool': tool, 'clash': bool(st['clash'])}
+            out[bid] = {'seq': n, 'tool': tool, 'clash': bool(st['clash']), 'process': 'roll' if roll else 'brake'}
         for i, other in enumerate(sim['bends']):   # split by a relief on the same flange pair: same stroke
             if other.get('twin') == st['bend']:
                 out.setdefault(other['id'], out[b['id']])

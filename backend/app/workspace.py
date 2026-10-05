@@ -872,7 +872,7 @@ def bend_sim_build(rid, p, path):
         raise HTTPException(404, 'Part geometry is not available')
     try:
         opts = load(p.get('drawing_options') or '{}', {}) if isinstance(p.get('drawing_options'), str) else (p.get('drawing_options') or {})
-        sim = for_part(read_brep(str(brep)), p['geometry'], p['spec'], float((p['spec'] or {}).get('k_factor') or .4), opts.get('bend_order') or None)
+        sim = for_part(read_brep(str(brep)), p['geometry'], p['spec'], float((p['spec'] or {}).get('k_factor') or .4), opts.get('bend_order') or None, opts.get('bend_process') or None)
     except ValueError as e:
         raise HTTPException(422, 'Bending simulation unavailable: ' + str(e))
     sim['part'] = {'name': p['name'], 'material': (p['spec'] or {}).get('material', ''), 'thickness': p['geometry'].get('thickness')}
@@ -910,6 +910,7 @@ def set_bend_simulation(rid: str, a: BendSimToggle, request: Request):
 class BendOrder(BaseModel):
     model_config = ConfigDict(extra='forbid')
     order: list[str] = Field(default_factory=list, max_length=500)   # bend ids, one per stroke; empty = planned
+    process: dict[str, str] = Field(default_factory=dict, max_length=500)   # bend id -> 'brake' | 'roll'; missing = by radius
 
 
 @router.put('/api/revisions/{rid}/parts/{pid}/bend-order')
@@ -921,8 +922,16 @@ def set_bend_order(rid: str, pid: str, a: BendOrder, request: Request):
     if p['revision_id'] != rid:
         raise HTTPException(422, 'Part outside revision')
     ids = {b.get('id') for b in (p['geometry'] or {}).get('bends') or []}
+    flat = db.revdir(rid) / 'parts' / pid / 'flat.json'
+    if flat.exists():   # a rolled profile is developed with its own bend lines
+        try:
+            ids |= {b.get('id') for b in json.loads(flat.read_text()).get('bends') or []}
+        except Exception:
+            pass
     if any(x not in ids for x in a.order) or len(set(a.order)) != len(a.order):
         raise HTTPException(422, 'Unknown or repeated bend in the sequence')
+    if any(x not in ids for x in a.process) or any(v not in ('brake', 'roll') for v in a.process.values()):
+        raise HTTPException(422, 'Process must be brake or roll for a known bend')
     with db.connect() as c:
         row = c.execute('SELECT drawing_options FROM parts WHERE id=?', (pid,)).fetchone()
         opts = load(row['drawing_options'], {})
@@ -930,8 +939,12 @@ def set_bend_order(rid: str, pid: str, a: BendOrder, request: Request):
             opts['bend_order'] = a.order
         else:
             opts.pop('bend_order', None)
+        if a.process:
+            opts['bend_process'] = a.process
+        else:
+            opts.pop('bend_process', None)
         c.execute('UPDATE parts SET drawing_options=? WHERE id=?', (json.dumps(opts), pid))
-        db.audit(c, u['name'], 'part.bend_order', {'part': pid, 'order': a.order}, rid)
+        db.audit(c, u['name'], 'part.bend_order', {'part': pid, 'order': a.order, 'process': a.process}, rid)
     folder = db.revdir(rid) / 'parts' / pid
     (folder / 'bend-sim.json').unlink(missing_ok=True)
     job = None

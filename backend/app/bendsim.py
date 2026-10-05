@@ -63,7 +63,7 @@ def fold_point(p, chain, bends, angles, strip=None):
     return p
 
 
-def build(poly, bend_lines, thickness, above=False, root_point=None, order_ids=None, plan_budget=12.0):
+def build(poly, bend_lines, thickness, above=False, root_point=None, order_ids=None, plan_budget=12.0, process=None):
     """Foldable mesh + bend kinematics for one developed blank. `above`: the material lies on +Z of the developed
     skin (z 0..t) instead of below it (z -t..0)."""
     t = float(thickness)
@@ -86,22 +86,40 @@ def build(poly, bend_lines, thickness, above=False, root_point=None, order_ids=N
         strips.append(_strip_rect(a - e, b + e, v, -w, w))
     flanges = _polys(poly.difference(union_all(strips)) if strips else poly)
     flanges = [f for f in flanges if f.area > 1e-3]
-    if not flanges:
-        raise ValueError('Blank has no flanges')
+    n_real = len(flanges)
 
-    # neighbours of every strip: the flange touching each long side
+    # neighbours of every strip: the flange touching each long side; where a bend runs straight into the next
+    # (tangent arcs of a rolled profile) or ends at the blank's edge, a zero-size joint node stands in for it
+    joints = {}
+
+    def joint(key):
+        if key not in joints:
+            joints[key] = n_real + len(joints)
+            flanges.append(Polygon())
+        return joints[key]
+
     def side(bi, sgn):
         bd = bends[bi]
         shrink = bd['u'] * min(bd['length'] * .05, 1.0)
         probe = _strip_rect(bd['a'] + shrink, bd['b'] - shrink, bd['v'], sgn * bd['w'], sgn * (bd['w'] + .05))
-        best = max(((f.intersection(probe).area, k) for k, f in enumerate(flanges)), default=(0, None))
-        return best[1] if best[0] > 1e-6 else None
+        best = max(((f.intersection(probe).area, k) for k, f in enumerate(flanges[:n_real])), default=(0, None))
+        if best[0] > 1e-6:
+            return best[1]
+        other = max(((st.intersection(probe).area, j) for j, st in enumerate(strips) if j != bi), default=(0, None))
+        if other[0] > 1e-6:
+            return joint(('s', min(bi, other[1]), max(bi, other[1])))
+        return joint(('e', bi, sgn))
     nb = [(side(i, -1), side(i, 1)) for i in range(len(bends))]
+    if not n_real and not joints:
+        raise ValueError('Blank has no flanges')
 
-    root = max(range(len(flanges)), key=lambda k: flanges[k].area)
-    if root_point is not None:  # keep the flange the developed pattern was built from fixed (model orientation)
-        rp = Point(root_point)
-        root = min(range(len(flanges)), key=lambda k: flanges[k].distance(rp))
+    if n_real:
+        root = max(range(n_real), key=lambda k: flanges[k].area)
+        if root_point is not None:  # keep the flange the developed pattern was built from fixed (model orientation)
+            rp = Point(root_point)
+            root = min(range(n_real), key=lambda k: flanges[k].distance(rp))
+    else:   # a fully rolled blank: start from one free end
+        root = min((n for key, n in joints.items() if key[0] == 'e'), default=n_real)
     chain_of = {root: []}
     parent_bend = {}
     twin = {}
@@ -243,13 +261,13 @@ def build(poly, bend_lines, thickness, above=False, root_point=None, order_ids=N
         if sorted(fixed) != sorted(order):
             fixed = None   # stale (bends changed): plan again
     try:
-        sim['order'], sim['plan'], sim['tooling'] = plan(sim, geoms, (z_top + z_bot) / 2, fixed, plan_budget)
+        sim['order'], sim['plan'], sim['tooling'] = plan(sim, geoms, (z_top + z_bot) / 2, fixed, plan_budget, process)
     except Exception:   # never lose the simulation over the planner: practice order, standard tools, unchecked
         from .bendplan import tooling
         if fixed:
             sim['order'] = fixed
         sim['tooling'] = tooling(t)
-        sim['plan'] = [{'bend': i, 'punch': 'straight', 'mirror': False, 'die': 'die', 'segments': [[-stroke.get(i, {}).get('span', bends[i]['length']) / 2, stroke.get(i, {}).get('span', bends[i]['length']) / 2]], 'clash': {}, 'unchecked': True} for i in sim['order']]
+        sim['plan'] = [{'bend': i, 'punch': 'straight', 'mirror': False, 'die': 'die', 'segments': [[-stroke.get(i, {}).get('span', bends[i]['length']) / 2, stroke.get(i, {}).get('span', bends[i]['length']) / 2]], 'clash': {}, 'unchecked': True, 'process': 'brake'} for i in sim['order']]
     sim['sequence'] = 'custom' if fixed else 'planned'
     return sim
 
@@ -315,7 +333,7 @@ def _material_above(shape, R, tv, th):
     return votes > 0, big[:2].tolist()
 
 
-def for_part(shape, g, spec, k, order_ids=None):
+def for_part(shape, g, spec, k, order_ids=None, process=None):
     """Simulation data for a formed sheet-metal part (hole sizes as cut: hardware mounting holes applied)."""
     from .unfold import unfold
     if g.get('category') not in (None, 'sheet_metal') and not g.get('bends'):
@@ -335,7 +353,7 @@ def for_part(shape, g, spec, k, order_ids=None):
         _, normal, R, tv = maps[0]
         R, tv = np.asarray(R, float), np.asarray(tv, float)
         above, root_point = _material_above(shape, R, tv, float(g['thickness']))
-    sim = build(poly, lines, g['thickness'], above, root_point, order_ids)
+    sim = build(poly, lines, g['thickness'], above, root_point, order_ids, process=process)
     if maps:
         # the root flange as it sits in the part: lets the viewer show the folded result in model orientation
         sim['root'] = {'R': R.tolist(), 't': tv.tolist()}

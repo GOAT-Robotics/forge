@@ -602,7 +602,7 @@ function App() {
   const canvasToolsStart = !rev ? null : <>
     {!vendor && editable && <button type="button" className={jointDraft ? 'selected' : ''} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame size={16} /><span>Weld</span></button>}
     {part && part.geometry.holes.length > 0 && part.category !== 'purchased' && multi.length < 2 && <button type="button" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot size={16} /><span>Holes</span></button>}
-    {part && multi.length < 2 && showBend(part) && <button type="button" title={part.bend_sim ? 'Press brake simulation' : 'Press brake simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical size={16} /><span>Bending</span></button>}
+    {part && multi.length < 2 && showBend(part) && <button type="button" title={part.bend_sim ? 'Forming simulation (press brake and rolling)' : 'Forming simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical size={16} /><span>Bending</span></button>}
     {!vendor && <><button type="button" className={weldListOpen ? 'selected' : ''} disabled={!!jointDraft} title="Configured welds" onClick={() => setWeldListOpen(v => !v)}><ListChecks size={16} /><span>Welds{weldTotal ? ` ${weldTotal}` : ''}</span></button>
 </>}
   </>;

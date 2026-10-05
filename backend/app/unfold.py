@@ -8,6 +8,12 @@ from OCP.TopoDS import TopoDS
 from .cad import face_features,explore,wire_points,props
 
 def unfold(s,g,k=.4):
+ try:return _unfold(s,g,k)
+ except ValueError as e:
+  try:return unfold_profile(s,g,k)
+  except ValueError:raise e
+
+def _unfold(s,g,k=.4):
  faces,planes,cyl,_=face_features(s);by_index={p['index']:p for p in planes};th=g['thickness']
  if not planes or th<=0:raise ValueError('Constant thickness could not be established')
  root=max(planes,key=lambda p:p['area']);n=root['normal'];x=root['x'];y=root['y'];R=np.vstack([x,y,n]);origin=root['origin'];maps={root['index']:(R,-R@origin)}
@@ -185,3 +191,205 @@ def bend_groups(lines, tol=.05):
         if not placed:
             groups.append([i])
     return groups
+
+
+def unfold_profile(s, g, k=.4):
+    """Development of a rolled / formed profile without a planar root skin (a curved band or ring segment, e.g.
+    R632 - R47 - R632 tangent arcs): every skin face is a cylinder or a plane parallel to one axis A, so the part is
+    a constant cross-section profile (with cut-outs) swept along A. The neutral profile is walked from one free end;
+    a skin point maps to (arc length along the neutral fibre, position along A). Refuses anything else (double
+    curvature, closed rings without a seam, branched profiles)."""
+    from OCP.BRepTools import BRepTools
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from .cad import xyz
+    th = float(g.get('thickness') or 0)
+    if th <= 0:
+        raise ValueError('Constant thickness could not be established')
+    faces, planes, cyl, cones = face_features(s)
+    if cones or len(planes) + len(cyl) < len(faces):
+        raise ValueError('Profile development needs plane and cylinder faces only')
+    big = [c for c in cyl if c['radius'] > 2 * th]
+    if not big:
+        raise ValueError('No rolled faces')
+    A = np.array(max(big, key=lambda c: c['radius'] * c['angle'])['axis'], float)
+    A /= np.linalg.norm(A)
+    E1 = np.cross(A, [1, 0, 0] if abs(A[0]) < .9 else [0, 1, 0])
+    E1 /= np.linalg.norm(E1)
+    E2 = np.cross(A, E1)
+    q2 = lambda p: np.array([np.dot(p, E1), np.dot(p, E2)])
+
+    def cyl_frame(c):
+        cy = BRepAdaptor_Surface(faces[c['index']], True).Cylinder()
+        pos = cy.Position()
+        X, Y, L = xyz(pos.XDirection()), xyz(pos.YDirection()), xyz(pos.Location())
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(faces[c['index']])
+        return {'C': q2(L), 'X': q2(X), 'Y': q2(Y), 'X3': X, 'Y3': Y, 'L3': L, 'u0': u0, 'u1': u1, 'r': cy.Radius()}
+
+    # skin arcs: concentric cylinder pairs one thickness apart with the same angular range
+    arcs, used = [], set()
+    skin = [c for c in cyl if abs(abs(np.dot(c['axis'], A)) - 1) < 1e-4]
+    frames = {c['index']: cyl_frame(c) for c in skin}
+    for c in skin:
+        if c['index'] in used:
+            continue
+        fa = frames[c['index']]
+        for d in skin:
+            if d['index'] == c['index'] or d['index'] in used:
+                continue
+            fb = frames[d['index']]
+            if np.linalg.norm(fa['C'] - fb['C']) > .02 or abs(abs(fa['r'] - fb['r']) - th) > .05:
+                continue
+            # same angular range (compare the end points' directions)
+            ea = [fa['X'] * math.cos(u) + fa['Y'] * math.sin(u) for u in (fa['u0'], fa['u1'])]
+            eb = [fb['X'] * math.cos(u) + fb['Y'] * math.sin(u) for u in (fb['u0'], fb['u1'])]
+            if not (min(np.linalg.norm(ea[0] - eb[0]), np.linalg.norm(ea[0] - eb[1])) < 2e-3 and min(np.linalg.norm(ea[1] - eb[0]), np.linalg.norm(ea[1] - eb[1])) < 2e-3):
+                continue
+            inner, outer = (c, d) if fa['r'] < fb['r'] else (d, c)
+            fi = frames[inner['index']]
+            rm = fi['r'] + th / 2
+            ends = [fi['C'] + rm * (fi['X'] * math.cos(u) + fi['Y'] * math.sin(u)) for u in (fi['u0'], fi['u1'])]
+            arcs.append({'kind': 'arc', 'face': inner['index'], 'faces': [inner['index'], outer['index']], 'f': fi, 'ends': ends,
+                         'length': (fi['u1'] - fi['u0']) * (fi['r'] + k * th), 'angle': math.degrees(fi['u1'] - fi['u0']), 'radius': fi['r']})
+            used |= {c['index'], d['index']}
+            break
+    if any(c['index'] not in used and c['radius'] > 2 * th for c in skin):
+        raise ValueError('Unpaired curved face: not a constant-thickness rolled profile')
+    # skin walls: parallel plane pairs (normal across A) one thickness apart
+    walls, pused = [], set()
+    side = [p for p in planes if abs(np.dot(p['normal'], A)) < 1e-4]
+    for p in side:
+        if p['index'] in pused:
+            continue
+        for q in side:
+            if q['index'] == p['index'] or q['index'] in pused or abs(abs(np.dot(p['normal'], q['normal'])) - 1) > 1e-5:
+                continue
+            if abs(abs(np.dot(q['origin'] - p['origin'], p['normal'])) - th) > .05:
+                continue
+            D = np.cross(p['normal'], A)
+            pts = np.vstack([sample_edge(e) for e in explore(p['face'], TopAbs_EDGE)])
+            tq = pts @ D
+            if np.ptp(tq) < th * 1.5:
+                continue   # an end face of the band, not a wall
+            nm = p['normal'] * (np.dot(q['origin'] - p['origin'], p['normal']) / 2)
+            mid = lambda x: q2(pts[0] + D * (x - pts[0] @ D) + nm - p['normal'] * np.dot(pts[0] - p['origin'], p['normal']))
+            walls.append({'kind': 'wall', 'face': p['index'], 'faces': [p['index'], q['index']], 'D': D, 'ends': [mid(tq.min()), mid(tq.max())], 'length': float(np.ptp(tq))})
+            pused |= {p['index'], q['index']}
+            break
+    prims = arcs + walls
+    # chain the primitives end to end (tangent joints share the mid-surface end point)
+    tol = max(.05, .05 * th)
+    links = {}
+    for i, a in enumerate(prims):
+        for ea in (0, 1):
+            for j, b in enumerate(prims):
+                if j != i:
+                    for eb in (0, 1):
+                        if np.linalg.norm(a['ends'][ea] - b['ends'][eb]) < tol:
+                            links.setdefault((i, ea), []).append((j, eb))
+    if any(len(v) > 1 for v in links.values()):
+        raise ValueError('Branched profile: manual unfolding required')
+    free = [(i, e) for i in range(len(prims)) for e in (0, 1) if (i, e) not in links]
+    if not free:
+        raise ValueError('Closed rolled ring: the seam position is required for the blank')
+    if len(free) != 2:
+        raise ValueError('Profile is not one connected strip')
+    order, cur = [], free[0]
+    while True:
+        i, e = cur
+        order.append((i, e))          # enter primitive i at end e
+        nxt = links.get((i, 1 - e))
+        if not nxt:
+            break
+        cur = nxt[0]
+        if len(order) > len(prims):
+            raise ValueError('Profile walk did not terminate')
+    if len(order) != len(prims):
+        raise ValueError('Profile is not one connected strip')
+    # development: s along the neutral fibre, z along A
+    zref = 0.0
+    offs = []
+    s0 = 0.0
+    for i, e in order:
+        offs.append(s0)
+        s0 += prims[i]['length']
+
+    def mapper(i, e, start):
+        P = prims[i]
+        if P['kind'] == 'arc':
+            f = P['f']
+            rn = f['r'] + k * th
+
+            def m(pts):
+                rel = pts - f['L3']
+                u = np.arctan2(rel @ f['Y3'], rel @ f['X3'])
+                u = f['u0'] + np.mod(u - f['u0'] + 1e-6, 2 * math.pi) - 1e-6
+                t = (u - f['u0']) if e == 0 else (f['u1'] - u)
+                return np.c_[start + t * rn, pts @ A - zref]
+            return m
+        D = P['D'] if np.dot(q2(P['D']), P['ends'][1] - P['ends'][0]) > 0 else -P['D']
+        if e == 1:
+            D = -D
+        e0 = P['ends'][e]
+
+        def m(pts):
+            return np.c_[start + (np.c_[pts @ E1, pts @ E2] - e0) @ q2(D) / max(np.linalg.norm(q2(D)), 1e-12), pts @ A - zref]
+        return m
+    polys, lines = [], []
+    from OCP.BRepTools import BRepTools as BT
+    for (i, e), start in zip(order, offs):
+        P = prims[i]
+        m = mapper(i, e, start)
+        f = faces[P['face']]
+        outer = BT.OuterWire_s(f)
+        shell, rings = None, []
+        for w in explore(f, TopAbs_WIRE):
+            pts = wire_points(TopoDS.Wire(w))
+            if len(pts) < 3:
+                continue
+            c2 = m(pts)
+            if w.IsSame(outer):
+                shell = c2
+            else:
+                rings.append(c2)
+        if shell is None:
+            raise ValueError('Profile face without boundary')
+        poly = Polygon(shell, rings).buffer(0)
+        polys.append(poly)
+        if P['kind'] == 'arc':
+            fr = P['f']
+            sm = start + P['length'] / 2
+            zlo, zhi = poly.bounds[1], poly.bounds[3]
+            # direction: toward the flat's +Z (viewer) when the arc curls toward the side T x A
+            u_in = fr['u0'] if e == 0 else fr['u1']
+            rad = fr['X3'] * math.cos(u_in) + fr['Y3'] * math.sin(u_in)
+            tangent = (-fr['X3'] * math.sin(u_in) + fr['Y3'] * math.cos(u_in)) * (1 if e == 0 else -1)
+            up = np.dot(-rad, np.cross(tangent, A)) > 0
+            lines.append({'id': '', 'a': [sm, zlo], 'b': [sm, zhi], 'allowance': P['length'], 'angle': P['angle'], 'radius': P['radius'],
+                          'length': zhi - zlo, 'direction': 'up' if up else 'down', 'outside_height': None, 'rolled': True})
+    # consecutive faces of one arc (same centre and radius, split by the CAD) are one bend / one roll
+    joined = []
+    for ln, (i, e) in zip(lines, [o for o in order if prims[o[0]]['kind'] == 'arc']):
+        f = prims[i]['f']
+        prev = joined[-1] if joined else None
+        if prev and prev[2] is not None and np.linalg.norm(prev[2]['C'] - f['C']) < .02 and abs(prev[0]['radius'] - ln['radius']) < .01 \
+                and abs(prev[0]['a'][0] + prev[0]['allowance'] / 2 - (ln['a'][0] - ln['allowance'] / 2)) < 1e-6 and prev[0]['direction'] == ln['direction']:
+            q = prev[0]
+            lo_s = q['a'][0] - q['allowance'] / 2
+            q['allowance'] += ln['allowance']
+            q['angle'] += ln['angle']
+            sm = lo_s + q['allowance'] / 2
+            zlo, zhi = min(q['a'][1], ln['a'][1]), max(q['b'][1], ln['b'][1])
+            q['a'], q['b'], q['length'] = [sm, zlo], [sm, zhi], zhi - zlo
+            continue
+        joined.append((ln, i, f))
+    lines = [j[0] for j in joined]
+    merged = union_all([p.buffer(1e-4, join_style=2) for p in polys]).buffer(-1e-4, join_style=2)
+    if merged.geom_type != 'Polygon' or not merged.is_valid:
+        raise ValueError('Profile development produced a disconnected outline')
+    expected = g['volume'] / th
+    if abs(merged.area - expected) / max(expected, 1) > .05:
+        raise ValueError('Developed profile does not match the constant-thickness volume')
+    for n, ln in enumerate(lines, 1):
+        ln['id'] = f'B{n:03d}'
+    unfold.maps = []
+    return merged, lines

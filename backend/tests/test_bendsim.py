@@ -147,4 +147,44 @@ def test_bend_order_endpoint_and_drawing_sequence(tmp_path, monkeypatch):
         job = db.row('SELECT kind, payload FROM jobs WHERE id=?', (r.json()['job'],))
         assert job['kind'] == 'documents' and json.loads(job['payload']) == {'part_ids': [pid]}
         seq = bend_sequence(s, {'geometry': g, 'spec': {}}, {'bend_order': [bid]})
-        assert seq['custom'] and seq['bends'][bid] == {'seq': 1, 'tool': 'STD', 'clash': False}
+        assert seq['custom'] and seq['bends'][bid] == {'seq': 1, 'tool': 'STD', 'clash': False, 'process': 'brake'}
+
+
+def _band(r=100.0, t=1.2, deg=90, h=50):
+    import math
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir
+    ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    return BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(ax, r + t, h, math.radians(deg)).Shape(), BRepPrimAPI_MakeCylinder(ax, r, h, math.radians(deg)).Shape()).Shape()
+
+
+def test_rolled_band_is_developed_and_rolled():
+    import math
+    from app.unfold import unfold
+    s = _band()
+    g = analyze(s, 'band')
+    assert g['category'] == 'sheet_metal' and abs(g['thickness'] - 1.2) < 1e-6
+    poly, lines = unfold(s, g, .4)                     # no planar skin: developed as a profile
+    L = math.pi / 2 * (100 + .4 * 1.2)
+    assert abs(poly.bounds[2] - poly.bounds[0] - L) < .05 and abs(poly.bounds[3] - poly.bounds[1] - 50) < .01
+    assert len(lines) == 1 and lines[0]['rolled'] and abs(lines[0]['allowance'] - L) < .05
+    sim = bendsim.for_part(s, g, {}, .4)
+    st = sim['plan'][0]
+    assert st['process'] == 'roll' and st['roll']['passes'] == 2 and st['roll']['top'] < 100 and not st['clash']
+    # the shop can press-brake it instead (bump bending): same stroke, press tools
+    br = bendsim.for_part(s, g, {}, .4, process={lines[0]['id']: 'brake'})
+    assert br['plan'][0]['process'] == 'brake' and br['plan'][0]['punch']
+    # folding the whole strip reproduces the band: a 90 degree arc of the neutral radius
+    F = bendsim.folded_vertices(sim)
+    span = np.ptp(F, axis=0)
+    assert sorted(span)[-1] < 110 and sorted(span)[-2] > 90, span
+
+
+def test_tangent_curves_without_a_flange_between_them_fold():
+    from shapely.geometry import box
+    line = lambda i, y, r: {'id': f'B{i:03d}', 'a': [0, y], 'b': [200, y], 'angle': 30, 'radius': r, 'direction': 'up', 'allowance': 20}
+    sim = bendsim.build(box(0, 0, 200, 100), [line(1, 40, 40.0), line(2, 60, 40.0)], 1.5, root_point=[100, 10])
+    assert len(sim['plan']) == 2 and all(s['process'] == 'roll' for s in sim['plan'])
+    F = bendsim.folded_vertices(sim)
+    assert np.isfinite(F).all() and np.ptp(F[:, 2]) > 10

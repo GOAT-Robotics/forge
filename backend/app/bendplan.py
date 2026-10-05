@@ -62,6 +62,32 @@ VARIANTS = [(pn, m, dn) for pn, dn in (('straight', 'die'), ('goose', 'die'), ('
             for m in ((False,) if pn.endswith('straight') else (False, True))]
 
 
+ROLL_RATIO = 10     # inner radius / thickness from which a curve is rolled instead of press-braked (default)
+
+
+def default_process(radius, t):
+    return 'roll' if radius >= max(ROLL_RATIO * t, 10.0) else 'brake'
+
+
+def roll_setup(radius, angle, span, t):
+    """Generic 3-roll (pyramid) plate roll for one curve: top roll inside the curve, two bottom rolls outside;
+    the curvature is reached in a few passes over the whole zone."""
+    top = min(max(.6 * radius, 6.0), 60.0)
+    bottom = .85 * top
+    return {'top': round(top, 3), 'bottom': round(bottom, 3), 'pitch': round((top + bottom) * 1.2, 3),
+            'length': round(span + 2 * max(15.0, .1 * span), 3), 'passes': int(min(5, max(2, math.ceil(angle / 45))))}
+
+
+def roll_centres(rho, t, r):
+    """Bottom roll centres (y, z) in the stroke frame for the current neutral radius rho (inside = +Z)."""
+    rho = min(rho, 1e7)
+    D = rho + t / 2 + r['bottom']
+    sn = min(r['pitch'] / D, .95)
+    y = D * sn
+    z = rho - D * math.sqrt(1 - sn * sn)
+    return (-y, z), (y, z)
+
+
 def sink(a, W, vdepth, t):
     return min(W / 2 * math.tan(a / 2) * 0.55, vdepth - t)
 
@@ -121,7 +147,7 @@ def _samples(geom, h, z):
 
 
 class Planner:
-    def __init__(self, sim, region_geoms, z_mid, budget_s=12.0, die='standard'):
+    def __init__(self, sim, region_geoms, z_mid, budget_s=12.0, die='standard', process=None):
         self.t = float(sim['thickness'])
         self.sim = sim
         self.bends = [{**b, 'L': np.array(b['L'], float), 'u': np.array(b['u'], float), 'v': np.array(b['v'], float), 'n': np.array(b['n'], float)} for b in sim['bends']]
@@ -132,6 +158,13 @@ class Planner:
         self.primary = [i for i, b in enumerate(self.bends) if b.get('twin') is None]
         self.members = {p: [i for i, b in enumerate(self.bends) if i == p or b.get('twin') == p] for p in self.primary}
         self.full = [math.radians(b['angle']) for b in self.bends]
+        # forming process of every stroke: override by bend id (any segment of the stroke), else by radius
+        process = process or {}
+        self.process = {}
+        for p_ in self.primary:
+            ids = [self.bends[m]['id'] for m in self.members[p_]]
+            chosen = next((process[i] for i in ids if process.get(i) in ('roll', 'brake')), None)
+            self.process[p_] = chosen or default_process(self.bends[p_]['radius'], self.t)
         self.tool = tooling(self.t, die)
         T = self.tool
         grow = max(.05, self.t / 2 - .15)
@@ -165,14 +198,16 @@ class Planner:
     def folded(self, ang):
         return [fold_arr(P, reg['chain'], self.bends, ang, reg['strip']) if len(P) else P for P, reg in zip(self.pts, self.regions)]
 
-    def frame(self, bi, ang):
+    def frame(self, bi, ang, at=0.5):
+        """Stroke frame at the point `at` (0..1) across the bend zone: the middle for a press stroke, the line of
+        contact under the top roll for rolling."""
         b = self.bends[bi]
         a = ang[bi]
-        mid = b['L'] + b['u'] * (b.get('stroke') or {}).get('center', 0.0)
+        mid = b['L'] + b['u'] * (b.get('stroke') or {}).get('center', 0.0) + b['v'] * (2 * at - 1) * b['w']
         N = b['n']
         if a > 1e-6:
             mid = fold_arr(mid[None], [bi], self.bends, ang, bi)[0]
-            N = -b['s'] * math.sin(a / 2) * b['v'] + math.cos(a / 2) * b['n']
+            N = -b['s'] * math.sin(a * at) * b['v'] + math.cos(a * at) * b['n']
         anc = next((reg['chain'] for reg in self.regions if reg['strip'] == bi), [bi])[:-1]
         q = fold_arr(np.array([mid, mid + b['u'], mid + N]), anc, self.bends, ang)
         X = q[1] - q[0]
@@ -207,6 +242,10 @@ class Planner:
         if key in self.cache:
             return self.cache[key]
         self.evals += 1
+        if self.process[p] == 'roll':
+            res = self.evaluate_roll(done, p)
+            self.cache[key] = res
+            return res
         T = self.tool
         segs = self.segments(p)
         rex = max(T['W'] * .65, 3 * self.t)
@@ -251,10 +290,32 @@ class Planner:
         self.cache[key] = best
         return best
 
+    def roll_of(self, p):
+        b = self.bends[p]
+        span = (b.get('stroke') or {}).get('span', b['length'])
+        return roll_setup(b['radius'], b['angle'], span, self.t)
+
+    def evaluate_roll(self, done, p):
+        """Rolling: the top roll sits inside the curve, so formed flanges on the inside are what can hit it."""
+        r = self.roll_of(p)
+        top = shapely.Point(0, self.t / 2 + r['top']).buffer(r['top'] + max(.05, self.t / 2 - .15), 48)
+        hits = 0
+        for frac in (.5, 1.0):
+            ang = self.angles(done, p, frac)
+            for at in (0.0, .5, 1.0):
+                R, contact = self.frame(p, ang, at)
+                P = np.vstack([q for q in self.folded(ang) if len(q)])
+                W_ = (P - (contact + R[2] * self.t / 2)) @ R.T     # origin on the mid-plane under the top roll
+                x, y, z = W_[:, 0], W_[:, 1], W_[:, 2]
+                ins = np.abs(x) < r['length'] / 2
+                if ins.any():
+                    hits += int(shapely.contains_xy(top, y[ins], z[ins]).sum())
+        return {'variant': ('roll', False, 'roll'), 'clash': {'roll': hits} if hits else {}, 'score': hits}
+
     # -------------------------------------------------------------------------------------------- sequence
     def ranked(self, done, last_s):
         rest = [p for p in self.primary if p not in done]
-        return sorted(rest, key=lambda p: (round(math.log2(self.small_side[p] + 1)), self.bends[p]['s'] != last_s, -self.depth[p], self.bends[p]['length']))
+        return sorted(rest, key=lambda p: (self.process[p] != 'roll', round(math.log2(self.small_side[p] + 1)), self.bends[p]['s'] != last_s, -self.depth[p], self.bends[p]['length']))
 
     def search(self):
         P = self.primary
@@ -305,8 +366,12 @@ class Planner:
         steps, done = [], frozenset()
         for p in seq:
             r = self.evaluate(done, p)
-            name, mirror, die = r['variant']
-            steps.append({'bend': p, 'punch': name, 'mirror': mirror, 'die': die, 'segments': [[round(a, 3), round(b, 3)] for a, b in self.segments(p)], 'clash': r['clash']})
+            if self.process[p] == 'roll':
+                ro = self.roll_of(p)
+                steps.append({'bend': p, 'process': 'roll', 'roll': ro, 'punch': '', 'mirror': False, 'die': '', 'segments': [[-ro['length'] / 2, ro['length'] / 2]], 'clash': r['clash']})
+            else:
+                name, mirror, die = r['variant']
+                steps.append({'bend': p, 'process': 'brake', 'punch': name, 'mirror': mirror, 'die': die, 'segments': [[round(a, 3), round(b, 3)] for a, b in self.segments(p)], 'clash': r['clash']})
             done = done | {p}
         return seq, steps
 
@@ -315,12 +380,12 @@ def _mirror(poly):
     return shapely.transform(poly, lambda c: c * np.array([-1.0, 1.0]))
 
 
-def plan(sim, region_geoms, z_mid, order=None, budget_s=12.0):
+def plan(sim, region_geoms, z_mid, order=None, budget_s=12.0, process=None):
     """(order, steps, tooling) for a built simulation. `order`: fixed sequence of primary bend indices. The standard
     V-die is used unless only the narrow one avoids clashes."""
     best = None
     for die in DIES:
-        pl = Planner(sim, region_geoms, z_mid, budget_s / len(DIES), die)
+        pl = Planner(sim, region_geoms, z_mid, budget_s / len(DIES), die, process)
         seq, steps = pl.plan(order)
         score = sum(sum(st['clash'].values()) for st in steps)
         if best is None or score < best[0]:

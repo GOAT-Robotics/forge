@@ -783,6 +783,11 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .pb-seq .t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .pb-seq .t b { font-size: 12.5px; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pb-seq .t small { font-size: 11px; color: #64748b; }
+.pb-seq .n.roll { background: #e0ecff; color: #1d4ed8; }
+.pb-proc { display: inline-flex; margin-top: 4px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; align-self: flex-start; }
+.pb-proc button { min-height: 0; height: 22px; padding: 0 8px; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-size: 11px; color: #64748b; }
+.pb-proc button + button { border-left: 1px solid var(--line); }
+.pb-proc button.on { background: #eff6ff; color: #1d4ed8; font-weight: 600; }
 .pb-seq .mv { flex: none; display: flex; gap: 2px; }
 .pb-seq .mv .icon { width: 24px; height: 24px; min-height: 0; padding: 0; display: grid; place-items: center; }
 .pb-seq footer { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }

@@ -70,13 +70,17 @@ def hardware_holes(poly,g,spec):
  if not changes:return poly,[]
  out=Polygon(list(poly.exterior.coords),rings)
  return (out if out.is_valid else poly),(changes if out.is_valid else [])
-def export_flat(shape,g,spec,folder):
+def export_flat(shape,g,spec,folder,opts=None):
  if g['category']!='sheet_metal':return
  try:
   poly,bends=unfold(shape,g,spec.get('k_factor',.4));poly,hw_holes=hardware_holes(poly,g,spec);flat={'outline':list(poly.exterior.coords),'holes':[list(r.coords) for r in poly.interiors],'bends':bends,'k_factor':spec.get('k_factor',.4),'status':'provisional' if not spec.get('k_factor_approved') else 'approved_k','hardware_holes':hw_holes}
   (folder/'flat.json').write_text(json.dumps(flat));d=ezdxf.new('R2013');d.units=4;m=d.modelspace();d.layers.new('CUT');d.layers.new('BEND',dxfattribs={'color':3});d.layers.new('LABELS',dxfattribs={'color':2})
   for coords in [flat['outline']]+flat['holes']:m.add_lwpolyline(coords,close=True,dxfattribs={'layer':'CUT'})
-  for b in bends:m.add_line(b['a'],b['b'],dxfattribs={'layer':'BEND'});m.add_text(f"{b['id']} {b['angle']:.1f}deg {b.get('direction','').upper()} R{b['radius']:.2f}",dxfattribs={'height':2.5,'insert':b['a'],'layer':'LABELS'})
+  from .bendplan import default_process
+  proc=(opts or {}).get('bend_process') or {}
+  for b in bends:
+   roll=(proc.get(b['id']) or default_process(b['radius'],g['thickness']))=='roll'
+   m.add_line(b['a'],b['b'],dxfattribs={'layer':'BEND'});m.add_text(f"{b['id']} {'ROLL ' if roll else ''}{b['angle']:.1f}deg {b.get('direction','').upper()} R{b['radius']:.2f}",dxfattribs={'height':2.5,'insert':b['a'],'layer':'LABELS'})
   m.add_text('DEVELOPED GEOMETRY - '+flat['status'].upper()+' - VERIFY TOOLING',dxfattribs={'height':3,'insert':(poly.bounds[0],poly.bounds[1]-8),'layer':'LABELS'});d.saveas(folder/'flat.dxf')
   flatmesh=trimesh.creation.extrude_polygon(poly,g['thickness'],engine='earcut');flatmesh.export(folder/'flat.glb');g['flat_status']='supported';g['flat_bounds']=list(poly.bounds);g['flat_message']='Developed using configured K; tooling verification required.'
  except Exception as e:
@@ -256,7 +260,7 @@ def drawing_options(p):
 def draw_part(p,rev,folder,rules,settings):
  """One part's drawing set (runs in a worker process). Returns the updated geometry record."""
  from .cad import read_brep
- pf=Path(folder)/'parts'/p['id'];export_flat(read_brep(pf/'shape.brep'),p['geometry'],p['spec'],pf)
+ pf=Path(folder)/'parts'/p['id'];export_flat(read_brep(pf/'shape.brep'),p['geometry'],p['spec'],pf,p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}'))
  make_part(p,rev,pf,rules,settings=settings)
  (pf/'.drawing-invalid').unlink(missing_ok=True)
  if not (pf/'thumb.png').exists():
