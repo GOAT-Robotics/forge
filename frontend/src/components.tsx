@@ -240,19 +240,38 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
         </defs>
         <rect x={vb.x - full.w * 4} y={vb.y - full.h * 4} width={full.w * 9} height={full.h * 9} fill="url(#flat-grid)" />
         <path d={path(flat.outline) + flat.holes.map(path).join(' ')} fill="#c9d5e0" fillOpacity={0.55} stroke="#1c2024" strokeWidth={stroke * 2} strokeLinejoin="round" fillRule="evenodd" />
-        {flat.bends.map(b => {
-          const ax = X(b.a[0]), ay = Y(b.a[1]), bx = X(b.b[0]), by = Y(b.b[1]);
-          const mx = (ax + bx) / 2, my = (ay + by) / 2;
-          const ang = Math.atan2(by - ay, bx - ax) * 180 / Math.PI;
-          return (
-            <g key={b.id}>
-              <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#ff6a1f" strokeWidth={stroke * 1.6} strokeDasharray={`${font * 0.8} ${font * 0.4}`} />
-              <text x={mx} y={my - font * 0.4} fontSize={font} fill="#c8470c" textAnchor="middle" transform={`rotate(${ang > 90 || ang < -90 ? ang + 180 : ang} ${mx} ${my})`} fontFamily="Manrope Variable, sans-serif" fontWeight={600}>
-                {b.id} · {fmt(b.angle)}° {b.direction ? b.direction.toUpperCase() : ''} · R{fmt(b.radius)} · BA {fmt(b.allowance)}
-              </text>
-            </g>
-          );
-        })}
+        {(() => {
+          // Bend labels: short tag on the bend line, placed where it does not cover another label (the table
+          // below carries radius and allowance). Tries above / below the line at the middle, then at a quarter.
+          const placed: number[][] = [];
+          const hit = (r: number[]) => placed.some(q => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+          return flat.bends.map(b => {
+            const ax = X(b.a[0]), ay = Y(b.a[1]), bx = X(b.b[0]), by = Y(b.b[1]);
+            const len = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / len, uy = (by - ay) / len;
+            let ang = Math.atan2(by - ay, bx - ax) * 180 / Math.PI; if (ang > 90 || ang < -90) ang += 180;
+            const rad = ang * Math.PI / 180, nx = Math.sin(rad), ny = -Math.cos(rad);
+            const arrow = b.direction === 'up' ? '↑' : b.direction === 'down' ? '↓' : '';
+            const texts = [`${b.id} ${arrow}${fmt(b.angle)}°`, b.id];
+            let pick: { t: string; x: number; y: number } | null = null;
+            for (const t of texts) {
+              const w = t.length * font * 0.58, h = font * 1.1;
+              if (w > len * 0.95 && t !== b.id) continue;
+              for (const f of [0.5, 0.25, 0.75]) for (const off of [-0.45, 1.25]) {
+                const cx = ax + (bx - ax) * f + nx * off * font, cy = ay + (by - ay) * f + ny * off * font;
+                const hw = (Math.abs(Math.cos(rad)) * w + Math.abs(Math.sin(rad)) * h) / 2, hh = (Math.abs(Math.sin(rad)) * w + Math.abs(Math.cos(rad)) * h) / 2;
+                const r = [cx - hw, cy - hh - font * .35, cx + hw, cy + hh - font * .35];
+                if (!hit(r)) { placed.push(r); pick = { t, x: cx, y: cy }; break; }
+              }
+              if (pick) break;
+            }
+            return (
+              <g key={b.id}>
+                <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#ff6a1f" strokeWidth={stroke * 1.6} strokeDasharray={`${font * 0.8} ${font * 0.4}`}><title>{`${b.id} · ${fmt(b.angle)}° ${(b.direction || '').toUpperCase()} · R${fmt(b.radius)} · BA ${fmt(b.allowance)}`}</title></line>
+                {pick && <text x={pick.x} y={pick.y} fontSize={font} fill="#c8470c" textAnchor="middle" transform={`rotate(${ang} ${pick.x} ${pick.y})`} fontFamily="Manrope Variable, sans-serif" fontWeight={600} paintOrder="stroke" stroke="#fff" strokeWidth={font * 0.18}>{pick.t}</text>}
+              </g>
+            );
+          });
+        })()}
         {/* overall dimensions */}
         <g stroke="#4b5158" strokeWidth={stroke} fill="#4b5158" fontSize={font} fontFamily="DM Sans Variable, sans-serif">
           <line x1={X(minX)} y1={dimY} x2={X(maxX)} y2={dimY} />

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { CadControls, upFor, type NavStyle } from './cadControls';
@@ -161,6 +161,18 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   representativeRef.current = representativeOccurrences;
   const host = useRef<HTMLDivElement>(null);
   const engine = useRef<Engine | null>(null);
+  // Tool palette: labels while they fit the canvas, icons only (tooltips keep the names) when they would spill over.
+  const palette = useRef<HTMLDivElement>(null);
+  const fitPalette = () => {
+    const p = palette.current; const host = p?.parentElement; if (!p || !host) return;
+    p.classList.remove('compact');
+    if (p.scrollWidth > host.clientWidth - 24) p.classList.add('compact');
+  };
+  useLayoutEffect(fitPalette);
+  useEffect(() => {
+    const host = palette.current?.parentElement; if (!host || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => fitPalette()); ro.observe(host); return () => ro.disconnect();
+  }, []);
   const pick = useRef(onPick);
   pick.current = onPick;
   const isolateRef = useRef(onIsolateToggle);
@@ -1113,24 +1125,22 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           </span>
         </div>
       )}
-      <div className="view-cube" role="toolbar" aria-label="View">
-        <button title="Isometric" onClick={() => engine.current?.fit(VIEW_DIRS.iso, null)}><Box size={16} /></button>
-        <button title="Top (Z)" onClick={() => engine.current?.fit(VIEW_DIRS.top, null)}>Top</button>
-        <button title="Front (−Y)" onClick={() => engine.current?.fit(VIEW_DIRS.front, null)}>Front</button>
-        <button title="Right (X)" onClick={() => engine.current?.fit(VIEW_DIRS.right, null)}>Right</button>
-        <span className="view-more">
-          <button title="Back (+Y)" onClick={() => engine.current?.fit(VIEW_DIRS.back, null)}>Bk</button>
-          <button title="Left (−X)" onClick={() => engine.current?.fit(VIEW_DIRS.left, null)}>Lt</button>
-          <button title="Bottom (−Z)" onClick={() => engine.current?.fit(VIEW_DIRS.bottom, null)}>Bt</button>
-        </span>
-        <span />
-        {onShowPlanes && <button className={showPlanes ? 'selected' : ''} title="Front / Top / Right planes and origin" onClick={() => onShowPlanes(!showPlanes)}><Square size={15} /></button>}
-        <button title="Fit everything" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={16} /></button>
-        <button title="Fit selected part" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={16} /></button>
+      <div className="view-cube" role="toolbar" aria-label="Standard views">
+        <button title="Isometric (7)" onClick={() => engine.current?.fit(VIEW_DIRS.iso, null)}><Box size={15} /></button>
+        <button title="Fit everything (F)" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={15} /></button>
+        <button title="Top (5)" onClick={() => engine.current?.fit(VIEW_DIRS.top, null)}>Top</button>
+        <button title="Bottom (6)" onClick={() => engine.current?.fit(VIEW_DIRS.bottom, null)}>Bot</button>
+        <button title="Front (1)" onClick={() => engine.current?.fit(VIEW_DIRS.front, null)}>Front</button>
+        <button title="Back (2)" onClick={() => engine.current?.fit(VIEW_DIRS.back, null)}>Back</button>
+        <button title="Right (4)" onClick={() => engine.current?.fit(VIEW_DIRS.right, null)}>Right</button>
+        <button title="Left (3)" onClick={() => engine.current?.fit(VIEW_DIRS.left, null)}>Left</button>
+        <i className="vc-sep" />
+        {onShowPlanes ? <button className={showPlanes ? 'selected' : ''} title="Front / Top / Right planes and origin (P)" onClick={() => onShowPlanes(!showPlanes)}><Square size={14} /></button> : <span />}
+        <button title="Fit selected part (Z)" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={15} /></button>
       </div>
       {loading && <div className="viewer-state"><span className="spinner" />Preparing lightweight 3D geometry…</div>}
       {error && <div className="viewer-state">{error}</div>}
-      <div className="cad-palette" role="toolbar" aria-label="Tools">
+      <div className="cad-palette" ref={palette} role="toolbar" aria-label="Tools">
         {toolbarStart}
         {toolbarStart ? <i className="sep" /> : null}
         <button className={measure ? 'selected' : ''} title="Measure two surface points" onClick={() => { setMeasure(!measure); setDistance(null); }}><Ruler size={16} /><span>Measure</span></button>

@@ -46,15 +46,14 @@ export function QualityPage({ rev, vendor, can, action, notify, doc, onPlan }: {
         <div className="table-wrap quality-parts">
           <input className="v-filter" placeholder="Filter parts…" value={filter} onChange={e => setFilter(e.target.value)} />
           <table>
-            <thead><tr><th>Part</th><th className="num">Char.</th><th className="num">KC</th><th>First article</th><th className="num">Inspected</th><th className="num">NCR</th></tr></thead>
+            <colgroup><col /><col style={{ width: 92 }} /><col style={{ width: 112 }} /><col style={{ width: 66 }} /></colgroup>
+            <thead><tr><th>Part</th><th className="num" title="Characteristics on the inspection plan / measurable on the drawing">Plan</th><th title="First-article inspection">FAI</th><th className="num" title="Serials fully inspected">Done</th></tr></thead>
             <tbody>{shown.map(r => (
               <tr key={r.part_id} className={sel === r.part_id ? 'selected' : ''} onClick={() => setSel(r.part_id)} style={{ cursor: 'pointer' }}>
-                <td>{r.name}<small>{r.category.replace('_', ' ')} · qty {r.quantity}</small></td>
-                <td className="num">{r.characteristics}<small>of {r.candidates}</small></td>
-                <td className="num">{r.critical || ''}</td>
+                <td><span className="q-name" title={r.name}>{r.name}</span><small>{r.category.replace('_', ' ')} · qty {r.quantity}{r.open_ncr ? <b className="red"> · {r.open_ncr} NCR</b> : null}</small></td>
+                <td className="num">{r.characteristics}<small>of {r.candidates}{r.critical ? ` · ${r.critical} KC` : ''}</small></td>
                 <td><Badge kind={FAI_TONE[r.fai] || ''}>{r.fai}</Badge></td>
                 <td className="num">{r.serials.filter((s: Any) => s.status === 'complete').length}</td>
-                <td className="num">{r.open_ncr ? <b className="red">{r.open_ncr}</b> : ''}</td>
               </tr>))}</tbody>
           </table>
           {!rows.length && <div className="empty-inline"><ClipboardCheck size={30} /><p>No machined or sheet-metal parts in this revision.</p></div>}
@@ -141,12 +140,12 @@ function PartInspection({ partId, rev, vendor, can, action, notify, doc, onPlan,
         </div>
         <div className="table-wrap">
           <table className="char-table">
-            <thead><tr><th>No.</th><th>Zone</th><th>Characteristic</th><th className="num">Nominal</th><th className="num">Lower</th><th className="num">Upper</th><th>Measured</th><th>Result</th><th>Last reading</th></tr></thead>
+            <thead><tr><th>No.</th><th>Zone</th><th>Characteristic</th><th className="num">Limits</th><th>Measured</th><th>Result</th><th>Last reading</th></tr></thead>
             <tbody>{required.map(q => { const r = evaluate(q, values[q.key] ?? ''); const last = latestBySerial[serial.trim()]?.[q.key];
               return <tr key={q.key} className={q.critical ? 'kc' : ''}>
                 <td><span className={'balloon-no' + (q.critical ? ' kc' : '')}>{q.no}</span></td><td>{q.zone}</td>
                 <td>{q.label}{q.qty > 1 && <small>{q.qty}× · {q.text}</small>}{q.qty <= 1 && <small>{q.text}</small>}</td>
-                <td className="num">{q.nominal === null ? 'attribute' : num(q.nominal, q.decimals)}</td><td className="num">{num(q.lower, q.decimals)}</td><td className="num">{num(q.upper, q.decimals)}</td>
+                <td className="num lims">{q.nominal === null ? <span className="muted">pass / fail</span> : <>{num(q.lower, q.decimals)}<i>–</i>{num(q.upper, q.decimals)}</>}</td>
                 <td>{q.nominal === null
                   ? <select value={values[q.key] ?? ''} disabled={!canRecord} onChange={e => setValues({ ...values, [q.key]: e.target.value })}><option value="">—</option><option>PASS</option><option>FAIL</option></select>
                   : <input className="measure" inputMode="decimal" value={values[q.key] ?? ''} disabled={!canRecord} onChange={e => setValues({ ...values, [q.key]: e.target.value.replace(',', '.') })} placeholder={num(q.nominal, q.decimals)} />}</td>
@@ -168,15 +167,14 @@ function PartInspection({ partId, rev, vendor, can, action, notify, doc, onPlan,
             <button type="button" className="chip" disabled={!chars.length} onClick={() => select(chars.filter(q => !q.critical).map(q => q.key), false)}>Clear (keep critical)</button></div>}
         </div>
         <div className="table-wrap"><table className="char-table">
-          <thead><tr><th>Inspect</th><th>No.</th><th>Zone</th><th>Characteristic</th><th className="num">Nominal</th><th>Lower</th><th>Upper</th><th>Basis</th><th>Critical</th><th>Method</th></tr></thead>
+          <thead><tr><th>Inspect</th><th>No.</th><th>Zone</th><th>Characteristic</th><th>Limits (lower – upper)</th><th>Critical</th><th>Method</th></tr></thead>
           <tbody>{all.filter(q => !pick || (q.label + ' ' + q.text + ' ' + q.zone).toLowerCase().includes(pick.toLowerCase())).map(q => <tr key={q.key} className={(q.critical ? 'kc ' : '') + (q.inspect ? '' : 'off')}>
             <td><input type="checkbox" aria-label="Inspect" checked={!!q.inspect} disabled={!plan.editable} onChange={e => setChar(q, { inspect: e.target.checked })} /></td>
             <td>{q.no ? <span className={'balloon-no' + (q.critical ? ' kc' : '')}>{q.no}</span> : <span className="muted">—</span>}</td><td>{q.zone}</td><td>{q.label}<small>{q.text}</small></td>
-            <td className="num">{q.nominal === null ? 'attribute' : num(q.nominal, q.decimals)}</td>
-            {q.nominal === null ? <><td /><td /></> : <>
-              <td><input className="measure" key={'l' + q.lower} defaultValue={num(q.lower, q.decimals)} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (Number.isFinite(v) && v !== q.lower) setChar(q, { lower: v, upper: q.upper }); }} /></td>
-              <td><input className="measure" key={'u' + q.upper} defaultValue={num(q.upper, q.decimals)} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (Number.isFinite(v) && v !== q.upper) setChar(q, { lower: q.lower, upper: v }); }} /></td></>}
-            <td><small>{q.basis}</small>{q.basis === 'specified' && plan.editable && <button className="link" onClick={() => setChar(q, { reset_limits: true })}><RefreshCw size={11} />general</button>}</td>
+            <td className="lim-cell">{q.nominal === null ? <span className="muted">pass / fail</span> : <span className="lim-pair">
+              <input className="measure" aria-label="Lower limit" key={'l' + q.lower} defaultValue={num(q.lower, q.decimals)} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (Number.isFinite(v) && v !== q.lower) setChar(q, { lower: v, upper: q.upper }); }} /><i>–</i>
+              <input className="measure" aria-label="Upper limit" key={'u' + q.upper} defaultValue={num(q.upper, q.decimals)} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (Number.isFinite(v) && v !== q.upper) setChar(q, { lower: q.lower, upper: v }); }} /></span>}
+              <small>{q.basis}{q.basis === 'specified' && plan.editable && <button className="link" onClick={() => setChar(q, { reset_limits: true })}><RefreshCw size={11} />use general</button>}</small></td>
             <td><label className="check"><input type="checkbox" checked={!!q.critical} disabled={!plan.editable} onChange={e => setChar(q, { critical: e.target.checked })} />KC</label></td>
             <td><input key={'m' + q.method} defaultValue={q.method} placeholder="e.g. CMM, pin gauge" disabled={!plan.editable} onBlur={e => { if (e.target.value !== (q.method || '')) setChar(q, { method: e.target.value }); }} /></td>
           </tr>)}</tbody>

@@ -140,7 +140,7 @@ main.canvas-focus .doc-bar { display: none; }
 .workspace.cad .inspector { background: var(--surface); border-left: 1px solid var(--line); }
 
 /* ---------------------------------------------------------------- canvas overlays */
-.cad-hud { position: absolute; z-index: 6; top: 12px; left: 12px; max-width: calc(100% - 140px); pointer-events: none; }
+.cad-hud { position: absolute; z-index: 6; top: 12px; left: 12px; max-width: calc(100% - 128px); pointer-events: none; }
 .hud-card { pointer-events: auto; display: inline-flex; align-items: center; gap: 10px; max-width: 100%; padding: 7px 8px 7px 11px; border-radius: 10px; background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--shadow); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .hud-card > svg { flex: none; color: var(--muted); }
 .hud-card > span:not(.hud-actions) { display: flex; flex-direction: column; min-width: 0; }
@@ -153,10 +153,12 @@ main.canvas-focus .doc-bar { display: none; }
 .hud-actions button.selected { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); }
 .hud-actions button.icon, .hud-card > button.icon { width: 28px; padding: 0; justify-content: center; }
 
-.view-cube { position: absolute; z-index: 6; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 10px; background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--shadow); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
-.view-cube button { width: 44px; height: 30px; min-height: 0; padding: 0; display: grid; place-items: center; border: 0; background: transparent; box-shadow: none; color: var(--muted); font-size: 11px; font-weight: 650; border-radius: 6px; }
+.view-cube { position: absolute; z-index: 6; top: 12px; right: 12px; display: grid; grid-template-columns: repeat(2, 40px); gap: 2px; padding: 4px; border-radius: 10px; background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--shadow); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.view-cube button { width: 40px; height: 28px; min-height: 0; padding: 0; display: grid; place-items: center; border: 0; background: transparent; box-shadow: none; color: var(--muted); font-size: 10.5px; font-weight: 650; letter-spacing: .01em; border-radius: 6px; white-space: nowrap; }
 .view-cube button:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
-.view-cube > span { height: 1px; margin: 3px 4px; background: var(--line); }
+.view-cube button.selected { background: var(--accent-soft); color: var(--accent); }
+.view-cube button:disabled { opacity: .4; }
+.view-cube .vc-sep { grid-column: 1 / -1; height: 1px; margin: 2px 3px; background: var(--line); }
 
 .cad-palette { position: absolute; z-index: 7; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: 5px; border-radius: 12px; background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--shadow-pop); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); max-width: calc(100% - 24px); }
 .cad-palette button { height: 34px; min-height: 0; padding: 0 10px; gap: 6px; border: 0; background: transparent; box-shadow: none; color: var(--text); font-size: 12.5px; font-weight: 550; border-radius: 8px; white-space: nowrap; }
@@ -453,7 +455,13 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .balloon-req .lim { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: end; }
 .balloon-req .lim span { padding-bottom: 8px; font-weight: 600; font-variant-numeric: tabular-nums; }
 /* Quality page */
-.quality-grid { display: grid; grid-template-columns: minmax(360px, 480px) 1fr; gap: 16px; align-items: start; }
+.quality-grid { display: grid; grid-template-columns: minmax(380px, 460px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.quality-parts table { table-layout: fixed; width: 100%; }
+.quality-parts td, .quality-parts th { overflow: hidden; }
+.quality-parts .q-name { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quality-parts td small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quality-parts .badge, .quality-parts td > span { white-space: nowrap; }
+@media (min-width: 1700px) { .quality-grid { grid-template-columns: minmax(420px, 560px) minmax(0, 1fr); } }
 .quality-parts { max-height: calc(100vh - 330px); overflow: auto; }
 .quality-parts .v-filter { margin: 8px; width: calc(100% - 16px); }
 .quality-parts tr.selected td { background: color-mix(in srgb, var(--accent, #2470e8) 10%, transparent); }
@@ -486,8 +494,6 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .kept-hidden { display: none !important; }
 
 /* View cube extras, display style, planes */
-.view-cube .view-more { display: flex; gap: 2px; }
-.view-cube .view-more button { min-width: 0; flex: 1; padding: 4px 0; font-size: 10.5px; }
 .cad-palette .display-seg { display: inline-flex; gap: 1px; padding: 0 2px; border-left: 1px solid var(--glass-line); border-right: 1px solid var(--glass-line); margin: 0 2px; }
 
 /* Shortcuts & navigation */
@@ -506,3 +512,77 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .key-chip { display: inline-flex; gap: 3px; }
 .key-chip kbd { font: 600 11.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 4px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: var(--surface); }
 @media (max-width: 720px) { .nav-choice { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------------------- layout hygiene (no overlaps / spills) */
+/* tool palette: icons only when the labels would not fit the canvas (Viewer adds .compact) */
+.cad-palette.compact button > span { display: none; }
+.cad-palette.compact button { padding: 0 9px; }
+.cad-palette.compact button.icon-only { padding: 0; }
+
+/* document bar: name first, the status pill and crumb give way on narrower windows */
+.doc-id { flex: 0 1 auto; }
+.doc-name { flex: 0 1 auto; max-width: 300px; }
+.doc-name > em { flex: none; }
+.doc-tabs { flex: 0 1 auto; min-width: 0; }
+.doc-status { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.doc-status small { font-weight: 500; opacity: .8; }
+.doc-release { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.doc-release .primary { height: 28px; min-height: 0; padding: 0 10px; gap: 5px; font-size: 12.5px; white-space: nowrap; }
+@media (max-width: 1440px) { .doc-status small { display: none; } .doc-bar { gap: 12px; } }
+@media (max-width: 1320px) { .doc-crumb, .doc-sep { display: none; } .doc-tabs button svg { display: none; } .doc-tabs button { padding: 0 9px; } }
+@media (max-width: 1180px) { .doc-actions .primary { width: 32px; padding: 0; justify-content: center; font-size: 0; gap: 0; } .doc-release .primary { font-size: 0; width: 28px; padding: 0; justify-content: center; } }
+
+/* navigator heading: never wraps; the total count gives way to the selection controls */
+.list-heading { gap: 8px; min-width: 0; }
+.list-heading h3 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.list-heading .flex { flex: none; gap: 4px; flex-wrap: nowrap; }
+.list-heading .mini { white-space: nowrap; }
+.list-heading.multi > .flex > span { display: none; }
+
+/* part rows: room for the eye button instead of drawing it over the status mark */
+.workspace.cad .part-row:hover .row-main, .workspace.cad .part-row.is-hidden .row-main, .workspace.cad .part-row:focus-within .row-main { padding-right: 42px; }
+.workspace.cad .part-row.is-excluded .row-main { padding-right: 72px; }
+.part-row:focus-within .row-eye { opacity: 1; }
+.part-row .row-main > svg, .part-row .ready-mark { flex: none; }
+
+/* sub-assembly rows: actions appear on hover so the folder name gets the width */
+.asm-row { position: relative; min-height: 40px; }
+.asm-name strong { min-width: 0; }
+.asm-row .row-eye { position: absolute; top: 50%; transform: translateY(-50%); right: 6px; width: 28px; height: 28px; opacity: 0; background: var(--surface); border: 1px solid var(--line); box-shadow: none; }
+.asm-row .row-eye + .row-eye { right: 38px; }
+.asm-row .row-eye:first-of-type:not(:last-child) { right: 38px; }
+.asm-row .row-eye:last-child { right: 6px; }
+.asm-row:hover .row-eye, .asm-row:focus-within .row-eye, .asm-row .row-eye.selected { opacity: 1; }
+.asm-row:hover .asm-name, .asm-row:focus-within .asm-name { padding-right: 70px; }
+.asm-row .row-eye.selected { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+
+/* shortcuts dialog: choices and rows wrap inside the dialog */
+.nav-choice { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.nav-choice .choice { white-space: normal; min-width: 0; height: auto; align-content: start; justify-content: stretch; }
+.nav-choice .choice small { white-space: normal; }
+.prefs, .prefs section { min-width: 0; }
+.prefs-head .v-filter { width: 180px; flex: none; }
+.prefs-head button { flex: none; white-space: nowrap; }
+.shortcut-group { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); column-gap: 18px; }
+.shortcut-group h5 { grid-column: 1 / -1; margin: 12px 0 4px; }
+.shortcut-row { gap: 12px; min-width: 0; }
+.shortcut-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shortcut-row .key-btn { flex: none; min-height: 0; height: 28px; padding: 0 6px; background: transparent; border-color: transparent; box-shadow: none; }
+.shortcut-row .key-btn:hover { border-color: var(--line); background: var(--surface); }
+
+/* hover name / triangle count sits above the palette row, never beside it */
+.cad-status { bottom: 66px; max-width: 30%; }
+
+/* quality tables: compact, limits in one cell, header stays visible while scrolling */
+.quality-parts thead th, .quality-detail .table-wrap thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-2, #f6f7f9); }
+.char-table td, .char-table th { padding-left: 10px; padding-right: 10px; vertical-align: top; }
+.char-table td.lims { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.char-table td.lims i, .lim-pair i { font-style: normal; color: var(--faint); margin: 0 4px; }
+.char-table .lim-pair { display: inline-flex; align-items: center; white-space: nowrap; }
+.char-table .lim-cell small { display: block; margin-top: 3px; }
+.char-table .lim-cell .link { margin-left: 6px; }
+.char-table input.measure { width: 82px; }
+.char-table td small { display: block; }
+.char-table td:last-child input { min-width: 0; width: 100%; max-width: 180px; }
+.char-table tr.off td { color: var(--muted); }
+.drawing-properties code { white-space: nowrap; }

@@ -1,10 +1,11 @@
-import time,json,traceback,os,zipfile,hashlib
+import time,json,traceback,os,zipfile,hashlib,re
 from pathlib import Path
 import numpy as np
 import trimesh,ezdxf
 from . import db,storage
 from .cad import import_model,explore,analyze,mesh,BRepTools,TopAbs_SOLID,bounds,classify_name,hidden_by_default,classify_prefix,step_materials,step_header,density_for
 from .unfold import unfold
+from .scrub import clean_name
 from .drawings import make_part,assembly_pdf,render_meshes,combined_canvas,thumb_color
 
 def progress(rid,p,message):
@@ -87,6 +88,21 @@ def apply_defaults(spec,g,settings,carried):
 
 def process_import(rid):
  rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));folder=db.revdir(rid);project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));source=folder/('source'+Path(rev['filename']).suffix.lower())
+ # Authoring-system traces (SolidWorks header, feature names, exporter name noise, users, paths, GUIDs) are removed
+ # before anything reads the file; only the sanitized copy is kept, hashed, served and downloaded.
+ sanitized=None
+ if source.suffix.lower() in ('.step','.stp','.igs','.iges'):
+  with stage(rid,2,f'Removing authoring-system metadata ({size_text(source)})'):
+   from .scrub import scrub
+   sanitized=scrub(source,'source'+source.suffix.lower())
+  if sanitized:
+   h=hashlib.sha256()
+   with source.open('rb') as fh:
+    while b:=fh.read(1<<20):h.update(b)
+   with db.connect() as c:
+    c.execute('UPDATE revisions SET sha256=? WHERE id=?',(h.hexdigest(),rid));db.audit(c,'worker','revision.sanitized',{k:v for k,v in sanitized.items() if k!='solidworks'}|{'sha256':h.hexdigest()},rid)
+   rev['sha256']=h.hexdigest()
+   storage.upload(rid,source,source.name)
  with stage(rid,3,f'Reading CAD file ({size_text(source)}) and preserving component placements'):leaves=import_model(source)
  if source.suffix in ('.brep','.brp','.igs','.iges') and len(leaves)==1:leaves[0]['name']=Path(rev['filename']).stem
  scene=trimesh.Scene();parts=[];instances={};assembly_meshes=[];warnings=[];num=0;settings=db.project_settings(rev['project_id'])
@@ -97,6 +113,8 @@ def process_import(rid):
   for old in db.rows('SELECT * FROM parts WHERE revision_id=?',(prev_rev['id'],)):
    old['geometry']=json.loads(old['geometry']);old['spec']=json.loads(old['spec'])
    previous.setdefault('name:'+old['name'],old);previous.setdefault('fp:'+old['geometry'].get('fingerprint',''),old)
+   # revisions imported before sanitizing carry SolidWorks name noise; match them by the cleaned name too
+   m=re.match(r'(.*?)(\s*/\s*Body \d+)?$',old['name']);previous.setdefault('name:'+clean_name(m.group(1))+(m.group(2) or ''),old)
  carried=0
  with db.connect() as c:c.execute('DELETE FROM fits WHERE revision_id=?',(rid,));c.execute('DELETE FROM parts WHERE revision_id=?',(rid,))
  for i,leaf in enumerate(leaves):
@@ -117,7 +135,6 @@ def process_import(rid):
   for bi,solid in enumerate(solids,1):
    num+=1;pid=rid[:10]+'_'+leaf['key']+'_'+str(bi);name=leaf['name']+(f' / Body {bi}' if len(solids)>1 else '');pf=folder/'parts'/pid;pf.mkdir(parents=True,exist_ok=True);BRepTools.Write_s(solid,str(pf/'shape.brep'))
    g=analyze(solid,name)
-   import re
    provenance=' / '.join(i['path'] for i in leaf['instances'][:1])
    supplier=bool(re.search(r'T806-ZJ|HKT-WDS|FD125|ELVM|iHawk|Southco|MICHCASTER|WAVESHARE|JK_FENNER|XWST|LTO 48|XB5AS|XB5AW|P3767|2ELD',provenance,re.I))
    if supplier and classify_name(name)!='custom':g['category']='purchased';g['recognition_notes'].append('Purchased candidate inferred from supplier assembly ancestry; confirm make/buy classification.')
@@ -169,7 +186,7 @@ def process_import(rid):
   for f in fits:c.execute('INSERT INTO fits VALUES(?,?,?,0)',(db.uid(),rid,json.dumps(f)))
  with stage(rid,82,'Rendering assembly documentation'):
   if assembly_meshes:render_meshes(assembly_meshes,folder/'assembly.png')
- manifest={'step_header':header,'rules_snapshot':rules,'part_count':len(parts),'component_definitions':len(leaves),'occurrences':sum(p['quantity'] for p in parts),'triangles':sum(p['geometry']['triangles']*p['quantity'] for p in parts),'warnings':warnings,'units':'mm','mesh_deflection':rules['mesh_deflection'],'fit_candidates':len(fits),'carried_over':carried,'carried_from':prev_rev['number'] if prev_rev else None,'rule_coverage':'Configured geometry and workflow rules only; manual checks explicitly required','unsupported':['Native proprietary CAD formats','General double-curved sheet forming','Automatic structural certification','Automatic thread specification recovery'],'instances_file':'instances.json'}
+ manifest={'step_header':header,'sanitized':{k:v for k,v in (sanitized or {}).items() if k!='solidworks'},'rules_snapshot':rules,'part_count':len(parts),'component_definitions':len(leaves),'occurrences':sum(p['quantity'] for p in parts),'triangles':sum(p['geometry']['triangles']*p['quantity'] for p in parts),'warnings':warnings,'units':'mm','mesh_deflection':rules['mesh_deflection'],'fit_candidates':len(fits),'carried_over':carried,'carried_from':prev_rev['number'] if prev_rev else None,'rule_coverage':'Configured geometry and workflow rules only; manual checks explicitly required','unsupported':['Native proprietary CAD formats','General double-curved sheet forming','Automatic structural certification','Automatic thread specification recovery'],'instances_file':'instances.json'}
  # Only promote successful revisions; archive the prior active version atomically.
  with db.connect() as c:
   c.execute('UPDATE revisions SET state="archived" WHERE project_id=? AND state="active"',(rev['project_id'],));c.execute('UPDATE revisions SET state="active",status="ready",progress=100,message="Analysis complete",manifest=? WHERE id=?',(json.dumps(manifest),rid));db.audit(c,'worker','revision.activated',manifest,rid)

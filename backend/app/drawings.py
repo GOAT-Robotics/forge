@@ -517,7 +517,11 @@ def make_part(p,rev,folder,rules,combined=None,settings=None):
    vs[key]['view_key']=key;vs[key]['normal_sign']=-1 if key=='front' else 1
  (folder/'projections.json').write_text(json.dumps(vs))
  from OCP.STEPControl import STEPControl_Writer,STEPControl_AsIs
- writer=STEPControl_Writer();writer.Transfer(read_brep(folder/'shape.brep'),STEPControl_AsIs);writer.Write(str(folder/'part.step'))
+ writer=STEPControl_Writer();writer.Transfer(read_brep(folder/'shape.brep'),STEPControl_AsIs);writer.Write(str(folder/'part.step.tmp'))
+ # neutral header (no writer / author / organisation), file named after the part
+ from .scrub import scrub_step
+ safe=re.sub(r'[^\w.+ -]+','_',p.get('name') or 'part').strip() or 'part'
+ scrub_step(folder/'part.step.tmp',folder/'part.step',safe+'.step',clean_names=False);(folder/'part.step.tmp').unlink(missing_ok=True)
  # Vendor drawing: GOAT-template sheets (sheet.py) recorded as an editable scene for the drawing editor.
  settings=settings or {}
  flat=json.loads((folder/'flat.json').read_text()) if g.get('flat_status')=='supported' and (folder/'flat.json').exists() else None
