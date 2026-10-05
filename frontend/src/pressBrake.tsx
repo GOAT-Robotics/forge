@@ -1,13 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Pause, Play, RotateCcw, X, Maximize, Wrench } from 'lucide-react';
+import { Pause, Play, RotateCcw, X, Maximize, Wrench, ListOrdered, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 import { CadControls, type NavStyle } from './cadControls';
-import { loadSecureModel } from './api';
+import { api, loadSecureModel } from './api';
 
 /** Server data (backend/app/bendsim.py): developed blank split into flanges and curling bend strips. */
 type SimBend = { id: string; L: number[]; u: number[]; v: number[]; n: number[]; w: number; angle: number; radius: number; s: number; length: number; twin: number | null; stroke?: { center: number; span: number; ids: string[] } };
+/** One press stroke of the collision-checked plan (backend/app/bendplan.py). Segments: X ranges of the sectional
+ * punch and die along the bend line, from the stroke centre. */
+type PlanStep = { bend: number; punch: string; mirror: boolean; die: string; segments: number[][]; clash: Record<string, number>; unchecked?: boolean };
+type Tool = { profile: number[][]; height: number; upper?: number[][][]; lower?: number[][][] };
+type Tooling = { k: number; W: number; vdepth: number; die_name: string; punches: Record<string, Tool>; dies: Record<string, Tool> };
 export type BendSim = {
   thickness: number; bends: SimBend[]; regions: { chain: number[]; strip: number | null }[]; order: number[];
+  plan: PlanStep[]; tooling: Tooling; sequence?: 'planned' | 'custom';
   vertices: number[]; region: number[]; triangles: number[]; edges: number[];
   part?: { name: string; material?: string; thickness?: number };
 };
@@ -60,8 +66,15 @@ const ease = (x: number) => x < 0 ? 0 : x > 1 ? 1 : x * x * (3 - 2 * x);
  * after another in the bending order. Tooling is illustrative (generic punch and V-die sized from the sheet
  * thickness), the folding is the part's real developed geometry and bend data.
  */
-export default function PressBrake({ revision, part, name, navStyle = 'forge', close }: {
-  revision: string; part: string; name: string; navStyle?: NavStyle; close: () => void;
+const CLASH: Record<string, string> = { punch: 'punch', die: 'die', beam: 'upper beam', bed: 'lower beam' };
+const toolLabel = (st: PlanStep, tl: Tooling) => [
+  (st.punch.startsWith('tall-') ? 'Tall ' : '') + (st.punch.endsWith('goose') ? 'gooseneck punch' : 'straight punch'),
+  `${st.die.startsWith('tall-') ? 'tall ' : ''}V${+tl.W.toFixed(1)} die`,
+].join(' · ').replace(/^t/, 'T').replace(/^s/, 'S').replace(/^g/, 'G');
+const strokeName = (b: SimBend) => b.stroke ? b.stroke.ids.join(' + ') : b.id;
+
+export default function PressBrake({ revision, part, name, navStyle = 'forge', canEdit = false, close }: {
+  revision: string; part: string; name: string; navStyle?: NavStyle; canEdit?: boolean; close: () => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [sim, setSim] = useState<BendSim | null>(null);
@@ -70,18 +83,22 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
   const [speed, setSpeed] = useState(1);
   const [time, setTime] = useState(0);
   const [tooling, setTooling] = useState(true);
+  const [reload, setReload] = useState(0);
+  const [seqOpen, setSeqOpen] = useState(false);
+  const [notice, setNotice] = useState('');
   const state = useRef({ time: 0, playing: true, speed: 1, tooling: true, fit: () => { /* set by scene */ } });
   state.current.playing = playing; state.current.speed = speed; state.current.tooling = tooling;
 
   useEffect(() => {
     const abort = new AbortController();
+    setSim(null); setError('');
     loadSecureModel(`${revision}:bend-sim.json:${part}`, abort.signal)
-      .then(buf => setSim(JSON.parse(new TextDecoder().decode(buf))))
+      .then(buf => { state.current.time = 0; setTime(0); setPlaying(true); setSim(JSON.parse(new TextDecoder().decode(buf))); })
       .catch(e => { if (!abort.signal.aborted) setError(e.message || 'Bending simulation unavailable'); });
     return () => abort.abort();
-  }, [revision, part]);
+  }, [revision, part, reload]);
 
-  const seq = useMemo(() => sim ? sim.order : [], [sim]);
+  const seq = useMemo(() => sim ? sim.plan.map(s => s.bend) : [], [sim]);
   const total = seq.length * PER_BEND + 1.6;
 
   useEffect(() => {
@@ -116,25 +133,39 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
     const extent = (() => { let lo = [1e9, 1e9], hi = [-1e9, -1e9]; for (const p of flat) { lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1])]; hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1])]; } return Math.hypot(hi[0] - lo[0], hi[1] - lo[1]); })();
     const maxLen = Math.max(...sim.bends.map(b => Math.max(b.length, b.stroke?.span || 0)), 40);
 
-    // ---------------------------------------------------------------- tooling (generic, scaled to the sheet)
-    const k = Math.max(1, t / 1.5);
-    const W = Math.max(6, 8 * t);               // V opening
-    const vDepth = W / 2 * 1.04;                // 88° V
-    const toolLen = Math.max(maxLen * 1.5, maxLen + 80);
-    const prism = (pts: number[][], len: number, color: number) => {
-      const sh = new THREE.Shape(pts.map(([y, z]) => new THREE.Vector2(y, z)));
+    // ---------------------------------------------------------------- tooling (generic, scaled to the sheet; chosen per stroke)
+    const TL = sim.tooling, k = TL.k, W = TL.W, vDepth = TL.vdepth;
+    const beamLen = Math.max(extent * 1.3, maxLen + 200 * k);
+    const steel = new THREE.MeshStandardMaterial({ color: 0x7d8996, roughness: 0.55, metalness: 0.45 });
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0xb4bdc7, roughness: 0.55, metalness: 0.45 });
+    const clashMat = new THREE.MeshStandardMaterial({ color: 0xdc4c4c, roughness: 0.5, metalness: 0.2, transparent: true, opacity: 0.85 });
+    const ghost = new THREE.MeshStandardMaterial({ color: 0xc7ced6, roughness: 0.6, metalness: 0.2, transparent: true, opacity: 0.16, depthWrite: false });
+    const ghostClash = new THREE.MeshStandardMaterial({ color: 0xdc4c4c, roughness: 0.6, metalness: 0.2, transparent: true, opacity: 0.3, depthWrite: false });
+    const edgeMat = new THREE.LineBasicMaterial({ color: 0x2f3640, transparent: true, opacity: 0.35 });
+    const ghostEdge = new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.18 });
+    /** profile (Y, Z) extruded along X from x0 to x1 */
+    const prism = (pts: number[][], x0: number, x1: number, mat: THREE.Material, mirror = false) => {
+      const sh = new THREE.Shape(pts.map(([y, z]) => new THREE.Vector2(mirror ? -y : y, z)));
+      const len = Math.max(x1 - x0, 0.5);
       const g = new THREE.ExtrudeGeometry(sh, { depth: len, bevelEnabled: false });
-      g.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -len / 2, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1));
-      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.45 }));
-      const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 30), new THREE.LineBasicMaterial({ color: 0x2f3640, transparent: true, opacity: 0.35 }));
-      const grp = new THREE.Group(); grp.add(m, e); return grp;
+      g.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, x0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1));
+      const grp = new THREE.Group(); grp.add(new THREE.Mesh(g, mat), new THREE.LineSegments(new THREE.EdgesGeometry(g, 30), mat.depthWrite ? edgeMat : ghostEdge)); return grp;
     };
-    const punch = prism([[-0.5 * k, 0], [0.5 * k, 0], [9 * k, 26 * k], [9 * k, 72 * k], [15 * k, 72 * k], [15 * k, 96 * k], [-15 * k, 96 * k], [-15 * k, 72 * k], [-9 * k, 72 * k], [-9 * k, 26 * k]], toolLen, 0x7d8996);
-    const ram = prism([[-60 * k, 96 * k], [60 * k, 96 * k], [60 * k, 150 * k], [-60 * k, 150 * k]], toolLen + 160 * k, 0xb4bdc7);
-    const upper = new THREE.Group(); upper.add(punch, ram); scene.add(upper);
-    const die = prism([[-26 * k, -60 * k], [26 * k, -60 * k], [26 * k, 0], [W / 2, 0], [0, -vDepth], [-W / 2, 0], [-26 * k, 0]], toolLen, 0x7d8996);
-    const bed = prism([[-70 * k, -120 * k], [70 * k, -120 * k], [70 * k, -60 * k], [-70 * k, -60 * k]], toolLen + 160 * k, 0xb4bdc7);
-    const lower = new THREE.Group(); lower.add(die, bed); scene.add(lower);
+    // one set of tools per stroke: sectional punch and die as long as the bend line, beams full length
+    const stepTools = sim.plan.map(st => {
+      const P = TL.punches[st.punch] || TL.punches.straight, D = TL.dies[st.die] || TL.dies.die;
+      const c = st.clash || {};
+      const upper = new THREE.Group(), lower = new THREE.Group();
+      for (const [x0, x1] of st.segments) {
+        upper.add(prism(P.profile, x0, x1, c.punch ? clashMat : steel, st.mirror));
+        lower.add(prism(D.profile, x0, x1, c.die ? clashMat : steel));
+      }
+      // clamp / die rail solid, the machine beams as a ghost so the part stays in view
+      (P.upper || []).forEach((q, j) => upper.add(prism(q, -beamLen / 2, beamLen / 2, c.beam ? (j ? ghostClash : clashMat) : j ? ghost : frameMat, st.mirror)));
+      (D.lower || []).forEach((q, j) => lower.add(prism(q, -beamLen / 2, beamLen / 2, c.bed ? (j ? ghostClash : clashMat) : j ? ghost : frameMat)));
+      upper.visible = lower.visible = false; scene.add(upper, lower);
+      return { upper, lower };
+    });
 
     // ---------------------------------------------------------------- kinematics
     const fullAngle = sim.bends.map(b => THREE.MathUtils.degToRad(b.angle));
@@ -218,8 +249,8 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
       if (local >= PHASES.move && local < PHASES.press) z = t + up * (1 - ease((local - PHASES.move) / (PHASES.press - PHASES.move)));
       else if (local >= PHASES.press && local <= PHASES.bend) z = t - d;
       else if (local > PHASES.bend && local <= 1) z = t - d + up * ease((local - PHASES.bend) / (1 - PHASES.bend));
-      upper.position.z = z;
-      upper.visible = lower.visible = state.current.tooling;
+      stepTools.forEach((g, i) => { g.upper.visible = g.lower.visible = i === step && state.current.tooling; });
+      stepTools[step].upper.position.z = z;
     };
 
     // ---------------------------------------------------------------- camera / loop
@@ -244,7 +275,6 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
       if (st.time === shown && key === lastKey) return;
       if (st.time !== shown) { poseAt(st.time); if (Math.abs(st.time - shown) > 0.05 || !st.playing) setTime(st.time); }
       shown = st.time; lastKey = key;
-      upper.visible = lower.visible = st.tooling;
       renderer.render(scene, camera);
     };
     raf = requestAnimationFrame(loop);
@@ -277,6 +307,13 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
   };
   const step = Math.min(seq.length - 1, Math.floor(time / PER_BEND));
   const cur = sim && seq.length ? sim.bends[seq[Math.max(0, step)]] : null;
+  const curStep = sim && seq.length ? sim.plan[Math.max(0, step)] : null;
+  const clashes = sim ? sim.plan.filter(s => Object.keys(s.clash || {}).length).length : 0;
+  const saveOrder = async (ids: string[]) => {
+    const r = await api(`/revisions/${revision}/parts/${part}/bend-order`, 'PUT', { order: ids });
+    setNotice(r?.job ? 'Drawing is being regenerated with this order (bend table: tags B1… in bending order, sequence and tooling).' : 'The flat-pattern drawing lists this order after the next Regenerate documents.');
+    setReload(r2 => r2 + 1);
+  };
 
   return (
     <div className="overlay top cfg-overlay" role="dialog" aria-label="Press brake simulation" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
@@ -290,12 +327,19 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
           <div className="pscene-tools">
             <button type="button" title="Reset view" onClick={() => state.current.fit()}><Maximize size={15} /></button>
             <button type="button" title={tooling ? 'Hide tooling' : 'Show tooling'} className={tooling ? 'on' : ''} onClick={() => setTooling(v => !v)}><Wrench size={15} /></button>
+            <button type="button" title="Bending sequence" className={seqOpen ? 'on' : ''} disabled={!sim} onClick={() => setSeqOpen(v => !v)}><ListOrdered size={15} /></button>
           </div>
+          {sim && seqOpen && <Sequence sim={sim} current={step} canEdit={canEdit} notice={notice} go={i => { seek(i * PER_BEND + PER_BEND * PHASES.press); setPlaying(false); }} save={saveOrder} close={() => setSeqOpen(false)} />}
           {!sim && !error && <div className="pscene-state"><span className="spinner" />Preparing simulation…</div>}
           {error && <div className="pscene-state">{error}</div>}
           {cur && <div className="pb-info">
             <b>Bend {Math.min(step + 1, seq.length)} of {seq.length}</b>
             <span>{cur.stroke ? cur.stroke.ids.join(' + ') + ' (one stroke)' : cur.id} · {cur.angle.toFixed(cur.angle % 1 ? 1 : 0)}° {cur.s > 0 ? 'up' : 'down'} · R{cur.radius.toFixed(2)}</span>
+            {curStep && <span className="pb-tool">{toolLabel(curStep, sim!.tooling)}</span>}
+            {curStep && Object.keys(curStep.clash || {}).length > 0 && <span className="pb-clash"><AlertTriangle size={13} />Hits the {Object.keys(curStep.clash).map(k => CLASH[k] || k).join(' and ')} — needs special tooling or another sequence</span>}
+          </div>}
+          {sim && !seqOpen && <div className={'pb-plan' + (clashes ? ' bad' : '')} onClick={() => setSeqOpen(true)}>
+            {clashes ? <><AlertTriangle size={13} />{clashes} stroke{clashes === 1 ? '' : 's'} with a tool clash</> : <>Collision-checked sequence</>}{sim.sequence === 'custom' ? ' · shop order' : ''}
           </div>}
         </div>
         <footer className="pb-bar">
@@ -303,7 +347,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
             {playing ? <Pause size={16} /> : time >= total - 0.01 ? <RotateCcw size={16} /> : <Play size={16} />}
           </button>
           <div ref={bar} className="pb-track" onPointerDown={scrub}>
-            {seq.map((bi, i) => <div key={bi} className={'pb-seg' + (i < step || time >= total - 1.6 ? ' done' : i === step ? ' cur' : '')} style={{ left: `${i * PER_BEND / total * 100}%`, width: `${PER_BEND / total * 100}%` }}
+            {seq.map((bi, i) => <div key={bi} className={'pb-seg' + (i < step || time >= total - 1.6 ? ' done' : i === step ? ' cur' : '') + (Object.keys(sim!.plan[i].clash || {}).length ? ' clash' : '')} style={{ left: `${i * PER_BEND / total * 100}%`, width: `${PER_BEND / total * 100}%` }}
               title={`${sim!.bends[bi].stroke?.ids.join(' + ') || sim!.bends[bi].id} · ${sim!.bends[bi].angle}°`}><span>{i + 1}</span></div>)}
             <div className="pb-head" style={{ left: `${time / total * 100}%` }} />
           </div>
@@ -312,6 +356,45 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
           </select>
         </footer>
       </div>
+    </div>
+  );
+}
+
+/** Bending sequence: every stroke with its tooling and clashes; engineers can fix the shop's order (re-checked). */
+function Sequence({ sim, current, canEdit, notice, go, save, close }: { sim: BendSim; current: number; canEdit: boolean; notice: string; go: (i: number) => void; save: (ids: string[]) => Promise<void>; close: () => void }) {
+  const [draft, setDraft] = useState<number[]>(() => sim.plan.map(s => s.bend));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const planned = sim.plan.map(s => s.bend);
+  const changed = draft.join() !== planned.join();
+  const stepOf = (bi: number) => sim.plan.find(s => s.bend === bi)!;
+  const move = (i: number, d: number) => setDraft(x => { const y = [...x]; const j = i + d; if (j < 0 || j >= y.length) return x; [y[i], y[j]] = [y[j], y[i]]; return y; });
+  const run = async (ids: string[]) => { setBusy(true); setErr(''); try { await save(ids); } catch (e: unknown) { setErr((e as Error).message); setBusy(false); } };
+  return (
+    <div className="pb-seq" onMouseDown={e => e.stopPropagation()}>
+      <header><b>Bending sequence</b><small>{sim.sequence === 'custom' ? 'Shop order, checked against the tooling' : 'Planned: outer and short flanges first, no tool clashes'}</small>
+        <button type="button" className="icon" aria-label="Close" onClick={close}><X size={15} /></button></header>
+      <ol>{draft.map((bi, i) => {
+        const b = sim.bends[bi], st = stepOf(bi), bad = !changed && Object.keys(st.clash || {}).length > 0;
+        return (
+          <li key={bi} className={(i === current && !changed ? 'cur ' : '') + (bad ? 'clash' : '')} onClick={() => !changed && go(i)}>
+            <span className="n">{i + 1}</span>
+            <span className="t"><b>{strokeName(b)}</b><small>{b.angle.toFixed(b.angle % 1 ? 1 : 0)}° {b.s > 0 ? 'up' : 'down'}{!changed ? ' · ' + toolLabel(st, sim.tooling) : ''}</small>
+              {bad && <small className="pb-clash"><AlertTriangle size={11} />hits the {Object.keys(st.clash).map(k => CLASH[k] || k).join(' and ')}</small>}</span>
+            {canEdit && <span className="mv">
+              <button type="button" className="icon" aria-label="Earlier" disabled={i === 0 || busy} onClick={e => { e.stopPropagation(); move(i, -1); }}><ArrowUp size={13} /></button>
+              <button type="button" className="icon" aria-label="Later" disabled={i === draft.length - 1 || busy} onClick={e => { e.stopPropagation(); move(i, 1); }}><ArrowDown size={13} /></button>
+            </span>}
+          </li>);
+      })}</ol>
+      {err && <div className="cfg-error">{err}</div>}
+      {canEdit && <footer>
+        {changed && <button type="button" disabled={busy} onClick={() => setDraft(planned)}>Undo</button>}
+        {!changed && sim.sequence === 'custom' && <button type="button" disabled={busy} onClick={() => run([])}>Plan automatically</button>}
+        {changed && <button type="button" className="primary" disabled={busy} onClick={() => run(draft.map(bi => sim.bends[bi].id))}>{busy ? <span className="spinner" /> : null}Use this order</button>}
+      </footer>}
+      {changed ? <p className="pb-note">The order is checked against the punch, die and beams when you apply it, and the flat-pattern drawing follows it.</p>
+        : notice ? <p className="pb-note">{notice}</p> : <p className="pb-note">Bend B1… on the flat-pattern drawing is stroke 1… here.</p>}
     </div>
   );
 }

@@ -2251,7 +2251,7 @@ def tag_spacing(views, scale):
     return best
 
 
-def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
+def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets, sequence=None):
     """Developed blank for laser cutting: outline, bend lines (UP/DOWN), overall and bend ordinates, bend table."""
     outline = np.array(flat['outline'])
     vis = [outline] + [np.array(h) for h in flat['holes']]
@@ -2282,6 +2282,14 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
     cache_inline = {}
     from .unfold import bend_groups
     groups = bend_groups(flat['bends'])           # one entry per press stroke
+    seq_of = (sequence or {}).get('bends') or {}
+    stroke_of = lambda gr: min((seq_of[flat['bends'][i].get('id')] for i in gr if flat['bends'][i].get('id') in seq_of), key=lambda r: r['seq'], default=None)
+    if seq_of:   # tags and table follow the press-brake bending order: B1 is bent first
+        groups = sorted(groups, key=lambda gr: (stroke_of(gr)['seq'] if stroke_of(gr) else 10 ** 6, gr[0]))
+        notes.append(f"BEND IN SEQUENCE B1-B{len(groups)} - V{sequence['die']} DIE" + (' - SHOP ORDER' if sequence.get('custom') else ' - COLLISION-CHECKED'))
+        clash = [f'B{k + 1}' for k, gr in enumerate(groups) if stroke_of(gr) and stroke_of(gr)['clash']]
+        if clash:
+            notes.append(f"{', '.join(clash[:6])}: TOOL CLASH IN SIMULATION - SPECIAL TOOLING / REVIEW")
     group_of = {i: k for k, gr in enumerate(groups) for i in gr}
 
     def extra(sh, scale, area, part):
@@ -2401,10 +2409,12 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
     def bend_table(sh, area):
         # bend table (title-block style) in the top-right corner
         firsts = [flat['bends'][gr[0]] for gr in groups[:14]]
-        rows = [('TAG', 'DIRECTION', 'ANGLE', 'INNER R', 'OUTSIDE H', 'LINES')] + [
+        rows = [('TAG', 'DIRECTION', 'ANGLE', 'INNER R', 'OUTSIDE H', 'LINES') + (('SEQ', 'TOOLING') if seq_of else ())] + [
             ('B' + str(k + 1), b.get('direction', '?').upper(), f"{b['angle']:.1f}\u00b0", f"{b['radius']:.2f}",
-             f"{b['outside_height']:.2f}" if b.get('outside_height') is not None else '-', str(len(groups[k]))) for k, b in enumerate(firsts)]
-        cw = [12, 20, 16, 16, 20, 12]
+             f"{b['outside_height']:.2f}" if b.get('outside_height') is not None else '-', str(len(groups[k])))
+            + ((str(stroke_of(groups[k])['seq']) if stroke_of(groups[k]) else '-', (stroke_of(groups[k]) or {}).get('tool', '-')) if seq_of else ())
+            for k, b in enumerate(firsts)]
+        cw = [12, 20, 16, 16, 20, 12] + ([10, 34] if seq_of else [])
         rh = 4.6
         x0 = area[2] - sum(cw)
         ytop = area[3]
@@ -2440,9 +2450,33 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
     nrows = 1 + min(len(groups), 14)
 
     def reserve(sh, area):
-        return [(area[2] - 96.0, area[3] - 4.6 * nrows, area[2], area[3])] if flat['bends'] else []
+        return [(area[2] - (140.0 if seq_of else 96.0), area[3] - 4.6 * nrows, area[2], area[3])] if flat['bends'] else []
     return assemble(p, rev, settings, views, iso, [], [], notes, sheet_no, sheets, extra=extra, hidden=False,
                     reserve=reserve if flat['bends'] else None)
+
+
+def bend_sequence(shape, p, options=None):
+    """Press-brake order and tooling of a formed part (the same collision-checked plan as the bending simulation):
+    {'bends': {bend id: {'seq', 'tool', 'clash'}}, 'die', 'custom'}; None when it cannot be planned."""
+    try:
+        from .bendsim import for_part
+        opts = options if isinstance(options, dict) else (p.get('drawing_options') if isinstance(p.get('drawing_options'), dict) else {})
+        spec = p.get('spec') or {}
+        sim = for_part(shape, p['geometry'], spec, float(spec.get('k_factor') or .4), (opts or {}).get('bend_order') or None)
+    except Exception:
+        return None
+    out = {}
+    for n, st in enumerate(sim.get('plan') or [], 1):
+        if st.get('unchecked'):
+            return None
+        tool = ('TALL ' if st['punch'].startswith('tall-') else '') + ('GOOSE' if st['punch'].endswith('goose') else 'STD') + (' / TALL DIE' if st['die'].startswith('tall-') else '')
+        b = sim['bends'][st['bend']]
+        for bid in (b.get('stroke') or {}).get('ids') or [b['id']]:
+            out[bid] = {'seq': n, 'tool': tool, 'clash': bool(st['clash'])}
+        for i, other in enumerate(sim['bends']):   # split by a relief on the same flange pair: same stroke
+            if other.get('twin') == st['bend']:
+                out.setdefault(other['id'], out[b['id']])
+    return {'bends': out, 'die': f"{sim['tooling']['W']:.1f}".rstrip('0').rstrip('.'), 'custom': sim.get('sequence') == 'custom'}
 
 
 def build_sheets(shape, p, rev, settings, flat=None, pictorials=None, options=None):
@@ -2484,7 +2518,7 @@ def build_sheets(shape, p, rev, settings, flat=None, pictorials=None, options=No
     if main is not None:
         main.frame = cache.get('frame')
     if has_flat:
-        sheets.append(flat_sheet(p, rev, settings, flat, None, 2, total))
+        sheets.append(flat_sheet(p, rev, settings, flat, None, 2, total, bend_sequence(shape, p, options)))
     if main is not None and getattr(main, 'table_overflow', False):
         sheets.append(table_sheet(p, rev, settings, table, main.meta['scale'], main.size, len(sheets) + 1, total))
     if main is not None and main.overflow:

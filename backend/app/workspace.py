@@ -871,7 +871,8 @@ def bend_sim_build(rid, p, path):
     if not brep.exists():
         raise HTTPException(404, 'Part geometry is not available')
     try:
-        sim = for_part(read_brep(str(brep)), p['geometry'], p['spec'], float((p['spec'] or {}).get('k_factor') or .4))
+        opts = load(p.get('drawing_options') or '{}', {}) if isinstance(p.get('drawing_options'), str) else (p.get('drawing_options') or {})
+        sim = for_part(read_brep(str(brep)), p['geometry'], p['spec'], float((p['spec'] or {}).get('k_factor') or .4), opts.get('bend_order') or None)
     except ValueError as e:
         raise HTTPException(422, 'Bending simulation unavailable: ' + str(e))
     sim['part'] = {'name': p['name'], 'material': (p['spec'] or {}).get('material', ''), 'thickness': p['geometry'].get('thickness')}
@@ -904,6 +905,51 @@ def set_bend_simulation(rid: str, a: BendSimToggle, request: Request):
             c.execute('UPDATE parts SET drawing_options=? WHERE id=?', (json.dumps(opts), pid))
         db.audit(c, u['name'], 'parts.bend_simulation', {'count': len(ids), 'mode': a.mode}, rid)
     return {'ok': True}
+
+
+class BendOrder(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    order: list[str] = Field(default_factory=list, max_length=500)   # bend ids, one per stroke; empty = planned
+
+
+@router.put('/api/revisions/{rid}/parts/{pid}/bend-order')
+def set_bend_order(rid: str, pid: str, a: BendOrder, request: Request):
+    """Fix the press-brake bending sequence of a part (the shop's order); empty returns to the planned one. The
+    simulation re-checks every stroke against the tooling with this order and reports clashes."""
+    u = revision_access(request, rid, True, 'part.edit')
+    p = get_part(pid)
+    if p['revision_id'] != rid:
+        raise HTTPException(422, 'Part outside revision')
+    ids = {b.get('id') for b in (p['geometry'] or {}).get('bends') or []}
+    if any(x not in ids for x in a.order) or len(set(a.order)) != len(a.order):
+        raise HTTPException(422, 'Unknown or repeated bend in the sequence')
+    with db.connect() as c:
+        row = c.execute('SELECT drawing_options FROM parts WHERE id=?', (pid,)).fetchone()
+        opts = load(row['drawing_options'], {})
+        if a.order:
+            opts['bend_order'] = a.order
+        else:
+            opts.pop('bend_order', None)
+        c.execute('UPDATE parts SET drawing_options=? WHERE id=?', (json.dumps(opts), pid))
+        db.audit(c, u['name'], 'part.bend_order', {'part': pid, 'order': a.order}, rid)
+    folder = db.revdir(rid) / 'parts' / pid
+    (folder / 'bend-sim.json').unlink(missing_ok=True)
+    job = None
+    if (folder / 'drawing-scene.json').exists():
+        # the flat-pattern sheet carries the sequence (bend table): its drawing is out of date until regenerated
+        (folder / '.drawing-invalid').write_text('Bending sequence changed; regenerate documents')
+        (db.revdir(rid) / 'manufacturing-pack.zip').unlink(missing_ok=True)
+        with db.connect() as c:
+            c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?", (pid,))
+            if not c.execute('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")', (rid,)).fetchone():
+                job = db.uid()
+                c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)', (job, rid, 'documents', 'queued', db.now(), '', json.dumps({'part_ids': [pid]})))
+    try:
+        if storage.enabled():
+            storage.delete_path(rid, f'parts/{pid}/bend-sim.json')
+    except Exception:
+        pass
+    return {'ok': True, 'job': job}
 
 
 @router.get('/api/model-ticket')
@@ -941,6 +987,10 @@ def model_stream(token: str, request: Request):
     rel = file if not part else f'parts/{part}/{file}'
     if not path.exists():
         storage.restore(rid, rel, path)
+    if file == 'bend-sim.json' and path.exists():
+        with open(path, 'rb') as f:
+            if not f.read(40).startswith(b'{"version":2'):
+                path.unlink()   # built before the collision-checked sequence: plan it again
     if not path.exists() and file == 'bend-sim.json':
         bend_sim_build(rid, get_part(part), path)
     if not path.exists():

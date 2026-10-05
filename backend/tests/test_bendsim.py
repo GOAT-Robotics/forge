@@ -92,3 +92,59 @@ def test_collinear_bends_are_one_stroke():
              line(5, [150, 10], [190, 10], d='down'),          # same line, other direction
              line(6, [200, 10], [240, 10], r=3.0)]             # same line, other radius
     assert bend_groups(lines) == [[0, 1, 2], [3], [4], [5]]
+
+
+def test_bend_sequence_avoids_tool_clashes():
+    from shapely.geometry import box
+    line = lambda i, y, d='up': {'id': f'B{i:03d}', 'a': [0, y], 'b': [200, y], 'angle': 90, 'radius': 1.5, 'direction': d, 'allowance': 3.5}
+    # C-channel with inward returns: returns first, then the flanges (the last one over a gooseneck punch)
+    lines = [line(1, 15), line(2, 55), line(3, 115), line(4, 155)]
+    sim = bendsim.build(box(0, 0, 200, 170), lines, 1.5, root_point=[100, 85])
+    ids = [sim['bends'][s['bend']]['id'] for s in sim['plan']]
+    assert set(ids[:2]) == {'B001', 'B004'} and not any(s['clash'] for s in sim['plan'])
+    assert sim['order'] == [s['bend'] for s in sim['plan']] and sim['sequence'] == 'planned'
+    assert all(s['segments'] == [[-100.0, 100.0]] for s in sim['plan'])          # sectional tools: the bend line
+    # the shop's order is kept and re-checked: flanges first leaves the returns hitting the punch
+    shop = bendsim.build(box(0, 0, 200, 170), lines, 1.5, root_point=[100, 85], order_ids=['B002', 'B003', 'B001', 'B004'])
+    assert shop['sequence'] == 'custom' and [shop['bends'][s['bend']]['id'] for s in shop['plan']] == ['B002', 'B003', 'B001', 'B004']
+    assert any('punch' in s['clash'] for s in shop['plan'])
+    # a 12 mm Z with long legs: the first leg hangs beside a tall die
+    z = bendsim.build(box(0, 0, 200, 260), [line(1, 100), line(2, 112, 'down')], 1.5, root_point=[100, 20])
+    assert not any(s['clash'] for s in z['plan']) and z['plan'][1]['die'] == 'tall-die'
+
+
+def test_bend_order_endpoint_and_drawing_sequence(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, 'ROOT', tmp_path)
+    from app.sheet import bend_sequence
+    with TestClient(app) as client:
+        rid, pid, project, user, token = 'borev', 'bopart', 'boproject', 'bouser', 'bo-session'
+        with db.connect() as c:
+            c.execute('INSERT INTO users(id,email,name,password,role,created) VALUES(?,?,?,?,?,?)', (user, 'e@example.test', 'Fixture', 'unused', 'engineer', db.now()))
+            c.execute('INSERT INTO sessions VALUES(?,?,?)', (token_hash(token), user, '2099-01-01'))
+            c.execute('INSERT INTO projects(id,name,description,created,rules) VALUES(?,?,?,?,?)', (project, 'fixture', '', db.now(), json.dumps(db.DEFAULT_RULES)))
+            c.execute('INSERT INTO revisions(id,project_id,number,filename,sha256,state,status,created,created_by) VALUES(?,?,?,?,?,?,?,?,?)', (rid, project, 1, 'f.step', 's', 'active', 'ready', db.now(), 'f'))
+        s = bent()
+        g = analyze(s, 'L')
+        g['category'] = 'sheet_metal'
+        g['flat_status'] = 'supported'
+        folder = db.revdir(rid) / 'parts' / pid
+        folder.mkdir(parents=True)
+        BRepTools.Write_s(s, str(folder / 'shape.brep'))
+        (folder / 'drawing-scene.json').write_text('{}')
+        with db.connect() as c:
+            c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,doc_reviewed) VALUES(?,?,?,?,?,?,?,1)', (pid, rid, 'L', 'sheet_metal', 1, json.dumps(g), json.dumps(db.DEFAULT_SPEC)))
+        client.cookies.set('forge_session', token)
+        H = {'X-Forge-Request': '1'}
+        bid = g['bends'][0]['id']
+        url = f'/api/revisions/{rid}/parts/{pid}/bend-order'
+        assert client.put(url, headers=H, json={'order': ['B999']}).status_code == 422
+        r = client.put(url, headers=H, json={'order': [bid]})
+        assert r.status_code == 200 and r.json()['job']
+        # the drawing is out of date (it carries the sequence) and is regenerated for this part
+        assert (folder / '.drawing-invalid').exists()
+        part = db.row('SELECT doc_reviewed, drawing_options FROM parts WHERE id=?', (pid,))
+        assert part['doc_reviewed'] == 0 and json.loads(part['drawing_options'])['bend_order'] == [bid]
+        job = db.row('SELECT kind, payload FROM jobs WHERE id=?', (r.json()['job'],))
+        assert job['kind'] == 'documents' and json.loads(job['payload']) == {'part_ids': [pid]}
+        seq = bend_sequence(s, {'geometry': g, 'spec': {}}, {'bend_order': [bid]})
+        assert seq['custom'] and seq['bends'][bid] == {'seq': 1, 'tool': 'STD', 'clash': False}

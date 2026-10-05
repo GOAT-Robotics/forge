@@ -760,6 +760,34 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .pb-head { position: absolute; top: 2px; bottom: 2px; width: 3px; margin-left: -1px; border-radius: 2px; background: #2563eb; pointer-events: none; }
 .pb-speed { width: 76px; flex: none; }
 .dark .pb-stage, .dark .pb-info { background: #fff; }
+.pb-info { max-width: 340px; }
+.pb-info .pb-tool { color: #64748b; font-size: 12px; }
+.pb-clash { display: inline-flex; align-items: center; gap: 5px; color: #b42318; font-weight: 600; }
+.pb-info .pb-clash { margin-top: 4px; font-size: 12px; line-height: 1.35; align-items: flex-start; }
+.pb-info .pb-clash svg { flex: none; margin-top: 2px; }
+.pb-seg.clash { background: #fde2e1; color: #b42318; }
+.pb-seg.clash.done { background: #f9c9c6; }
+.pb-plan { position: absolute; left: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: #ecfdf3; color: #067647; font-size: 12px; font-weight: 600; cursor: pointer; border: 1px solid #abefc6; }
+.pb-plan.bad { background: #fef3f2; color: #b42318; border-color: #fecdca; }
+.pb-seq { position: absolute; top: 52px; left: 12px; bottom: 12px; width: 300px; display: flex; flex-direction: column; background: rgba(255,255,255,.97); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(15,23,42,.12); z-index: 3; color: #334155; }
+.pb-seq header { position: relative; padding: 10px 36px 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
+.pb-seq header b { font-size: 13.5px; color: #0f172a; }
+.pb-seq header small { font-size: 11.5px; color: #64748b; }
+.pb-seq header .icon { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; min-height: 0; padding: 0; display: grid; place-items: center; }
+.pb-seq ol { list-style: none; margin: 0; padding: 6px; overflow: auto; flex: 1; }
+.pb-seq li { display: flex; align-items: center; gap: 8px; padding: 6px 6px; border-radius: 8px; cursor: pointer; }
+.pb-seq li:hover { background: #f8fafc; }
+.pb-seq li.cur { background: #eff6ff; }
+.pb-seq li.clash .n { background: #fde2e1; color: #b42318; }
+.pb-seq .n { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: #e2f3ea; color: #166534; font-size: 11.5px; font-weight: 700; }
+.pb-seq .t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.pb-seq .t b { font-size: 12.5px; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-seq .t small { font-size: 11px; color: #64748b; }
+.pb-seq .mv { flex: none; display: flex; gap: 2px; }
+.pb-seq .mv .icon { width: 24px; height: 24px; min-height: 0; padding: 0; display: grid; place-items: center; }
+.pb-seq footer { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.pb-seq .pb-note { margin: 0; padding: 0 12px 10px; font-size: 11.5px; color: #64748b; }
+.pb-seq .cfg-error { margin: 0 10px 8px; }
 
 /* assembly steps */
 .as-dialog .cfg-head { gap: 12px; }

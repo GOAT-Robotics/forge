@@ -63,7 +63,7 @@ def fold_point(p, chain, bends, angles, strip=None):
     return p
 
 
-def build(poly, bend_lines, thickness, above=False, root_point=None):
+def build(poly, bend_lines, thickness, above=False, root_point=None, order_ids=None, plan_budget=12.0):
     """Foldable mesh + bend kinematics for one developed blank. `above`: the material lies on +Z of the developed
     skin (z 0..t) instead of below it (z -t..0)."""
     t = float(thickness)
@@ -224,8 +224,8 @@ def build(poly, bend_lines, thickness, above=False, root_point=None):
         stroke[prim] = {'center': (min(ts) + max(ts)) / 2, 'span': max(ts) - min(ts), 'ids': [bends[i]['id'] for i in grp]}
     depth = {i: len(chain_of[parent_bend[i]]) for i in range(len(bends))}
     order = sorted((i for i in range(len(bends)) if i not in twin), key=lambda i: (-depth[i], bends[i]['length']))
-    return {
-        'version': 1, 'thickness': t,
+    sim = {
+        'version': 2, 'thickness': t,
         'bends': [{'id': bd['id'], 'L': bd['L'], 'u': bd['u3'], 'v': bd['v3'], 'n': [0.0, 0.0, 1.0], 'w': bd['w'], 'angle': bd['angle'],
                    'radius': bd['radius'], 's': bd['s'], 'length': bd['length'], 'twin': twin.get(i), **({'stroke': stroke[i]} if i in stroke else {})} for i, bd in enumerate(bends)],
         'regions': regions, 'order': order,
@@ -233,6 +233,25 @@ def build(poly, bend_lines, thickness, above=False, root_point=None):
         'triangles': [i for tr in tris for i in tr], 'edges': [i for e in edges for i in e],
         'size': [float(x) for x in (poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1])],
     }
+    # bend sequence and tooling: collision-checked against punch, die, beam and bed
+    from .bendplan import plan
+    geoms = list(flanges) + [poly.intersection(_strip_rect(bd['a'] - bd['u'] * .02, bd['b'] + bd['u'] * .02, bd['v'], -bd['w'], bd['w'])) for bd in bends]
+    fixed = None
+    if order_ids:
+        idx = {bd['id']: i for i, bd in enumerate(bends)}
+        fixed = [idx[x] for x in order_ids if x in idx and idx[x] not in twin]
+        if sorted(fixed) != sorted(order):
+            fixed = None   # stale (bends changed): plan again
+    try:
+        sim['order'], sim['plan'], sim['tooling'] = plan(sim, geoms, (z_top + z_bot) / 2, fixed, plan_budget)
+    except Exception:   # never lose the simulation over the planner: practice order, standard tools, unchecked
+        from .bendplan import tooling
+        if fixed:
+            sim['order'] = fixed
+        sim['tooling'] = tooling(t)
+        sim['plan'] = [{'bend': i, 'punch': 'straight', 'mirror': False, 'die': 'die', 'segments': [[-stroke.get(i, {}).get('span', bends[i]['length']) / 2, stroke.get(i, {}).get('span', bends[i]['length']) / 2]], 'clash': {}, 'unchecked': True} for i in sim['order']]
+    sim['sequence'] = 'custom' if fixed else 'planned'
+    return sim
 
 
 def _collinear(a, b):
@@ -296,7 +315,7 @@ def _material_above(shape, R, tv, th):
     return votes > 0, big[:2].tolist()
 
 
-def for_part(shape, g, spec, k):
+def for_part(shape, g, spec, k, order_ids=None):
     """Simulation data for a formed sheet-metal part (hole sizes as cut: hardware mounting holes applied)."""
     from .unfold import unfold
     if g.get('category') not in (None, 'sheet_metal') and not g.get('bends'):
@@ -316,7 +335,7 @@ def for_part(shape, g, spec, k):
         _, normal, R, tv = maps[0]
         R, tv = np.asarray(R, float), np.asarray(tv, float)
         above, root_point = _material_above(shape, R, tv, float(g['thickness']))
-    sim = build(poly, lines, g['thickness'], above, root_point)
+    sim = build(poly, lines, g['thickness'], above, root_point, order_ids)
     if maps:
         # the root flange as it sits in the part: lets the viewer show the folded result in model orientation
         sim['root'] = {'R': R.tolist(), 't': tv.tolist()}

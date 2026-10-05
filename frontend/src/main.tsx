@@ -1199,7 +1199,7 @@ function App() {
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
       {bulkReady && rev && <BulkReady revision={rev.id} parts={parts} selection={multi.length > 1 ? multi : category === 'sheet_metal' || category === 'machining' ? parts.filter((p: Any) => p.category === category).map((p: Any) => p.id) : []}
         canDesign={can('design.review')} canDrawing={can('drawing.review')} close={() => setBulkReady(false)} done={() => loadRevision(rev.id)} />}
-      {bendSim && rev && parts.find((p: Any) => p.id === bendSim) && <PressBrake revision={rev.id} part={bendSim} name={parts.find((p: Any) => p.id === bendSim).name} navStyle={prefs.navStyle} close={() => setBendSim(null)} />}
+      {bendSim && rev && parts.find((p: Any) => p.id === bendSim) && <PressBrake revision={rev.id} part={bendSim} name={parts.find((p: Any) => p.id === bendSim).name} navStyle={prefs.navStyle} canEdit={editable} close={() => setBendSim(null)} />}
       {holeCfg && rev && parts.find((p: Any) => p.id === holeCfg) && <HoleConfig part={parts.find((p: Any) => p.id === holeCfg)} revision={rev.id} editable={editable} navStyle={prefs.navStyle}
         close={changed => { setHoleCfg(null); if (changed) loadRevision(rev.id).catch(fail); }} />}
       {weldCfg && rev && <WeldConfig revision={rev.id} partIds={weldCfg} parts={parts} joints={rev.joints || []} editable={editable} navStyle={prefs.navStyle}
