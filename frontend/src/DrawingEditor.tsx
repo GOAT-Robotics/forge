@@ -132,7 +132,7 @@ function DimGroup({ g, e, chosen, handlers }: { g: Any; e: Any; chosen?: boolean
 }
 function VectorNode({ n }: { n: Any }) {
   return <g transform={`matrix(${n.matrix.join(' ')})`}>
-    {n.type === 'text' ? <text transform={`translate(${n.x} ${n.y}) scale(1 -1)`} fontFamily={n.font === 'ForgeDim' ? GOAT_FONT : 'Helvetica, Arial, sans-serif'} fontSize={n.size} fill={rgb(n.fill)}>{n.text}</text> : <path d={commands(n)} stroke={n.doStroke ? rgb(n.stroke) : 'none'} fill={n.doFill ? rgb(n.fill) : 'none'} strokeWidth={n.width} strokeDasharray={n.dash?.join(' ')} />}
+    {n.type === 'image' ? <g transform={`translate(${n.x} ${n.y + n.h}) scale(1 -1)`}><image href={`data:${n.mime || 'image/jpeg'};base64,${n.data}`} width={n.w} height={n.h} preserveAspectRatio="none" /></g> : n.type === 'text' ? <text transform={`translate(${n.x} ${n.y}) scale(1 -1)`} fontFamily={n.font === 'ForgeDim' ? GOAT_FONT : 'Helvetica, Arial, sans-serif'} fontSize={n.size} fill={rgb(n.fill)}>{n.text}</text> : <path d={commands(n)} stroke={n.doStroke ? rgb(n.stroke) : 'none'} fill={n.doFill ? rgb(n.fill) : 'none'} strokeWidth={n.width} strokeDasharray={n.dash?.join(' ')} />}
   </g>;
 }
 const GOAT_FONT = '"ForgeDim", "Barlow Semi Condensed", "Arial Narrow", Helvetica, Arial, sans-serif';

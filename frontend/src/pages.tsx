@@ -545,7 +545,7 @@ export function ProjectSettingsDialog({ project, workspace, config, close, onSav
   }, []);
   const conv = s.conventions || {};
   const setConv = (k: string, v: Any) => setS({ ...s, conventions: { ...conv, [k]: v } });
-  const settingsBody = () => ({ sheet_prefixes: splitList(s.sheet_prefixes), machining_prefixes: splitList(s.machining_prefixes), purchased_prefixes: splitList(s.purchased_prefixes), prefix_strict: !!s.prefix_strict, hide_purchased_by_default: !!s.hide_purchased_by_default, carry_over_specs: !!s.carry_over_specs, assembly_show_purchased: !!s.assembly_show_purchased, drawing: s.drawing, conventions: conv, process_templates: s.process_templates || {}, drawing_templates: s.drawing_templates || {} });
+  const settingsBody = () => ({ sheet_prefixes: splitList(s.sheet_prefixes), machining_prefixes: splitList(s.machining_prefixes), purchased_prefixes: splitList(s.purchased_prefixes), prefix_strict: !!s.prefix_strict, hide_purchased_by_default: !!s.hide_purchased_by_default, carry_over_specs: !!s.carry_over_specs, assembly_show_purchased: !!s.assembly_show_purchased, bend_simulation: s.bend_simulation !== false, drawing: s.drawing, conventions: conv, process_templates: s.process_templates || {}, drawing_templates: s.drawing_templates || {} });
   const save = () => ctx.action(async () => {
     const m = members.map(x => ({ user_id: x.user_id, role: x.role }));
     if (create) {
@@ -580,6 +580,7 @@ export function ProjectSettingsDialog({ project, workspace, config, close, onSav
             <label className="check"><input type="checkbox" checked={!!s.prefix_strict} onChange={e => setS({ ...s, prefix_strict: e.target.checked })} />Anything matching no prefix is a purchased item (strict), unless it is named like a made part (plate, bracket, cover …)</label>
             <label className="check"><input type="checkbox" checked={!!s.hide_purchased_by_default} onChange={e => setS({ ...s, hide_purchased_by_default: e.target.checked })} />Hide small bought-in items in the 3D viewer by default</label>
             <label className="check"><input type="checkbox" checked={!!s.assembly_show_purchased} onChange={e => setS({ ...s, assembly_show_purchased: e.target.checked })} />Show purchased components on the complete assembly drawing (otherwise only per-part overrides are shown)</label>
+            <label className="check"><input type="checkbox" checked={s.bend_simulation !== false} onChange={e => setS({ ...s, bend_simulation: e.target.checked })} />Share the press-brake bending simulation of formed sheet-metal parts with vendors and the shop floor (each part can override this)</label>
             <label className="check"><input type="checkbox" checked={!!s.carry_over_specs} onChange={e => setS({ ...s, carry_over_specs: e.target.checked })} />Carry specifications from the previous revision (never approvals)</label>
           </>}
           {section === 'drawing' && <>

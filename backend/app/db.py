@@ -35,6 +35,8 @@ def init():
  CREATE TABLE IF NOT EXISTS jo_events(id TEXT PRIMARY KEY,job_order_id TEXT NOT NULL REFERENCES job_orders(id),item_id TEXT,actor TEXT NOT NULL,action TEXT NOT NULL,quantity INTEGER DEFAULT 0,note TEXT DEFAULT '',created TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS char_overrides(part_id TEXT NOT NULL,key TEXT NOT NULL,data TEXT NOT NULL,actor TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(part_id,key));
  CREATE TABLE IF NOT EXISTS measurements(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL,part_id TEXT NOT NULL,serial TEXT NOT NULL,char_key TEXT NOT NULL,char_no TEXT NOT NULL,label TEXT NOT NULL,nominal REAL,lower_limit REAL,upper_limit REAL,unit TEXT NOT NULL,critical INTEGER DEFAULT 0,value REAL,attr TEXT DEFAULT '',result TEXT NOT NULL,instrument TEXT DEFAULT '',note TEXT DEFAULT '',actor TEXT NOT NULL,created TEXT NOT NULL,first_article INTEGER DEFAULT 0,disposition TEXT DEFAULT '',disposition_note TEXT DEFAULT '',disposition_by TEXT DEFAULT '',disposition_at TEXT DEFAULT '');
+ CREATE TABLE IF NOT EXISTS assembly_steps(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),seq INTEGER NOT NULL,data TEXT NOT NULL,created TEXT NOT NULL,author TEXT NOT NULL,updated TEXT NOT NULL);
+ CREATE INDEX IF NOT EXISTS idx_assembly_steps ON assembly_steps(revision_id,seq);
  CREATE INDEX IF NOT EXISTS idx_measurements ON measurements(part_id,serial);
  CREATE INDEX IF NOT EXISTS idx_jo_items ON jo_items(job_order_id);
  CREATE INDEX IF NOT EXISTS idx_jo_events ON jo_events(job_order_id,created);
@@ -48,7 +50,7 @@ def init():
    if column not in existing:c.execute(f'ALTER TABLE parts ADD COLUMN {column} {definition}')
   for table,cols in {'parts':[('process_template_id',"TEXT DEFAULT ''"),('drawing_options',"TEXT DEFAULT '{}'"),('doc_reviewed',"INTEGER DEFAULT 0"),('doc_reviewed_by',"TEXT DEFAULT ''"),('doc_reviewed_at',"TEXT DEFAULT ''"),('reviewed_by',"TEXT DEFAULT ''"),('reviewed_at',"TEXT DEFAULT ''")],
                      'shares':[('allow_cad','INTEGER DEFAULT 0')],
-                     'users':[('provider',"TEXT DEFAULT 'local'"),('oid',"TEXT DEFAULT ''"),('active','INTEGER DEFAULT 1'),('last_login',"TEXT DEFAULT ''")],
+                     'users':[('provider',"TEXT DEFAULT 'local'"),('oid',"TEXT DEFAULT ''"),('active','INTEGER DEFAULT 1'),('last_login',"TEXT DEFAULT ''"),('prefs',"TEXT DEFAULT '{}'")],
                      'projects':[('code',"TEXT DEFAULT ''"),('settings',"TEXT DEFAULT '{}'"),('created_by',"TEXT DEFAULT ''"),('archived','INTEGER DEFAULT 0')]}.items():
    have={r[1] for r in c.execute(f'PRAGMA table_info({table})').fetchall()}
    for column,definition in cols:
@@ -72,7 +74,7 @@ DEFAULT_RULES={'min_hole_diameter':1.0,'min_sheet_hole_ratio':1.0,'min_edge_web_
 DEFAULT_SPEC={'material':'','stock':'','finish':'','paint':'','coating_color':'','coating_hex':'','coating_thickness':'','masking':'','process':'','heat_treatment':'','hardness':'','general_tolerance':'','roughness':'','datums':'','edge_treatment':'','marking':'','packaging':'','notes':'','k_factor':0.4,'k_factor_approved':False,'feature_specs':{},'rule_waivers':{},'manual_checks':{},'operations':[]}
 
 DEFAULT_DRAWING={'company':'GOAT ROBOTICS PRIVATE LIMITED','drawn_by':'','checked_by':'','approved_by':'','module':'','master':'','note':'REMOVE ALL SHARP EDGES','tol_1dec':'\u00b1 0.1','tol_2dec':'\u00b1 0.05','tol_3dec':'\u00b1 0.02','hole_fit':'H7','shaft_fit':'h7','position_tol':'\u00b10.02 mm','surface_finish':''}
-DEFAULT_SETTINGS={'sheet_prefixes':[],'machining_prefixes':[],'purchased_prefixes':[],'prefix_strict':True,'hide_purchased_by_default':True,'carry_over_specs':True,'assembly_show_purchased':False,'drawing':DEFAULT_DRAWING}
+DEFAULT_SETTINGS={'sheet_prefixes':[],'machining_prefixes':[],'purchased_prefixes':[],'prefix_strict':True,'hide_purchased_by_default':True,'carry_over_specs':True,'assembly_show_purchased':False,'bend_simulation':True,'drawing':DEFAULT_DRAWING}
 def settings():
  """Workspace-wide settings (name prefixes for make/buy segregation etc.), merged over defaults."""
  out=dict(DEFAULT_SETTINGS)
@@ -89,7 +91,7 @@ def save_settings(c,values):
 # ---------------------------------------------------------------- project-wise settings
 # Chosen at project creation: naming prefixes, title block, drawing conventions, default templates.
 DEFAULT_CONVENTIONS={'standard':'ISO','projection':'third','units':'mm','sheet_size':'auto','hole_table':'auto','general_tolerance':'ISO 2768-mK','dimension_style':'ordinate','thread_callouts':'explicit'}
-PROJECT_KEYS=('sheet_prefixes','machining_prefixes','purchased_prefixes','prefix_strict','hide_purchased_by_default','carry_over_specs','assembly_show_purchased','drawing','conventions','process_templates','drawing_templates')
+PROJECT_KEYS=('sheet_prefixes','machining_prefixes','purchased_prefixes','prefix_strict','hide_purchased_by_default','carry_over_specs','assembly_show_purchased','bend_simulation','drawing','conventions','process_templates','drawing_templates')
 def project_settings(project_id):
  """Workspace defaults overlaid with the project's own settings (what the worker and editor use)."""
  base=settings();base['conventions']=dict(DEFAULT_CONVENTIONS);base['process_templates']={};base['drawing_templates']={}

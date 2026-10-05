@@ -4,7 +4,7 @@ import {
   MoreHorizontal, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
   FileText, Layers, Link, LogOut, Settings, ShieldCheck, MessageSquare, ClipboardCheck, GitBranch, LoaderCircle, ExternalLink, X, Eye,
   Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files, Flame, Droplet, Keyboard,
-  CircleDot,
+  CircleDot, FoldVertical, ListOrdered, ListPlus,
 } from 'lucide-react';
 import Viewer from './Viewer';
 import DrawingEditor from './DrawingEditor';
@@ -21,6 +21,8 @@ import { ReadinessWizard } from './readiness';
 import { QualityPage } from './quality';
 import HoleConfig from './holeConfig';
 import WeldConfig from './weldConfig';
+import PressBrake from './pressBrake';
+import AssemblySteps from './assemblySteps';
 import { usePrefs, comboOf, ShortcutsDialog, KeyChip } from './prefs';
 import './style.css';
 import './cad.css';
@@ -99,6 +101,11 @@ function App() {
   const [jointDraft, setJointDraft] = useState<Any>(null);
   const [weldListOpen, setWeldListOpen] = useState(false);
   const [holeCfg, setHoleCfg] = useState<string | null>(null);
+  const [bendSim, setBendSim] = useState<string | null>(null);
+  const [stepsOpen, setStepsOpen] = useState<{ add?: string[] } | null>(null);
+  /** press-brake simulation: shown where it is shared; editors can preview it on any formed part */
+  const canBend = (p: Any) => p?.category === 'sheet_metal' && p.geometry?.bends?.length > 0 && p.geometry?.flat_status === 'supported';
+  const showBend = (p: Any) => canBend(p) && (p.bend_sim || editable);
   const [weldCfg, setWeldCfg] = useState<string[] | null>(null);
   const [weldPreviewStatus, setWeldPreviewStatus] = useState<{ valid: boolean; message: string } | null>(null);
   const [hoverGeometry, setHoverGeometry] = useState<Any>(null);
@@ -168,6 +175,9 @@ function App() {
     if (vendorId) { loadRevision(vendorId).catch(fail); setAuth({ user: { name: 'Vendor', role: 'vendor' } }); if (route.current.tab) setTab(route.current.tab); if (route.current.part) setSelected(route.current.part); }
     else api('/auth/status').then(a => { setAuth(a); if (a.user) afterSignIn().catch(fail); }).catch(fail);
   }, []);
+
+  // account-wide preferences (shortcuts, navigation, display) follow the signed-in user
+  useEffect(() => { if (!vendorId) prefsApi.adopt(auth?.user?.id ? (auth.user.prefs || {}) : null); }, [auth?.user?.id]);
 
   // Track project imports even while an older revision or upload dialog is open.
   useEffect(() => {
@@ -348,6 +358,7 @@ function App() {
     await loadRevision(rev.id);
     notify('Drawing generation queued. You can keep reviewing.');
   });
+  const setBendSharing = (ids: string[], mode: 'on' | 'off' | 'inherit') => action(async () => { await api(`/revisions/${rev.id}/parts/bend-simulation`, 'POST', { ids, mode }); await loadRevision(rev.id); });
   const setFlags = (pid: string, flags: Any) => action(async () => { await api('/parts/' + pid + '/flags', 'PATCH', flags); await loadRevision(rev.id); });
   const choosePart = (id: string | null) => { setSelected(id); setMulti(id ? [id] : []); anchor.current = id; if (id) setDetail(d => (d === 'documents' ? d : 'details')); if (!id) { setIsolate(false); } setSolo(null); if (mode !== '3d') setMode('3d'); };
   const stepPart = useCallback((delta: number) => {
@@ -559,7 +570,6 @@ function App() {
           <button type="button" className={mode === 'flat2d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern (2D)'} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 size={14} />Flat</button>
           <button type="button" className={mode === 'flat3d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern in 3D'} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan size={14} />Flat 3D</button>
         </>}
-        {part.geometry.holes.length > 0 && part.category !== 'purchased' && <button type="button" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot size={14} />Holes</button>}
         <button type="button" className={'icon' + (transparentIds.includes(part.id) ? ' selected' : '')} title={`See through this part (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => t.includes(part.id) ? t.filter(x => x !== part.id) : [...t, part.id])}><Droplet size={14} /></button>
         <button type="button" className="icon" title="Clear selection (Esc)" onClick={() => choosePart(null)}><X size={14} /></button>
       </span>
@@ -567,10 +577,14 @@ function App() {
   ) : (
     <div className="hud-card quiet"><Box size={15} /><span><b>{project?.name || rev.filename}</b><small>{parts.length} parts · {rev.manifest?.occurrences || 0} instances{blocking ? ` · ${blocking} release blockers` : ''}</small></span></div>
   );
-  const canvasToolsStart = !rev || vendor ? null : <>
-    {editable && <button type="button" className={jointDraft ? 'selected' : ''} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame size={16} /><span>Weld</span></button>}
-    <button type="button" className={weldListOpen ? 'selected' : ''} disabled={!!jointDraft} title="Configured welds" onClick={() => setWeldListOpen(v => !v)}><ListChecks size={16} /><span>Welds{weldTotal ? ` ${weldTotal}` : ''}</span></button>
-    <button type="button" className={colorBy === 'type' ? 'selected' : ''} title={colorBy === 'type' ? 'Colour by coating' : 'Colour by part type'} onClick={() => { const v = colorBy === 'type' ? 'coating' : 'type'; setColorBy(v); try { localStorage.setItem('forge-color-by', v); } catch { /* ignore */ } }}><Palette size={16} /><span>Types</span></button>
+  const canvasToolsStart = !rev ? null : <>
+    {!vendor && editable && <button type="button" className={jointDraft ? 'selected' : ''} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame size={16} /><span>Weld</span></button>}
+    {part && part.geometry.holes.length > 0 && part.category !== 'purchased' && multi.length < 2 && <button type="button" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot size={16} /><span>Holes</span></button>}
+    {part && multi.length < 2 && showBend(part) && <button type="button" title={part.bend_sim ? 'Press brake simulation' : 'Press brake simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical size={16} /><span>Bending</span></button>}
+    {!vendor && editable && (multi.length > 1 || part) && <button type="button" title="Add the selected components as the next assembly step" onClick={() => setStepsOpen({ add: multi.length > 1 ? [...multi] : [part.id] })}><ListPlus size={16} /><span>Add step</span></button>}
+    <button type="button" title="Assembly steps: build order, fasteners, instructions" onClick={() => setStepsOpen({})}><ListOrdered size={16} /><span>Steps</span></button>
+    {!vendor && <><button type="button" className={weldListOpen ? 'selected' : ''} disabled={!!jointDraft} title="Configured welds" onClick={() => setWeldListOpen(v => !v)}><ListChecks size={16} /><span>Welds{weldTotal ? ` ${weldTotal}` : ''}</span></button>
+    <button type="button" className={colorBy === 'type' ? 'selected' : ''} title={colorBy === 'type' ? 'Colour by coating' : 'Colour by part type'} onClick={() => { const v = colorBy === 'type' ? 'coating' : 'type'; setColorBy(v); try { localStorage.setItem('forge-color-by', v); } catch { /* ignore */ } }}><Palette size={16} /><span>Types</span></button></>}
   </>;
   const canvasToolsEnd = !rev ? null : <>
     <button type="button" className={overview && !part && multi.length < 2 && !jointDraft ? 'selected' : ''} title="Revision overview: drawing sets, readiness, part types" onClick={() => { setOverview(o => !o); if (part || multi.length > 1) choosePart(null); setLayout({ right: true, focus: false }); }}><PanelRight size={16} /><span>Overview</span></button>
@@ -921,6 +935,9 @@ function App() {
                                 {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings size={14} />All manufacturing details</button>}
                                 {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); startWeld([part.id]); }}><Flame size={14} />Weld this component</button>}
                                 {part.geometry.holes.length > 0 && <button type="button" onClick={() => { setPartMenu(false); setHoleCfg(part.id); }}><CircleDot size={14} />Holes &amp; hardware…</button>}
+                                {canBend(part) && <button type="button" onClick={() => { setPartMenu(false); setBendSim(part.id); }}><FoldVertical size={14} />Bending simulation…</button>}
+                                {editable && canBend(part) && <button type="button" onClick={() => { setPartMenu(false); setBendSharing([part.id], part.bend_sim ? 'off' : 'on'); }}>{part.bend_sim ? <EyeOff size={14} /> : <Eye size={14} />}{part.bend_sim ? 'Stop sharing bending simulation' : 'Share bending simulation'}</button>}
+                                {editable && canBend(part) && part.drawing_options?.bend_sim !== undefined && <button type="button" onClick={() => { setPartMenu(false); setBendSharing([part.id], 'inherit'); }}><Undo2 size={14} />Bending simulation: use project default</button>}
                                 {editable && (part.excluded
                                   ? <button type="button" onClick={() => { setPartMenu(false); setFlags(part.id, { excluded: false }); }}><Undo2 size={14} />Restore to production</button>
                                   : <button type="button" className="danger" onClick={() => { setPartMenu(false); setExcluding([part]); }}><Ban size={14} />Not for production…</button>)}
@@ -983,6 +1000,7 @@ function App() {
                                   {part.geometry.step && Object.keys(part.geometry.step).length > 0 && <div className="pi-kv"><span>From STEP</span><b className="flex end">{part.geometry.step.color && <Swatch hex={part.geometry.step.color} title="CAD appearance" />}{[part.geometry.step.material, part.geometry.step.density && part.geometry.step.density + ' g/cm³'].filter(Boolean).join(' · ') || 'appearance only'}</b></div>}
                                   <div className="pi-kv"><span>Classified by</span><b>{part.geometry.classification_confidence}</b></div>
                                   {part.category === 'sheet_metal' && <div className="pi-kv"><span>Flat pattern</span><b className={part.geometry.flat_status === 'supported' ? 'green' : 'red'}>{part.geometry.flat_status === 'supported' ? 'Available' : 'Needs review'}</b></div>}
+                                  {canBend(part) && <div className="pi-kv"><span>Bending simulation</span><b className="flex end">{part.bend_sim ? 'Shared' : 'Not shared'}{showBend(part) && <button type="button" className="mini" onClick={() => setBendSim(part.id)}><FoldVertical size={13} />Play</button>}</b></div>}
                                 </section>
                                 {part.spec.operations?.length > 0 && <section className="pi-section"><h4>Process steps</h4><ol className="pi-ops">{part.spec.operations.map((o: Any, i: number) => <li key={i}><b>{typeof o === 'string' ? o : o.name}</b>{o.detail && <small>{o.detail}</small>}</li>)}</ol></section>}
                                 {part.spec.notes && <section className="pi-section"><h4>Notes</h4><p className="note-text">{part.spec.notes}</p></section>}
@@ -1171,6 +1189,8 @@ function App() {
       {error && <div className="error-toast" role="alert"><AlertTriangle size={18} /><span>{error}</span><button onClick={() => setError('')}><X size={17} /></button></div>}
       <DialogHost />
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
+      {stepsOpen && rev && <AssemblySteps revision={rev.id} parts={parts} joints={rev.joints || []} editable={editable} navStyle={prefs.navStyle} addParts={stepsOpen.add} close={() => setStepsOpen(null)} />}
+      {bendSim && rev && parts.find((p: Any) => p.id === bendSim) && <PressBrake revision={rev.id} part={bendSim} name={parts.find((p: Any) => p.id === bendSim).name} navStyle={prefs.navStyle} close={() => setBendSim(null)} />}
       {holeCfg && rev && parts.find((p: Any) => p.id === holeCfg) && <HoleConfig part={parts.find((p: Any) => p.id === holeCfg)} revision={rev.id} editable={editable} navStyle={prefs.navStyle}
         close={changed => { setHoleCfg(null); if (changed) loadRevision(rev.id).catch(fail); }} />}
       {weldCfg && rev && <WeldConfig revision={rev.id} partIds={weldCfg} parts={parts} joints={rev.joints || []} editable={editable} navStyle={prefs.navStyle}

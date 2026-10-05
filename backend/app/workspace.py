@@ -72,7 +72,7 @@ def clean_project_settings(s):
                 if x.lower() in seen:
                     raise HTTPException(422, f'Prefix "{x}" is listed in more than one category')
                 seen.add(x.lower())
-    for key in ('prefix_strict', 'hide_purchased_by_default', 'carry_over_specs', 'assembly_show_purchased'):
+    for key in ('prefix_strict', 'hide_purchased_by_default', 'carry_over_specs', 'assembly_show_purchased', 'bend_simulation'):
         if key in s:
             out[key] = bool(s[key])
     if 'drawing' in s:
@@ -447,9 +447,11 @@ def set_drawing_options(rid: str, a: DrawingOptions, request: Request):
     ids = list(dict.fromkeys(a.ids))
     with db.connect() as c:
         for pid in ids:
-            if not c.execute('SELECT id FROM parts WHERE id=? AND revision_id=?', (pid, rid)).fetchone():
+            row = c.execute('SELECT drawing_options FROM parts WHERE id=? AND revision_id=?', (pid, rid)).fetchone()
+            if not row:
                 raise HTTPException(422, 'Part outside revision: ' + pid)
-            c.execute("UPDATE parts SET drawing_options=?,doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?", (json.dumps(opts), pid))
+            keep = {k: v for k, v in load(row['drawing_options'], {}).items() if k not in ('template_id', 'size', 'hole_table')}
+            c.execute("UPDATE parts SET drawing_options=?,doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?", (json.dumps({**keep, **opts}), pid))
         db.audit(c, u['name'], 'parts.drawing.options', {'count': len(ids), **opts}, rid)
         job = None
         if a.regenerate:
@@ -826,7 +828,7 @@ def delete_joint(jid: str, request: Request):
 # signed URL valid for two minutes and bound to that principal, plus a one-off AES-GCM key; the stream is
 # encrypted and marked no-store. (A viewer that can display a model can in principle capture it; this stops
 # direct links, sharing of URLs, caching and casual "save as".)
-MODEL_FILES = {'assembly.glb', 'flat.glb', 'model.glb'}
+MODEL_FILES = {'assembly.glb', 'flat.glb', 'model.glb', 'bend-sim.json'}
 
 
 def principal(access):
@@ -835,6 +837,70 @@ def principal(access):
 
 def model_key(mac):
     return hmac.new(secret(), b'model-key|' + mac.encode(), hashlib.sha256).digest()
+
+
+def bend_sim_enabled(p, rid):
+    opts = load(p.get('drawing_options') or '{}', {}) if isinstance(p.get('drawing_options'), str) else (p.get('drawing_options') or {})
+    if 'bend_sim' in opts:
+        return bool(opts['bend_sim'])
+    rev = db.row('SELECT project_id FROM revisions WHERE id=?', (rid,))
+    return bool(db.project_settings(rev['project_id']).get('bend_simulation', True)) if rev else True
+
+
+def bend_sim_gate(p, access, rid):
+    """Vendors and viewers see the press-brake simulation only where it is switched on; editors can preview it."""
+    g = p.get('geometry') or {}
+    if p.get('category') != 'sheet_metal' or not g.get('bends'):
+        raise HTTPException(422, 'Bending simulation is only available for formed sheet-metal parts')
+    if bend_sim_enabled(p, rid):
+        return
+    if access.get('role') == 'vendor' or not can(access, 'part.edit', project_of_revision(rid)):
+        raise HTTPException(403, 'Bending simulation is not shared for this part')
+
+
+def bend_sim_build(rid, p, path):
+    from .bendsim import for_part
+    from .cad import read_brep
+    folder = db.revdir(rid) / 'parts' / p['id']
+    brep = folder / 'shape.brep'
+    if not brep.exists():
+        storage.restore(rid, f"parts/{p['id']}/shape.brep", brep)
+    if not brep.exists():
+        raise HTTPException(404, 'Part geometry is not available')
+    try:
+        sim = for_part(read_brep(str(brep)), p['geometry'], p['spec'], float((p['spec'] or {}).get('k_factor') or .4))
+    except ValueError as e:
+        raise HTTPException(422, 'Bending simulation unavailable: ' + str(e))
+    sim['part'] = {'name': p['name'], 'material': (p['spec'] or {}).get('material', ''), 'thickness': p['geometry'].get('thickness')}
+    path.write_text(json.dumps(sim, separators=(',', ':')))
+
+
+class BendSimToggle(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ids: list[str] = Field(min_length=1, max_length=2000)
+    mode: str  # 'on' | 'off' | 'inherit'
+
+
+@router.post('/api/revisions/{rid}/parts/bend-simulation')
+def set_bend_simulation(rid: str, a: BendSimToggle, request: Request):
+    """Offer (or stop offering) the press-brake simulation for parts — vendors see it only where it is on."""
+    if a.mode not in ('on', 'off', 'inherit'):
+        raise HTTPException(422, 'mode must be on, off or inherit')
+    u = revision_access(request, rid, True, 'part.edit')
+    ids = list(dict.fromkeys(a.ids))
+    with db.connect() as c:
+        for pid in ids:
+            row = c.execute('SELECT drawing_options FROM parts WHERE id=? AND revision_id=?', (pid, rid)).fetchone()
+            if not row:
+                raise HTTPException(422, 'Part outside revision: ' + pid)
+            opts = load(row['drawing_options'], {})
+            if a.mode == 'inherit':
+                opts.pop('bend_sim', None)
+            else:
+                opts['bend_sim'] = a.mode == 'on'
+            c.execute('UPDATE parts SET drawing_options=? WHERE id=?', (json.dumps(opts), pid))
+        db.audit(c, u['name'], 'parts.bend_simulation', {'count': len(ids), 'mode': a.mode}, rid)
+    return {'ok': True}
 
 
 @router.get('/api/model-ticket')
@@ -846,6 +912,8 @@ def model_ticket(request: Request, revision: str, file: str, part: str = ''):
         if p['revision_id'] != revision:
             raise HTTPException(422, 'Part outside revision')
     access = revision_access(request, revision)
+    if file == 'bend-sim.json':
+        bend_sim_gate(p, access, revision)
     payload = f'{revision}|{part}|{file}|{principal(access)}'
     exp, mac = sign('model:' + payload, ttl=120)
     token = base64.urlsafe_b64encode(payload.encode()).decode().rstrip('=') + '.' + str(exp) + '.' + mac
@@ -870,6 +938,8 @@ def model_stream(token: str, request: Request):
     rel = file if not part else f'parts/{part}/{file}'
     if not path.exists():
         storage.restore(rid, rel, path)
+    if not path.exists() and file == 'bend-sim.json':
+        bend_sim_build(rid, get_part(part), path)
     if not path.exists():
         raise HTTPException(404, '3D mesh is not available yet')
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM

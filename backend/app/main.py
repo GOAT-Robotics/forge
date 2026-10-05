@@ -77,7 +77,7 @@ def invalidate(rid,pid=None):
  if pid:
   (d/'parts'/pid/'.drawing-invalid').write_text('Part specification changed; regenerate documents')
   with db.connect() as c:c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?",(pid,))
-  for file in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.glb','flat.json','drawing-scene.json','characteristics.json']:(d/'parts'/pid/file).unlink(missing_ok=True)
+  for file in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.glb','flat.json','drawing-scene.json','characteristics.json','bend-sim.json','render.png']:(d/'parts'/pid/file).unlink(missing_ok=True)
 
 def enqueue(c,rid,kind,payload={}):
  id=db.uid();c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(id,rid,kind,'queued',db.now(),'',json.dumps(payload)));return id
@@ -88,8 +88,21 @@ def auth_status(request:Request):
  configured=bool(db.row('SELECT id FROM users LIMIT 1'))
  try:u=user(request)
  except HTTPException:u=None
- if u:u['permissions']=sorted(perms_for(u))
+ if u:
+  u['permissions']=sorted(perms_for(u))
+  try:u['prefs']=json.loads(u.get('prefs') or '{}')
+  except ValueError:u['prefs']={}
  return {'configured':configured,'user':u,'providers':entra.providers()}
+PREF_KEYS={'shortcuts':dict,'navStyle':str,'displayMode':str,'showPlanes':bool,'hwUnits':str}
+@app.put('/api/me/prefs')
+def save_prefs(body:dict,request:Request):
+ u=user(request)
+ clean={k:v for k,v in body.items() if k in PREF_KEYS and isinstance(v,PREF_KEYS[k])}
+ if 'shortcuts' in clean:clean['shortcuts']={str(k)[:60]:str(v)[:40] for k,v in list(clean['shortcuts'].items())[:200] if isinstance(v,str)}
+ for k in ('navStyle','displayMode','hwUnits'):
+  if k in clean:clean[k]=clean[k][:20]
+ with db.connect() as c:c.execute('UPDATE users SET prefs=? WHERE id=?',(json.dumps(clean),u['id']))
+ return clean
 @app.post('/api/auth/setup')
 def setup(a:Auth):
  if not entra.local_login_allowed():raise HTTPException(403,'Sign in with Microsoft; the first organisation account becomes administrator')
@@ -285,6 +298,12 @@ def revision(rid:str,request:Request):
  for p in db.rows('SELECT * FROM parts WHERE revision_id=? ORDER BY name',(rid,)):
   p=deserialize(p);g=p['geometry'];p['findings']=evaluate(g,p['spec'],rules);p['assets']=[x.name for x in (db.revdir(rid)/'parts'/p['id']).glob('*') if x.suffix in ('.pdf','.dxf','.glb','.json','.step','.png')];r['parts'].append(p)
  for p in r['parts']:p['drawing_options']=json.loads(p.get('drawing_options') or '{}');p['assets']=[a for a in p['assets'] if a not in ('model.glb','flat.glb','shape.brep')]
+ try:bend_default=bool(db.project_settings(r['project_id']).get('bend_simulation',True))
+ except Exception:bend_default=True
+ for p in r['parts']:
+  g=p['geometry'] if isinstance(p.get('geometry'),dict) else {}
+  # press-brake simulation offered for formed sheet metal; project default, per-part override
+  p['bend_sim']=bool(p['drawing_options'].get('bend_sim',bend_default)) if p.get('category')=='sheet_metal' and g.get('bends') and g.get('flat_status')=='supported' else False
  attach_assembly_paths(rid,r['parts'])
  r['assets']=[f.name for f in db.revdir(rid).glob('*') if f.suffix in ('.pdf','.dxf','.zip')];r['jobs']=db.rows('SELECT * FROM jobs WHERE revision_id=? ORDER BY created DESC LIMIT 10',(rid,));r['access']=access['role']
  r['permissions']=sorted(perms_for(access,r['project_id'])) if access['role']!='vendor' else (['cad.download'] if access.get('allow_cad') else [])
@@ -778,6 +797,8 @@ from .workspace import router as platform_router
 app.include_router(platform_router)
 from .quality import router as quality_router
 app.include_router(quality_router)
+from .assembly import router as assembly_router
+app.include_router(assembly_router)
 # Built UI is served by the same origin; no CORS, no second production web server.
 STATIC=Path(os.getenv('STATIC_DIR',Path(__file__).resolve().parents[2]/'frontend/dist'))
 if STATIC.exists():

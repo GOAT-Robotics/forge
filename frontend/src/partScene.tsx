@@ -11,7 +11,7 @@ export type SceneBody = { part: string; occurrence?: number; matrix?: number[][]
 export type SceneApi = {
   scene: THREE.Scene; camera: THREE.PerspectiveCamera; dom: HTMLCanvasElement; overlay: THREE.Group;
   controls: CadControls; radius: number; center: THREE.Vector3;
-  bodies: { body: SceneBody; mesh: THREE.Mesh; matrix: THREE.Matrix4 }[];
+  bodies: { body: SceneBody; mesh: THREE.Mesh; matrix: THREE.Matrix4; edges: THREE.LineSegments }[];
   /** world → part coordinates of a body */
   toPart: (b: SceneBody) => THREE.Matrix4 | null;
   toWorld: (b: SceneBody) => THREE.Matrix4 | null;
@@ -93,7 +93,7 @@ export default function PartScene({ revision, bodies, navStyle = 'forge', onRead
       toPart: b => { const w = api.toWorld(b); return w ? w.invert() : null; },
       ndc,
       invalidate: () => { dirty = true; },
-      hitModel: (x, y) => { ray.setFromCamera(ndc(x, y), camera); return ray.intersectObjects(list.map(b => b.mesh), false)[0] || null; },
+      hitModel: (x, y) => { ray.setFromCamera(ndc(x, y), camera); return ray.intersectObjects(list.filter(b => b.mesh.visible).map(b => b.mesh), false)[0] || null; },
       screenDistance: (p, x, y) => { const r = renderer.domElement.getBoundingClientRect(); const q = p.clone().project(camera); return Math.hypot((q.x + 1) / 2 * r.width + r.left - x, (1 - q.y) / 2 * r.height + r.top - y); },
       pxPerMm: p => { const r = renderer.domElement.getBoundingClientRect(); const d = camera.position.distanceTo(p); return r.height / (2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))); },
       fit: (dir = ISO) => {
@@ -107,26 +107,38 @@ export default function PartScene({ revision, bodies, navStyle = 'forge', onRead
         const loader = new GLTFLoader();
         const box = new THREE.Box3();
         const meshes = new Map<string, THREE.BufferGeometry>();
-        for (const b of bodies) {
-          let geom = meshes.get(b.part);
-          if (!geom) {
-            const buf = await loadSecureModel(`${revision}:model.glb:${b.part}`, abort.signal);
-            const gltf = await loader.parseAsync(buf, '');
-            const parts: THREE.BufferGeometry[] = [];
-            gltf.scene.updateMatrixWorld(true);
-            gltf.scene.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) { const g = m.geometry.clone(); g.applyMatrix4(m.matrixWorld); parts.push(g); } });
-            geom = parts.length === 1 ? parts[0] : mergeGeometries(parts);
-            geom.computeVertexNormals();
-            meshes.set(b.part, geom);
+        // each distinct part streams once, a few at a time (assemblies can hold hundreds of bodies)
+        const unique = [...new Set(bodies.map(b => b.part))];
+        let next = 0;
+        const worker = async () => {
+          while (next < unique.length && live) {
+            const part = unique[next++];
+            try {
+              const buf = await loadSecureModel(`${revision}:model.glb:${part}`, abort.signal);
+              const gltf = await loader.parseAsync(buf, '');
+              const parts: THREE.BufferGeometry[] = [];
+              gltf.scene.updateMatrixWorld(true);
+              gltf.scene.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) { const g = m.geometry.clone(); g.applyMatrix4(m.matrixWorld); parts.push(g); } });
+              const geom = parts.length === 1 ? parts[0] : mergeGeometries(parts);
+              geom.computeVertexNormals();
+              meshes.set(part, geom);
+            } catch (e) { if (bodies.length === 1) throw e; }
           }
-          if (!live) return;
+        };
+        await Promise.all(Array.from({ length: Math.min(6, unique.length) }, worker));
+        if (!live) return;
+        const edgeCache = new Map<string, THREE.EdgesGeometry>();
+        for (const b of bodies) {
+          const geom = meshes.get(b.part);
+          if (!geom) continue;
           const mat = new THREE.MeshStandardMaterial({ color: 0xd4d7dc, roughness: 0.72, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
           const mesh = new THREE.Mesh(geom, mat);
           const t = m4(b.matrix); mesh.matrixAutoUpdate = false; mesh.matrix.copy(t); mesh.updateMatrixWorld(true);
           mesh.userData = { part: b.part, occurrence: b.occurrence || 0 };
-          const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 28), new THREE.LineBasicMaterial({ color: 0x5b626c, transparent: true, opacity: 0.55 }));
-          edges.matrixAutoUpdate = false; edges.matrix.copy(t);
-          scene.add(mesh, edges); list.push({ body: b, mesh, matrix: t });
+          let eg = edgeCache.get(b.part); if (!eg) { eg = new THREE.EdgesGeometry(geom, 28); edgeCache.set(b.part, eg); }
+          const edges = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: 0x5b626c, transparent: true, opacity: 0.55 }));
+          mesh.add(edges);  // edges follow the body (assembly-step animation moves bodies)
+          scene.add(mesh); list.push({ body: b, mesh, matrix: t, edges });
           box.expandByObject(mesh);
         }
         const sphere = box.getBoundingSphere(new THREE.Sphere());

@@ -84,6 +84,9 @@ def unfold(s,g,k=.4):
                and abs(t['angle']-b['angle'])<.1 and abs(t['radius']-b['radius'])<.01),None)
     if twin is None:continue
    pp=sample_edge(pe);cp=sample_edge(ce);p=pp.mean(axis=0);q=cp.mean(axis=0);axis=np.array(b['axis'],float);axis/=np.linalg.norm(axis)
+   # bending keeps the position along the axis: match the child edge to the parent edge at the same axial station
+   # (tangent edges of different length / offset, e.g. a flange longer than its bend, must not shift the flange)
+   q=q+axis*np.dot(axis,p-q)
    outward=p-parent['center'];outward-=axis*np.dot(axis,outward)
    inside=by_index[ci]['center']-q;inside-=axis*np.dot(axis,inside)
    if np.linalg.norm(outward)<1e-6 or np.linalg.norm(inside)<1e-6:raise ValueError('Ambiguous flange orientation')

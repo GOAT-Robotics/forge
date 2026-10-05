@@ -169,8 +169,9 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   const palette = useRef<HTMLDivElement>(null);
   const fitPalette = () => {
     const p = palette.current; const host = p?.parentElement; if (!p || !host) return;
-    p.classList.remove('compact');
+    p.classList.remove('compact', 'tight');
     if (p.scrollWidth > host.clientWidth - 24) p.classList.add('compact');
+    if (p.scrollWidth > host.clientWidth - 24) p.classList.add('tight');
   };
   useLayoutEffect(fitPalette);
   useEffect(() => {

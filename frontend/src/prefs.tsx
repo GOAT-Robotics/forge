@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { api } from './api';
 import { Keyboard, RotateCcw } from 'lucide-react';
 import { Modal } from './components';
 import type { NavStyle } from './cadControls';
@@ -63,11 +64,30 @@ export function loadPrefs(): Prefs {
 
 export function usePrefs() {
   const [prefs, setPrefsState] = useState<Prefs>(loadPrefs);
+  // Signed in → prefs live on the user's account (follow them across browsers and sessions);
+  // localStorage is only a fast first paint / offline copy.
+  const remote = useRef(false); const timer = useRef<number | undefined>(undefined);
+  const push = (next: Prefs) => {
+    if (!remote.current) return;
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => { api('/me/prefs', 'PUT', next).catch(() => { /* kept locally; retried on next change */ }); }, 400);
+  };
   const setPrefs = (patch: Partial<Prefs>) => setPrefsState(p => {
     const next = { ...p, ...patch };
     try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* private window: keep in memory */ }
+    push(next);
     return next;
   });
+  /** Called after sign-in with the prefs stored on the account (null on sign-out). */
+  const adopt = (server: Partial<Prefs> | null | undefined) => {
+    if (server === null) { remote.current = false; return; }
+    remote.current = true;
+    if (server && Object.keys(server).length) {
+      const next = { ...DEFAULTS, ...server, shortcuts: { ...(server.shortcuts || {}) } };
+      try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      setPrefsState(next);
+    } else setPrefsState(p => { push(p); return p; });  // first sign-in after this change: move this browser's settings to the account
+  };
   const binding = (id: string) => prefs.shortcuts[id] ?? ACTIONS.find(a => a.id === id)?.key ?? '';
   /** Action for a key combination; rotate actions also fire with Shift added (90° steps). */
   const actionFor = (combo: string): { id: string; big: boolean } | null => {
@@ -78,7 +98,7 @@ export function usePrefs() {
     }
     return null;
   };
-  return { prefs, setPrefs, binding, actionFor };
+  return { prefs, setPrefs, binding, actionFor, adopt };
 }
 
 const pretty = (b: string) => b.replace('Ctrl', /Mac/i.test(navigator.platform) ? '⌘' : 'Ctrl').replace(/Arrow(Up|Down|Left|Right)/, (_m, d) => ({ Up: '↑', Down: '↓', Left: '←', Right: '→' } as Record<string, string>)[d]);
@@ -109,7 +129,7 @@ export function ShortcutsDialog({ close, prefs, setPrefs, binding }: ReturnType<
   }, [editing, prefs.shortcuts]);
   const groups = [...new Set(ACTIONS.map(a => a.group))];
   return (
-    <Modal title="Shortcuts & navigation" subtitle="Personal — saved in this browser" close={() => { if (!editing) close(); }} wide>
+    <Modal title="Shortcuts & navigation" subtitle="Personal — saved to your account, on every device" close={() => { if (!editing) close(); }} wide>
       <div className="prefs">
         <section>
           <h4>Mouse</h4>

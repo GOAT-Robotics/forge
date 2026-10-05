@@ -146,7 +146,7 @@ def process_import(rid):
    previous.setdefault('name:'+old['name'],old);previous.setdefault('fp:'+old['geometry'].get('fingerprint',''),old)
    # revisions imported before sanitizing carry SolidWorks name noise; match them by the cleaned name too
    m=re.match(r'(.*?)(\s*/\s*Body \d+)?$',old['name']);previous.setdefault('name:'+clean_name(m.group(1))+(m.group(2) or ''),old)
- carried=0
+ carried=0;pid_map={}
  with db.connect() as c:c.execute('DELETE FROM fits WHERE revision_id=?',(rid,));c.execute('DELETE FROM parts WHERE revision_id=?',(rid,))
  for i,leaf in enumerate(leaves):
   if i==0 and source.suffix.lower() in ('.step','.stp'):
@@ -208,9 +208,11 @@ def process_import(rid):
    with db.connect() as c:
     c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,reviewed,hidden,excluded,exclusion_reason,excluded_by,excluded_at,process_template_id,drawing_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,rid,name,p['category'],p['quantity'],json.dumps(g),json.dumps(spec),0,hidden,excluded,exclusion_reason,excluded_by,excluded_at,ptpl,dopt))
     # inspection plan (critical flags, specified limits, balloon positions) follows an unchanged part
+    if old:pid_map[old['id']]=(pid,old['geometry'].get('fingerprint')==g['fingerprint'],len(leaf['instances']))
     if old and old['geometry'].get('fingerprint')==g['fingerprint']:
      c.execute('INSERT OR IGNORE INTO char_overrides(part_id,key,data,actor,updated) SELECT ?,key,data,actor,updated FROM char_overrides WHERE part_id=?',(pid,old['id']))
  if not parts:raise ValueError('No usable solid bodies found; export solids as STEP or BREP')
+ if prev_rev and pid_map:carry_assembly_steps(prev_rev['id'],rid,pid_map)
  with stage(rid,73,'Writing lightweight assembly mesh'):scene.export(folder/'assembly.glb');(folder/'instances.json').write_text(json.dumps(instances))
  with stage(rid,78,f'Detecting mating surfaces between {len(parts)} parts'):fits=detect_fits(parts,instances)
  with db.connect() as c:
@@ -222,6 +224,24 @@ def process_import(rid):
  with db.connect() as c:
   c.execute('UPDATE revisions SET state="archived" WHERE project_id=? AND state="active"',(rev['project_id'],));c.execute('UPDATE revisions SET state="active",status="ready",progress=100,message="Analysis complete",manifest=? WHERE id=?',(json.dumps(manifest),rid));db.audit(c,'worker','revision.activated',manifest,rid)
  rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));assembly_pdf(rev,parts,[{'id':str(i),'data':f,'approved':False} for i,f in enumerate(fits)],folder,detailed=False)
+
+def carry_assembly_steps(old_rid,rid,pid_map):
+ """Assembly steps follow the design: components matched by name / shape keep their step; fastener holes only
+ where the shape is unchanged (hole ids are stable); weld links are dropped (welds belong to one revision)."""
+ out=[]
+ for r in db.rows('SELECT * FROM assembly_steps WHERE revision_id=? ORDER BY seq',(old_rid,)):
+  d=json.loads(r['data']);parts=[]
+  for e in d.get('parts',[]):
+   m=pid_map.get(e['part'])
+   if not m:continue
+   occ=[o for o in e.get('occurrences',[0]) if o<max(m[2],1)]
+   if occ:parts.append({'part':m[0],'occurrences':occ})
+  for f in d.get('fasteners',[]):f['holes']=[{**h,'part':pid_map[h['part']][0]} for h in f.get('holes',[]) if pid_map.get(h['part']) and pid_map[h['part']][1]]
+  if not parts and not d.get('notes'):continue
+  d['parts']=parts;d['welds']=[];out.append(d)
+ with db.connect() as c:
+  c.execute('DELETE FROM assembly_steps WHERE revision_id=?',(rid,))
+  for i,d in enumerate(out):c.execute('INSERT INTO assembly_steps(id,revision_id,seq,data,created,author,updated) VALUES(?,?,?,?,?,?,?)',(db.uid(),rid,i,json.dumps(d),db.now(),'carried over',db.now()))
 
 def drawing_options(p):
  opts=json.loads(p.get('drawing_options') or '{}') if isinstance(p.get('drawing_options'),str) else dict(p.get('drawing_options') or {})

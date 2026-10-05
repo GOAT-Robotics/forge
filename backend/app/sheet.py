@@ -1194,6 +1194,21 @@ def place_tags(sh, v, scale, cmap=None):
 
 
 def draw_view_geometry(sh, v, hidden=True, layer='VISIBLE'):
+    md = getattr(v, 'render_mesh', None)
+    if md is not None:
+        # rendered pictorial (formed sheet metal): shaded image of the real part under its visible edges
+        if getattr(v, 'image', None) is None:
+            from .render import view_image
+            try:
+                v.image = view_image(md, v.n, v.right, v.lo, v.hi, px_per_mm=6.0, max_px=1600)
+            except Exception:
+                v.image = b''
+        if v.image:
+            x0, y0, x1, y1 = v.paper_box()
+            sh.items.append({'sg': sh.sg, 'k': 'image', 'box': (float(x0), float(y0), float(x1), float(y1)), 'data': v.image, 'layer': 'VISIBLE', 'grp': None})
+            for seg in v.vis:
+                sh.poly([v.P(q) for q in seg], THIN, layer)
+            return
     for seg in v.vis:
         sh.poly([v.P(q) for q in seg], THICK, layer)
     if hidden:
@@ -1555,6 +1570,14 @@ def pictorial_views(shape, n0, up0, defs, cache):
             cache[key] = hlr(shape, n, r, hidden=False)
         v = View(d['id'], n, r, cache[key], label=d['label'])
         v.pdef = d
+        if cache.get('shaded'):
+            if 'render_mesh' not in cache:
+                from .render import mesh_data
+                try:
+                    cache['render_mesh'] = mesh_data(shape)
+                except Exception:
+                    cache['render_mesh'] = None
+            v.render_mesh = cache['render_mesh']
         out.append(v)
     return out
 
@@ -1602,6 +1625,7 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
         v.origin_right = False  # every view dimensions from its bottom-left corner
         v.band_side = 'left'
         views[k] = v
+    cache['shaded'] = sm  # formed / laser-cut sheet metal: the pictorial is a rendered image of the part
     iso = pictorial_views(shape, n0, up0, pictorial_defs.normalize(pictorials), cache)
     claimed, claimed_holes = set(), set()
     for h in holes:
@@ -2651,6 +2675,11 @@ def _paint_item(c, it, ground=False):
         path.lineTo(q[2][0] * mm, q[2][1] * mm)
         path.close()
         c.drawPath(path, stroke=0, fill=1)
+    elif k == 'image':
+        from reportlab.lib.utils import ImageReader
+        import io as _io
+        x0, y0, x1, y1 = it['box']
+        c.drawImage(ImageReader(_io.BytesIO(it['data'])), x0 * mm, y0 * mm, (x1 - x0) * mm, (y1 - y0) * mm)
     elif k == 'text':
         c.saveState()
         c.translate(it['x'] * mm, it['y'] * mm)

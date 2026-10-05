@@ -49,6 +49,16 @@ class SceneCanvas(canvas.Canvas):
   p.curveTo(cx-k*rx,cy+ry,cx-rx,cy+k*ry,cx-rx,cy)
   p.curveTo(cx-rx,cy-k*ry,cx-k*rx,cy-ry,cx,cy-ry)
   p.curveTo(cx+k*rx,cy-ry,cx+rx,cy-k*ry,cx+rx,cy);p.close();self.drawPath(p,stroke,fill)
+ def drawImage(self,image,x,y,width=None,height=None,*args,**kwargs):
+  # rendered pictorials: kept in the scene (base64 JPEG) so the editor and every PDF replay show them
+  data=getattr(image,'_forge_bytes',None)
+  if data is None and hasattr(image,'fp'):
+   try:image.fp.seek(0);data=image.fp.read()
+   except Exception:data=None
+  if data:
+   import base64
+   self.record({'type':'image','commands':[['M',x,y],['L',x+width,y],['L',x+width,y+height],['L',x,y+height],['Z']],'doStroke':False,'doFill':False,'x':x,'y':y,'w':width,'h':height,'data':base64.b64encode(data).decode(),'mime':'image/jpeg' if data[:2]==b'\xff\xd8' else 'image/png'})
+  return super().drawImage(image,x,y,width,height,*args,**kwargs)
  def drawPath(self,path,stroke=1,fill=0,fillMode=None):
   tokens=path.getCode().split();values=[];commands=[]
   for token in tokens:
@@ -106,7 +116,11 @@ def annotation(g,edit):
 
 def replay_node(c,n):
  c.saveState();c.transform(*n['matrix']);c.setStrokeColorRGB(*n['stroke']);c.setFillColorRGB(*n['fill']);c.setLineWidth(n['width']);c.setDash(n.get('dash',[]))
- if n['type']=='text':
+ if n['type']=='image':
+  import base64
+  from reportlab.lib.utils import ImageReader
+  c.drawImage(ImageReader(io.BytesIO(base64.b64decode(n['data']))),n['x'],n['y'],n['w'],n['h'])
+ elif n['type']=='text':
   from reportlab.pdfbase.pdfmetrics import getRegisteredFontNames,standardFonts
   font=n['font'] if n['font'] in getRegisteredFontNames() or n['font'] in standardFonts else 'Helvetica'
   c.setFont(font,n['size']);c.drawString(n['x'],n['y'],n['text'])
