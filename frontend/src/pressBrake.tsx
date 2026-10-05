@@ -5,7 +5,7 @@ import { CadControls, type NavStyle } from './cadControls';
 import { loadSecureModel } from './api';
 
 /** Server data (backend/app/bendsim.py): developed blank split into flanges and curling bend strips. */
-type SimBend = { id: string; L: number[]; u: number[]; v: number[]; n: number[]; w: number; angle: number; radius: number; s: number; length: number; twin: number | null };
+type SimBend = { id: string; L: number[]; u: number[]; v: number[]; n: number[]; w: number; angle: number; radius: number; s: number; length: number; twin: number | null; stroke?: { center: number; span: number; ids: string[] } };
 export type BendSim = {
   thickness: number; bends: SimBend[]; regions: { chain: number[]; strip: number | null }[]; order: number[];
   vertices: number[]; region: number[]; triangles: number[]; edges: number[];
@@ -114,7 +114,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
     const partGroup = new THREE.Group(); partGroup.add(partMesh, edges); partGroup.matrixAutoUpdate = false; scene.add(partGroup);
 
     const extent = (() => { let lo = [1e9, 1e9], hi = [-1e9, -1e9]; for (const p of flat) { lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1])]; hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1])]; } return Math.hypot(hi[0] - lo[0], hi[1] - lo[1]); })();
-    const maxLen = Math.max(...sim.bends.map(b => b.length), 40);
+    const maxLen = Math.max(...sim.bends.map(b => Math.max(b.length, b.stroke?.span || 0)), 40);
 
     // ---------------------------------------------------------------- tooling (generic, scaled to the sheet)
     const k = Math.max(1, t / 1.5);
@@ -147,12 +147,14 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
     const foldsFor = (angles: number[]) => sim.bends.map((b, i) => makeFold(b, angles[i]));
     /** tool frame of a bend in the current fold state: contact point on the die and its axes */
     const bendFrame = (bi: number, folds: (Fold | null)[], a: number) => {
-      const b = sim.bends[bi]; const chain = sim.regions.find(r => r.strip === bi)?.chain || [bi];
+      const b = sim.bends[bi]; if (!b) return new THREE.Matrix4();
+      const chain = sim.regions.find(r => r.strip === bi)?.chain || [bi];
       const anc = chain.slice(0, -1);
       // mid-arc point and normal of the bend itself
-      let mid: V3 = b.L as V3; let N: V3 = b.n as V3;
+      // a combined stroke (one line, several segments) is centred on the whole line
+      let mid: V3 = add(b.L as V3, b.u as V3, b.stroke?.center || 0); let N: V3 = b.n as V3;
       const f = folds[bi];
-      if (f && a > 1e-6) { mid = applyFold(b.L as V3, f, true); const ph = a / 2; N = add(add([0, 0, 0], b.v as V3, -b.s * Math.sin(ph)), b.n as V3, Math.cos(ph)); }
+      if (f && a > 1e-6) { mid = applyFold(mid, f, true); const ph = a / 2; N = add(add([0, 0, 0], b.v as V3, -b.s * Math.sin(ph)), b.n as V3, Math.cos(ph)); }
       const map = (p: V3) => foldPoint(p, anc, null, folds);
       const P0 = map(mid); const dirOf = (d: V3) => { const q = map(add(mid, d)); return [q[0] - P0[0], q[1] - P0[1], q[2] - P0[2]] as V3; };
       const X = new THREE.Vector3(...dirOf(b.u as V3)).normalize();
@@ -182,7 +184,8 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
     const poseAt = (time: number) => {
       const n = seq.length;
       if (!n) return;
-      const step = Math.min(n - 1, Math.floor(time / PER_BEND));
+      if (!isFinite(time)) time = 0;
+      const step = Math.max(0, Math.min(n - 1, Math.floor(time / PER_BEND)));
       const local = time >= n * PER_BEND ? 1 + (time - n * PER_BEND) / 1.6 : (time - step * PER_BEND) / PER_BEND;
       const bi = seq[step];
       const bendFrac = local > 1 ? 1 : ease((local - PHASES.press) / (PHASES.bend - PHASES.press));
@@ -241,6 +244,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
       if (st.time === shown && key === lastKey) return;
       if (st.time !== shown) { poseAt(st.time); if (Math.abs(st.time - shown) > 0.05 || !st.playing) setTime(st.time); }
       shown = st.time; lastKey = key;
+      upper.visible = lower.visible = st.tooling;
       renderer.render(scene, camera);
     };
     raf = requestAnimationFrame(loop);
@@ -278,7 +282,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
     <div className="overlay top cfg-overlay" role="dialog" aria-label="Press brake simulation" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
       <div className="cfg-dialog pb-dialog">
         <header className="cfg-head">
-          <div className="cfg-title"><b>Press brake simulation</b><small>{name}{sim?.part?.material ? ' · ' + sim.part.material : ''}{sim ? ` · t ${sim.thickness} mm · ${seq.length} bend${seq.length === 1 ? '' : 's'}` : ''}</small></div>
+          <div className="cfg-title"><b>Press brake simulation</b><small>{name}{sim?.part?.material ? ' · ' + sim.part.material : ''}{sim ? ` · t ${sim.thickness} mm · ${seq.length} bend${seq.length === 1 ? '' : 's'}${sim.bends.length > seq.length ? ` (${sim.bends.length} bend lines, collinear ones in one stroke)` : ''}` : ''}</small></div>
           <button type="button" className="icon cfg-close" aria-label="Close" title="Close (Esc)" onClick={close}><X size={18} /></button>
         </header>
         <div className="pb-stage">
@@ -291,7 +295,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
           {error && <div className="pscene-state">{error}</div>}
           {cur && <div className="pb-info">
             <b>Bend {Math.min(step + 1, seq.length)} of {seq.length}</b>
-            <span>{cur.id} · {cur.angle.toFixed(cur.angle % 1 ? 1 : 0)}° {cur.s > 0 ? 'up' : 'down'} · R{cur.radius.toFixed(2)}</span>
+            <span>{cur.stroke ? cur.stroke.ids.join(' + ') + ' (one stroke)' : cur.id} · {cur.angle.toFixed(cur.angle % 1 ? 1 : 0)}° {cur.s > 0 ? 'up' : 'down'} · R{cur.radius.toFixed(2)}</span>
           </div>}
         </div>
         <footer className="pb-bar">
@@ -300,7 +304,7 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
           </button>
           <div ref={bar} className="pb-track" onPointerDown={scrub}>
             {seq.map((bi, i) => <div key={bi} className={'pb-seg' + (i < step || time >= total - 1.6 ? ' done' : i === step ? ' cur' : '')} style={{ left: `${i * PER_BEND / total * 100}%`, width: `${PER_BEND / total * 100}%` }}
-              title={`${sim!.bends[bi].id} · ${sim!.bends[bi].angle}°`}><span>{i + 1}</span></div>)}
+              title={`${sim!.bends[bi].stroke?.ids.join(' + ') || sim!.bends[bi].id} · ${sim!.bends[bi].angle}°`}><span>{i + 1}</span></div>)}
             <div className="pb-head" style={{ left: `${time / total * 100}%` }} />
           </div>
           <select className="pb-speed" value={speed} onChange={e => setSpeed(Number(e.target.value))} aria-label="Speed">

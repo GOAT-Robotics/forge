@@ -154,3 +154,34 @@ def unfold(s,g,k=.4):
  # 3D -> flat transform of every developed skin plane (hardware hole resizing maps hole centres with it)
  unfold.maps=[(np.array(by_index[pi]['origin'],float),np.array(by_index[pi]['normal'],float),r,t) for pi,(r,t) in maps.items()]
  return merged,bend_lines
+
+
+def bend_groups(lines, tol=.05):
+    """Bend lines the press brake makes in one stroke: on the same straight line in the flat, same angle, inner
+    radius and direction (a bend interrupted by reliefs, notches or cut-outs). Returns lists of indices into
+    `lines`, in order of first appearance; a single bend is a group of one."""
+    groups = []
+    for i, b in enumerate(lines):
+        a, z = np.asarray(b['a'], float), np.asarray(b['b'], float)
+        d = z - a
+        L = float(np.linalg.norm(d))
+        u = d / max(L, 1e-12)
+        placed = False
+        for g in groups:
+            r = lines[g[0]]
+            ra, rz = np.asarray(r['a'], float), np.asarray(r['b'], float)
+            rd = rz - ra
+            ru = rd / max(float(np.linalg.norm(rd)), 1e-12)
+            if abs(u[0] * ru[1] - u[1] * ru[0]) > 1e-4:
+                continue                                   # not parallel
+            off = a - ra
+            if abs(off[0] * ru[1] - off[1] * ru[0]) > tol:
+                continue                                   # parallel but a different line
+            if abs(b['angle'] - r['angle']) > .1 or abs(b['radius'] - r['radius']) > .01 or b.get('direction') != r.get('direction'):
+                continue
+            g.append(i)
+            placed = True
+            break
+        if not placed:
+            groups.append([i])
+    return groups

@@ -82,3 +82,13 @@ def test_rendered_pictorial_image():
     shaded = (im < 235).mean()
     assert im.shape[1] == round((hi - lo)[0] * 6) and .15 < shaded < .9   # part fills a good share of its box
     assert len(np.unique(im[im < 235] // 8)) > 4                          # real shading, not a flat silhouette
+
+
+def test_collinear_bends_are_one_stroke():
+    from app.unfold import bend_groups
+    line = lambda i, a, b, ang=90, r=1.6, d='up': {'id': f'B{i:03d}', 'a': a, 'b': b, 'angle': ang, 'radius': r, 'direction': d}
+    lines = [line(1, [0, 10], [40, 10]), line(2, [50, 10], [90, 10]), line(3, [100, 10.01], [140, 10.01]),
+             line(4, [0, 50], [40, 50]),                       # parallel, other line
+             line(5, [150, 10], [190, 10], d='down'),          # same line, other direction
+             line(6, [200, 10], [240, 10], r=3.0)]             # same line, other radius
+    assert bend_groups(lines) == [[0, 1, 2], [3], [4], [5]]

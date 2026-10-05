@@ -208,12 +208,26 @@ def build(poly, bend_lines, thickness, above=False, root_point=None):
                 for z in (z_top, z_bot):
                     edges.append((add(seg[0][0], seg[0][1], z, r), add(seg[1][0], seg[1][1], z, r)))
 
+    # bends on one line with the same angle, radius and direction are one press stroke (split by reliefs / cut-outs)
+    from .unfold import bend_groups
+    stroke = {}
+    for grp in bend_groups(bend_lines):
+        if len(grp) < 2:
+            continue
+        prim = next((i for i in grp if i not in twin), grp[0])
+        twin.pop(prim, None)
+        for i in grp:
+            if i != prim:
+                twin[i] = prim
+        u, mid = bends[prim]['u'], (bends[prim]['a'] + bends[prim]['b']) / 2
+        ts = [float((p - mid) @ u) for i in grp for p in (bends[i]['a'], bends[i]['b'])]
+        stroke[prim] = {'center': (min(ts) + max(ts)) / 2, 'span': max(ts) - min(ts), 'ids': [bends[i]['id'] for i in grp]}
     depth = {i: len(chain_of[parent_bend[i]]) for i in range(len(bends))}
     order = sorted((i for i in range(len(bends)) if i not in twin), key=lambda i: (-depth[i], bends[i]['length']))
     return {
         'version': 1, 'thickness': t,
         'bends': [{'id': bd['id'], 'L': bd['L'], 'u': bd['u3'], 'v': bd['v3'], 'n': [0.0, 0.0, 1.0], 'w': bd['w'], 'angle': bd['angle'],
-                   'radius': bd['radius'], 's': bd['s'], 'length': bd['length'], 'twin': twin.get(i)} for i, bd in enumerate(bends)],
+                   'radius': bd['radius'], 's': bd['s'], 'length': bd['length'], 'twin': twin.get(i), **({'stroke': stroke[i]} if i in stroke else {})} for i, bd in enumerate(bends)],
         'regions': regions, 'order': order,
         'vertices': [c for v_ in verts for c in v_], 'region': vreg,
         'triangles': [i for tr in tris for i in tr], 'edges': [i for e in edges for i in e],

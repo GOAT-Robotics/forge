@@ -169,6 +169,21 @@ export function DocumentPreview({ blob, name, title, close }: { blob: Blob; name
 // ---------------------------------------------------------------------------------------------
 // Flat pattern (developed sheet) 2D view
 // ---------------------------------------------------------------------------------------------
+/** Bend lines made in one press stroke: same straight line, angle, radius and direction (split by reliefs). */
+function bendGroups(bends: Flat['bends']) {
+  const groups: number[][] = [];
+  bends.forEach((b, i) => {
+    const dx = b.b[0] - b.a[0], dy = b.b[1] - b.a[1], L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
+    const g = groups.find(gr => {
+      const r = bends[gr[0]]; const rx = r.b[0] - r.a[0], ry = r.b[1] - r.a[1], rl = Math.hypot(rx, ry) || 1;
+      if (Math.abs(ux * ry / rl - uy * rx / rl) > 1e-4) return false;
+      const ox = b.a[0] - r.a[0], oy = b.a[1] - r.a[1];
+      return Math.abs(ox * ry / rl - oy * rx / rl) < 0.05 && Math.abs(b.angle - r.angle) < 0.1 && Math.abs(b.radius - r.radius) < 0.01 && b.direction === r.direction;
+    });
+    if (g) g.push(i); else groups.push([i]);
+  });
+  return groups;
+}
 type Flat = { outline: number[][]; holes: number[][][]; bends: { id: string; a: number[]; b: number[]; allowance: number; angle: number; radius: number; direction?: string; length?: number }[]; k_factor: number; status: string };
 
 export function FlatPattern({ partId, thickness, kFactor, approved, name }: { partId: string; thickness: number; kFactor: number; approved: boolean; name: string }) {
@@ -245,17 +260,21 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
           // below carries radius and allowance). Tries above / below the line at the middle, then at a quarter.
           const placed: number[][] = [];
           const hit = (r: number[]) => placed.some(q => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
-          return flat.bends.map(b => {
+          const groups = bendGroups(flat.bends);
+          const tagOf = new Map<number, string>(); const rep = new Set<number>();
+          groups.forEach((gr, k) => { gr.forEach(i => tagOf.set(i, 'B' + (k + 1))); rep.add(gr.reduce((m, i) => Math.hypot(flat.bends[i].b[0] - flat.bends[i].a[0], flat.bends[i].b[1] - flat.bends[i].a[1]) > Math.hypot(flat.bends[m].b[0] - flat.bends[m].a[0], flat.bends[m].b[1] - flat.bends[m].a[1]) ? i : m, gr[0])); });
+          return flat.bends.map((b, bi) => {
+            const tag = tagOf.get(bi)!; const n = groups.find(gr => gr.includes(bi))!.length;
             const ax = X(b.a[0]), ay = Y(b.a[1]), bx = X(b.b[0]), by = Y(b.b[1]);
             const len = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / len, uy = (by - ay) / len;
             let ang = Math.atan2(by - ay, bx - ax) * 180 / Math.PI; if (ang > 90 || ang < -90) ang += 180;
             const rad = ang * Math.PI / 180, nx = Math.sin(rad), ny = -Math.cos(rad);
             const arrow = b.direction === 'up' ? '↑' : b.direction === 'down' ? '↓' : '';
-            const texts = [`${b.id} ${arrow}${fmt(b.angle)}°`, b.id];
+            const texts = rep.has(bi) ? [`${tag} ${arrow}${fmt(b.angle)}°${n > 1 ? ` ×${n}` : ''}`, tag] : [];
             let pick: { t: string; x: number; y: number } | null = null;
             for (const t of texts) {
               const w = t.length * font * 0.58, h = font * 1.1;
-              if (w > len * 0.95 && t !== b.id) continue;
+              if (w > len * 0.95 && t !== tag) continue;
               for (const f of [0.5, 0.25, 0.75]) for (const off of [-0.45, 1.25]) {
                 const cx = ax + (bx - ax) * f + nx * off * font, cy = ay + (by - ay) * f + ny * off * font;
                 const hw = (Math.abs(Math.cos(rad)) * w + Math.abs(Math.sin(rad)) * h) / 2, hh = (Math.abs(Math.sin(rad)) * w + Math.abs(Math.cos(rad)) * h) / 2;
@@ -266,7 +285,7 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
             }
             return (
               <g key={b.id}>
-                <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#ff6a1f" strokeWidth={stroke * 1.6} strokeDasharray={`${font * 0.8} ${font * 0.4}`}><title>{`${b.id} · ${fmt(b.angle)}° ${(b.direction || '').toUpperCase()} · R${fmt(b.radius)} · BA ${fmt(b.allowance)}`}</title></line>
+                <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#ff6a1f" strokeWidth={stroke * 1.6} strokeDasharray={`${font * 0.8} ${font * 0.4}`}><title>{`${tag}${n > 1 ? ` (${n} lines, one stroke)` : ''} · ${b.id} · ${fmt(b.angle)}° ${(b.direction || '').toUpperCase()} · R${fmt(b.radius)} · BA ${fmt(b.allowance)}`}</title></line>
                 {pick && <text x={pick.x} y={pick.y} fontSize={font} fill="#c8470c" textAnchor="middle" transform={`rotate(${ang} ${pick.x} ${pick.y})`} fontFamily="Manrope Variable, sans-serif" fontWeight={600} paintOrder="stroke" stroke="#fff" strokeWidth={font * 0.18}>{pick.t}</text>}
               </g>
             );
@@ -292,25 +311,24 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
         <div><b>{name}</b><span>Developed blank · {fmt(W)} × {fmt(H)} mm</span></div>
         <div><span>Thickness</span><b>{fmt(thickness)} mm</b></div>
         <div><span>K factor</span><b>{kFactor} {approved ? '· approved' : '· provisional'}</b></div>
-        <div><span>Bends</span><b>{flat.bends.length}</b></div>
+        <div><span>Bends</span><b>{bendGroups(flat.bends).length}{bendGroups(flat.bends).length < flat.bends.length ? ` (${flat.bends.length} lines)` : ''}</b></div>
         <div><span>Cut-outs</span><b>{flat.holes.length}</b></div>
         <span className="muted">Scroll to zoom · drag to pan · double-click to reset. {approved ? 'Bend allowance uses the approved K.' : 'Verify K against tooling before cutting blanks.'}</span>
       </div>
       {flat.bends.length > 0 && (
         <div className="bend-table">
           <table>
-            <thead><tr><th>Bend</th><th>Angle</th><th>Inside R</th><th>Direction</th><th>Allowance</th><th>Line length</th></tr></thead>
+            <thead><tr><th>Bend</th><th>Angle</th><th>Inside R</th><th>Direction</th><th>Allowance</th><th>Lines</th></tr></thead>
             <tbody>
-              {flat.bends.map(b => (
+              {bendGroups(flat.bends).map((gr, k) => { const b = flat.bends[gr[0]]; return (
                 <tr key={b.id}>
-                  <td><code>{b.id}</code></td><td>{fmt(b.angle)}°</td><td>R{fmt(b.radius)} mm</td>
+                  <td><code>B{k + 1}</code></td><td>{fmt(b.angle)}°</td><td>R{fmt(b.radius)} mm</td>
                   <td><span className={'dir ' + (b.direction || '')}>{b.direction ? b.direction.toUpperCase() : '—'}</span></td>
-                  <td>{fmt(b.allowance)} mm</td><td>{b.length ? fmt(b.length) + ' mm' : '—'}</td>
-                </tr>
-              ))}
+                  <td>{fmt(b.allowance)} mm</td><td title={gr.map(i => flat.bends[i].id).join(', ')}>{gr.length > 1 ? `${gr.length} lines · ${fmt(gr.reduce((t, i) => t + (flat.bends[i].length || 0), 0))} mm` : b.length ? fmt(b.length) + ' mm' : '—'}</td>
+                </tr>); })}
             </tbody>
           </table>
-          <small>UP folds toward you (viewing the root skin from outside); DOWN folds away. Confirm bend sequence and V-die with the press shop.</small>
+          <small>UP folds toward you (viewing the root skin from outside); DOWN folds away. Collinear lines with the same angle, radius and direction are one press stroke. Confirm bend sequence and V-die with the press shop.</small>
         </div>
       )}
     </div>

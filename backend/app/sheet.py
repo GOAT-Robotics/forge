@@ -2280,6 +2280,9 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
              'LASER CUT FROM DXF - HOLES AS PER DXF']
 
     cache_inline = {}
+    from .unfold import bend_groups
+    groups = bend_groups(flat['bends'])           # one entry per press stroke
+    group_of = {i: k for k, gr in enumerate(groups) for i in gr}
 
     def extra(sh, scale, area, part):
         if part == 'view':
@@ -2294,7 +2297,13 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
         ds = dim_size()
         geo = [LineString([v.P(q) for q in seg]) for seg in v.vis if len(seg) > 1]
         placed, inline = [], []
-        for b in flat['bends']:
+        # one note per press stroke: collinear segments with the same angle / radius / direction share it,
+        # written on the longest segment
+        rep = {max(gr, key=lambda i: np.linalg.norm(np.subtract(flat['bends'][i]['b'], flat['bends'][i]['a']))) for gr in groups}
+        for bi, b in enumerate(flat['bends']):
+            if bi not in rep:
+                inline.append(None)
+                continue
             a = v.P(b['a'])
             z = v.P(b['b'])
             d = z - a
@@ -2305,6 +2314,9 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
                 a, z = z, a
             nrm = np.array([-u[1], u[0]])
             label = f"{b.get('direction', '').upper()} {b['angle']:.0f}° R{b['radius']:.2f}".strip()
+            n_seg = len(groups[group_of[bi]])
+            if n_seg > 1:
+                label += f' ({n_seg}×)'
             w = text_width(label, ds, DIM_FONT)
             best = None
             for frac in (.5, .3, .7, .15, .85):
@@ -2324,7 +2336,7 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
             inline.append((a, z, u, label, best))
             if best:
                 placed.append(best[1])
-        ok = all(t[4] for t in inline)
+        ok = all(t[4] for t in inline if t)
         from shapely.geometry import Point
         blank = Polygon([v.P(q) for q in outline]).buffer(0)
         bend_segs = [LineString([v.P(b2['a']), v.P(b2['b'])]) for b2 in flat['bends']]
@@ -2370,7 +2382,11 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
             for it in sh.items[-4:]:
                 cmap.add_item(it)
             return Point(c).buffer(R_TAG + .6)
-        for (a, z, u, label, best), b in zip(inline, flat['bends']):
+        for bi, (t, b) in enumerate(zip(inline, flat['bends'])):
+            if t is None:   # another segment of a combined stroke: line only, the note sits on the longest segment
+                sh.line(v.P(b['a']), v.P(b['b']), THIN, 'BEND', dash=PHANTOM_DASH)
+                continue
+            a, z, u, label, best = t
             sh.line(a, z, THIN, 'BEND', dash=PHANTOM_DASH)
             if ok:
                 ang = math.degrees(math.atan2(u[1], u[0]))
@@ -2379,15 +2395,16 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
             # crowded: a balloon tag (details in the bend table). It must read as belonging to THIS line:
             # outside the blank where possible, never on another bend line or tag, with a short leader
             # that touches the bend line itself.
-            placed_tags.append(balloon(a, z, u, 'B' + str(int(b['id'][1:]))))
+            placed_tags.append(balloon(a, z, u, 'B' + str(group_of[bi] + 1)))
         cache_inline['inline'] = ok
 
     def bend_table(sh, area):
         # bend table (title-block style) in the top-right corner
-        rows = [('TAG', 'DIRECTION', 'ANGLE', 'INNER R', 'OUTSIDE H')] + [
-            ('B' + str(int(b['id'][1:])), b.get('direction', '?').upper(), f"{b['angle']:.1f}\u00b0", f"{b['radius']:.2f}",
-             f"{b['outside_height']:.2f}" if b.get('outside_height') is not None else '-') for b in flat['bends'][:14]]
-        cw = [12, 20, 16, 16, 20]
+        firsts = [flat['bends'][gr[0]] for gr in groups[:14]]
+        rows = [('TAG', 'DIRECTION', 'ANGLE', 'INNER R', 'OUTSIDE H', 'LINES')] + [
+            ('B' + str(k + 1), b.get('direction', '?').upper(), f"{b['angle']:.1f}\u00b0", f"{b['radius']:.2f}",
+             f"{b['outside_height']:.2f}" if b.get('outside_height') is not None else '-', str(len(groups[k]))) for k, b in enumerate(firsts)]
+        cw = [12, 20, 16, 16, 20, 12]
         rh = 4.6
         x0 = area[2] - sum(cw)
         ytop = area[3]
@@ -2395,7 +2412,7 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
             y = ytop - rh * (i + 1)
             x = x0
             if i:
-                b = flat['bends'][i - 1]
+                b = firsts[i - 1]
                 sh.table_rows = getattr(sh, 'table_rows', []) + [{'kind': 'bend', 'row': {'tag': row[0], 'angle': b['angle'], 'radius': b['radius'],
                                                                                       'direction': row[1], 'outside_height': b.get('outside_height')}, 'box': (x0, y, x0 + sum(cw), y + rh)}]
             for j, cell in enumerate(row):
@@ -2420,10 +2437,10 @@ def flat_sheet(p, rev, settings, flat, iso_lines, sheet_no, sheets):
         views['top'] = ev
 
         ev.thk = thk
-    nrows = 1 + min(len(flat['bends']), 14)
+    nrows = 1 + min(len(groups), 14)
 
     def reserve(sh, area):
-        return [(area[2] - 84.0, area[3] - 4.6 * nrows, area[2], area[3])] if flat['bends'] else []
+        return [(area[2] - 96.0, area[3] - 4.6 * nrows, area[2], area[3])] if flat['bends'] else []
     return assemble(p, rev, settings, views, iso, [], [], notes, sheet_no, sheets, extra=extra, hidden=False,
                     reserve=reserve if flat['bends'] else None)
 
