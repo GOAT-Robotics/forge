@@ -303,7 +303,7 @@ def revision(rid:str,request:Request):
  for p in r['parts']:
   g=p['geometry'] if isinstance(p.get('geometry'),dict) else {}
   # press-brake simulation offered for formed sheet metal; project default, per-part override
-  p['bend_sim']=bool(p['drawing_options'].get('bend_sim',bend_default)) if p.get('category')=='sheet_metal' and g.get('bends') and g.get('flat_status')=='supported' else False
+  p['bend_sim']=bool(p['drawing_options'].get('bend_sim',bend_default)) if p.get('category')=='sheet_metal' and g.get('bends') else False
  attach_assembly_paths(rid,r['parts'])
  r['assets']=[f.name for f in db.revdir(rid).glob('*') if f.suffix in ('.pdf','.dxf','.zip')];r['jobs']=db.rows('SELECT * FROM jobs WHERE revision_id=? ORDER BY created DESC LIMIT 10',(rid,));r['access']=access['role']
  r['permissions']=sorted(perms_for(access,r['project_id'])) if access['role']!='vendor' else (['cad.download'] if access.get('allow_cad') else [])

@@ -135,7 +135,10 @@ def build(poly, bend_lines, thickness, above=False, root_point=None, order_ids=N
             if child in chain_of:
                 # same flange pair on the same line (a bend split by a relief / cut-out): folds with its twin
                 prim = chain_of[child][-1] if chain_of[child] else None
-                if prim is not None and parent_bend.get(prim) == f and _collinear(bends[prim], bends[i]):
+                if not (prim is not None and parent_bend.get(prim) == f and _collinear(bends[prim], bends[i])):
+                    # a loop (a blank with a window, both strips bent on the same lines): folds with the bend on its line
+                    prim = next((k for k in parent_bend if k not in twin and _collinear(bends[k], bends[i])), None)
+                if prim is not None:
                     if lo != f:
                         bends[i]['v'] = -bends[i]['v']
                     parent_bend[i] = f

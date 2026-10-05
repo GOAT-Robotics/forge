@@ -16,6 +16,10 @@ const disposeGroup = (group: THREE.Object3D) => group.traverse(o => {
 
 export type PartAppearance = { color: string; category: string; name?: string };
 
+type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
+const loadView = (key?: string): Any => { if (!key) return {}; try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch { return {}; } };
+const saveView = (key: string | undefined, patch: Any) => { if (!key) return; try { localStorage.setItem(key, JSON.stringify({ ...loadView(key), ...patch })); } catch { /* storage off: view just isn't remembered */ } };
+
 type Props = {
   /** "revisionId:file[:partId]" — loaded through a signed, encrypted model stream */
   url: string;
@@ -67,6 +71,8 @@ type Props = {
   onShowPlanes?: (v: boolean) => void;
   /** Imperative view command from a keyboard shortcut ({ name, n }: n makes repeats distinct). */
   command?: { name: string; n: number } | null;
+  /** localStorage key for this project's view (display, ghost, welds, planes, refs, camera): reopens as left */
+  viewKey?: string;
 };
 export type DisplayMode = 'shaded' | 'edges' | 'wireframe';
 /** Standard view directions (camera position relative to the model, Z up; front looks along +Y). */
@@ -148,7 +154,7 @@ function sameCadBoundary(a: THREE.Vector3[], b: THREE.Vector3[], tolerance: numb
 }
 
 
-export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, command = null }: Props) {
+export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, command = null, viewKey }: Props) {
   const weldClick = useRef(onWeldClick); weldClick.current = onWeldClick;
   const drafting = !!jointPreview || seamCandidates.length > 0;
   const seamToggle = useRef(onSeamToggle); seamToggle.current = onSeamToggle;
@@ -191,14 +197,28 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   const [explode, setExplode] = useState(0);
   const [section, setSection] = useState(100);
   const [measure, setMeasure] = useState(false);
-  const [ghost, setGhost] = useState(true);
+  const saved = useRef<Any>(loadView(viewKey));
+  const [ghost, setGhost] = useState<boolean>(saved.current.ghost ?? true);
   const [viewPanel, setViewPanelState] = useState(() => { try { return localStorage.getItem('forge-view-panel') !== 'closed'; } catch { return true; } });
   const setViewPanel = (v: boolean) => { setViewPanelState(v); try { localStorage.setItem('forge-view-panel', v ? 'open' : 'closed'); } catch { /* ignore */ } };
   const [distance, setDistance] = useState<number | null>(null);
   const [hoverName, setHoverName] = useState('');
-  const [showWelds, setShowWelds] = useState(true);
+  const [showWelds, setShowWelds] = useState<boolean>(saved.current.welds ?? false);   // weld beads off unless turned on
   const [popover, setPopover] = useState<'section' | 'explode' | null>(null);
-  const [showRefs, setShowRefs] = useState(false);
+  const [showRefs, setShowRefs] = useState<boolean>(saved.current.refs ?? false);
+  // ---- remembered view per project ----------------------------------------------------------------
+  const viewKeyRef = useRef(viewKey); viewKeyRef.current = viewKey;
+  const assemblyView = url.includes(':assembly.glb');
+  useEffect(() => {   // opening (or switching to) a project: its last view
+    const v = loadView(viewKey); saved.current = v;
+    if (v.ghost !== undefined) setGhost(v.ghost);
+    setShowWelds(v.welds ?? false);
+    if (v.refs !== undefined) setShowRefs(v.refs);
+    if (v.display && v.display !== displayMode) onDisplayMode?.(v.display);
+    if (v.planes !== undefined && v.planes !== showPlanes) onShowPlanes?.(v.planes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey]);
+  useEffect(() => { saveView(viewKey, { ghost, welds: showWelds, refs: showRefs, display: displayMode, planes: showPlanes }); }, [viewKey, ghost, showWelds, showRefs, displayMode, showPlanes]);
   const [refCount, setRefCount] = useState(0);
   const measuring = useRef(false);
   measuring.current = measure;
@@ -576,7 +596,12 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         e.grid = grid;
         setCount(meshes.reduce((n, m) => n + (m.geometry.index?.count || m.geometry.attributes.position.count) / 3 * (m instanceof THREE.InstancedMesh ? m.count : 1), 0));
         e.loaded = true;
-        e.fit([1, -1, 0.85], null, false);
+        const cam = assemblyView ? loadView(viewKeyRef.current).camera : null;
+        if (cam && Array.isArray(cam.p) && Array.isArray(cam.t)) {
+          // the camera as it was left in this project
+          camera.position.fromArray(cam.p); controls.target.fromArray(cam.t); if (Array.isArray(cam.u)) camera.up.fromArray(cam.u);
+          camera.near = Math.max(e.radius / 2000, 0.01); camera.far = e.radius * 200; camera.updateProjectionMatrix(); controls.update();
+        } else e.fit([1, -1, 0.85], null, false);
         setLoading(false);
         e.refresh?.();
         // If a part was already selected when the model loaded, fly to it.
@@ -588,6 +613,14 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const wake = () => { e.activeUntil = performance.now() + 700; };
     for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'pointerup'] as const) container.addEventListener(ev, wake, { passive: true });
     window.addEventListener('keydown', wake);
+    // remember the camera of the assembly view (written when it settles, not every frame)
+    let lastCam = '';
+    const camTimer = assemblyView ? window.setInterval(() => {
+      if (!e.loaded || e.fly) return;
+      const c = { p: camera.position.toArray().map(x => +x.toFixed(3)), t: controls.target.toArray().map(x => +x.toFixed(3)), u: camera.up.toArray().map(x => +x.toFixed(4)) };
+      const key = JSON.stringify(c);
+      if (key !== lastCam) { lastCam = key; saveView(viewKeyRef.current, { camera: c }); }
+    }, 1200) : 0;
     let frames = 0, last = performance.now(), slow = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
@@ -632,6 +665,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       abort.abort();
       cancelAnimationFrame(raf);
       cancelAnimationFrame(moveRaf);
+      if (camTimer) clearInterval(camTimer);
       if (hoverTimer) clearTimeout(hoverTimer);
       obs.disconnect();
       window.removeEventListener('keydown', wake);

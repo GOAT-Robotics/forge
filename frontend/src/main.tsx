@@ -54,6 +54,10 @@ function App() {
   const [detail, setDetail] = useState('details');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
+  // the navigator's type filter is part of how a project's view was left
+  const navKey = project ? `forge-nav:${project.id}` : '';
+  useEffect(() => { if (!navKey) return; try { const v = localStorage.getItem(navKey); if (v) setCategory(v); } catch { /* ignore */ } }, [navKey]);
+  useEffect(() => { if (!navKey) return; try { localStorage.setItem(navKey, category); } catch { /* ignore */ } }, [navKey, category]);
   const [isolate, setIsolate] = useState(false);
   // personal workspace preferences (navigation, display style, shortcuts) and view state
   const prefsApi = usePrefs();
@@ -108,7 +112,8 @@ function App() {
   const [stepsAdd, setStepsAdd] = useState<{ ids: string[]; n: number } | null>(null);
   const addToSteps = (ids: string[]) => { setStepsAdd({ ids, n: Date.now() }); setTab('steps'); };
   /** press-brake simulation: shown where it is shared; editors can preview it on any formed part */
-  const canBend = (p: Any) => p?.category === 'sheet_metal' && p.geometry?.bends?.length > 0 && p.geometry?.flat_status === 'supported';
+  // the simulation develops the part itself (also rolled curves the import could not flatten); it reports why if it cannot
+  const canBend = (p: Any) => p?.category === 'sheet_metal' && p.geometry?.bends?.length > 0;
   const showBend = (p: Any) => canBend(p) && (p.bend_sim || editable);
   const [weldCfg, setWeldCfg] = useState<string[] | null>(null);
   const [weldPreviewStatus, setWeldPreviewStatus] = useState<{ valid: boolean; message: string } | null>(null);
@@ -771,6 +776,7 @@ function App() {
                         ) : (
                           <Viewer
                             url={mode === 'flat3d' && part ? `${rev.id}:flat.glb:${part.id}` : `${rev.id}:assembly.glb`}
+                            viewKey={project ? `forge-view:${project.id}` : undefined}
                             hud={canvasHud}
                             toolbarStart={canvasToolsStart}
                             toolbarEnd={canvasToolsEnd}

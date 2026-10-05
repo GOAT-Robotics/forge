@@ -88,7 +88,8 @@ def _unfold(s,g,k=.4):
     twin=next((t for t in done_pairs.get((pi,ci),[]) if np.linalg.norm(np.cross(np.array(t['axis'],float),np.array(b['axis'],float)))<1e-3
                and np.linalg.norm(np.cross(np.array(b['center'],float)-np.array(t['center'],float),np.array(t['axis'],float)/np.linalg.norm(t['axis'])))<.05
                and abs(t['angle']-b['angle'])<.1 and abs(t['radius']-b['radius'])<.01),None)
-    if twin is None:continue
+    closure=twin is None   # a loop in the skin graph (a blank with a window: both strips bend on the same lines)
+   else:closure=False
    pp=sample_edge(pe);cp=sample_edge(ce);p=pp.mean(axis=0);q=cp.mean(axis=0);axis=np.array(b['axis'],float);axis/=np.linalg.norm(axis)
    # bending keeps the position along the axis: match the child edge to the parent edge at the same axial station
    # (tangent edges of different length / offset, e.g. a flange longer than its bend, must not shift the flange)
@@ -104,6 +105,10 @@ def _unfold(s,g,k=.4):
    allow=[math.radians(x['angle'])*(x['radius']+k*th) for x in bs];ba=sum(allow)
    if ci not in maps:
     target_q=Rp@p+tp+target_o*ba;tc=target_q-Rc@q;maps[ci]=(Rc,tc);queue.append(ci)
+   elif closure:
+    # the loop closes only if this bend develops the flange exactly where the other path already put it
+    target_q=Rp@p+tp+target_o*ba;tc=target_q-Rc@q;Rm,tm=maps[ci]
+    if np.abs(Rc-Rm).max()>1e-4 or np.linalg.norm(tc-tm)>max(.05,.02*th):continue
    for x in bs:done_pairs.setdefault((pi,ci),[]).append(x);done_pairs.setdefault((ci,pi),[]).append(x)
    a=Rp@pp[0]+tp;z=Rp@pp[-1]+tp
    # Bend direction as seen from the developed view: UP when the flange folds toward the viewer
@@ -129,7 +134,8 @@ def _unfold(s,g,k=.4):
                        'length':float(np.linalg.norm(z-a)),'direction':'up' if side>0 else 'down','outside_height':outside_height if len(bs)==1 else None,
                        **({'rolled':True} if len(bs)>1 else {})})
     used.add(x['id'])
- if len(used)!=len(g['bends']):raise ValueError('Not all bends belong to a single developable skin; manual unfolding required')
+ if len(used)!=len(g['bends']):
+  raise ValueError('Not all bends belong to a single developable skin; manual unfolding required')
  polys=[]
  from OCP.BRepTools import BRepTools
  for pi,(r,t) in maps.items():
