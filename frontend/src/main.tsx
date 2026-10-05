@@ -4,6 +4,7 @@ import {
   MoreHorizontal, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
   FileText, Layers, Link, LogOut, Settings, ShieldCheck, MessageSquare, ClipboardCheck, GitBranch, LoaderCircle, ExternalLink, X, Eye,
   Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files, Flame, Droplet, Keyboard,
+  CircleDot,
 } from 'lucide-react';
 import Viewer from './Viewer';
 import DrawingEditor from './DrawingEditor';
@@ -18,6 +19,8 @@ import { Select } from './controls';
 import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams } from './welding';
 import { ReadinessWizard } from './readiness';
 import { QualityPage } from './quality';
+import HoleConfig from './holeConfig';
+import WeldConfig from './weldConfig';
 import { usePrefs, comboOf, ShortcutsDialog, KeyChip } from './prefs';
 import './style.css';
 import './cad.css';
@@ -95,6 +98,8 @@ function App() {
   const [joId, setJoId] = useState<string | null>(route.current.jo);
   const [jointDraft, setJointDraft] = useState<Any>(null);
   const [weldListOpen, setWeldListOpen] = useState(false);
+  const [holeCfg, setHoleCfg] = useState<string | null>(null);
+  const [weldCfg, setWeldCfg] = useState<string[] | null>(null);
   const [weldPreviewStatus, setWeldPreviewStatus] = useState<{ valid: boolean; message: string } | null>(null);
   const [hoverGeometry, setHoverGeometry] = useState<Any>(null);
   const hoverRequest = useRef(0);
@@ -278,7 +283,12 @@ function App() {
     } catch (err) { if (request === detectRequest.current) setDetectMessage(err instanceof Error ? err.message : String(err)); }
     finally { if (request === detectRequest.current) setDetecting(false); }
   };
-  const startWeld = (ids: string[], extra: Any = {}) => {
+  const startWeld = (ids: string[], _extra: Any = {}) => {
+    if (!ids.length) { notify('Select the part to weld first — Ctrl/⌘-click to weld several parts together.'); return; }
+    setWeldCfg([...new Set(ids)]);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const startWeldStudio = (ids: string[], extra: Any = {}) => {
     const draft = { kind: 'weld', parts: ids, faces: [], weld: { type: 'linear', process: 'MIG/MAG (135)', sides: 'one' }, sequence: (rev?.joints?.length || 0) + 1, ...extra };
     setJointDraft(draft); setPickMode('face'); setPairPick([]); setSeamCandidates([]); setDetectMessage(''); setHoverSeam(null); setWeldPreviewStatus(null);
     // One component: Forge looks for the gaps it closes on itself (bent box corners) and keeps
@@ -286,7 +296,9 @@ function App() {
     setAddingParts(false);
     if (ids.length >= 1) detectSeams(draft, true);
   };
-  const editWeld = (j: Any) => {
+  const editWeld = (j: Any) => { setWeldCfg([...new Set<string>(j.data.parts || [])]); };
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const editWeldStudio = (j: Any) => {
     const draft = { id: j.id, kind: j.kind, ...j.data };
     setJointDraft(draft); setPickMode('face'); setPairPick([]); setAddingParts(false); setSeamCandidates([]); setHoverSeam(null); setWeldPreviewStatus(null);
     if (j.kind === 'weld' && (j.data.parts || []).length) detectSeams(draft, false);
@@ -547,6 +559,7 @@ function App() {
           <button type="button" className={mode === 'flat2d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern (2D)'} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 size={14} />Flat</button>
           <button type="button" className={mode === 'flat3d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern in 3D'} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan size={14} />Flat 3D</button>
         </>}
+        {part.geometry.holes.length > 0 && part.category !== 'purchased' && <button type="button" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot size={14} />Holes</button>}
         <button type="button" className={'icon' + (transparentIds.includes(part.id) ? ' selected' : '')} title={`See through this part (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => t.includes(part.id) ? t.filter(x => x !== part.id) : [...t, part.id])}><Droplet size={14} /></button>
         <button type="button" className="icon" title="Clear selection (Esc)" onClick={() => choosePart(null)}><X size={14} /></button>
       </span>
@@ -907,6 +920,7 @@ function App() {
                                 <button type="button" onClick={() => { setPartMenu(false); setFlags(part.id, { hidden: !part.hidden }); }}>{part.hidden ? <Eye size={14} /> : <EyeOff size={14} />}{part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'}</button>
                                 {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings size={14} />All manufacturing details</button>}
                                 {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); startWeld([part.id]); }}><Flame size={14} />Weld this component</button>}
+                                {part.geometry.holes.length > 0 && <button type="button" onClick={() => { setPartMenu(false); setHoleCfg(part.id); }}><CircleDot size={14} />Holes &amp; hardware…</button>}
                                 {editable && (part.excluded
                                   ? <button type="button" onClick={() => { setPartMenu(false); setFlags(part.id, { excluded: false }); }}><Undo2 size={14} />Restore to production</button>
                                   : <button type="button" className="danger" onClick={() => { setPartMenu(false); setExcluding([part]); }}><Ban size={14} />Not for production…</button>)}
@@ -976,8 +990,9 @@ function App() {
                               </>
                             ) : detail === 'features' ? (
                               <>
+                                {part.geometry.holes.length > 0 && part.category !== 'purchased' && <button type="button" className="primary-soft pi-holes-btn" onClick={() => setHoleCfg(part.id)}><CircleDot size={15} />Configure holes &amp; hardware</button>}
                                 {part.geometry.holes.length > 0 && <section className="pi-section"><h4>Bores · {part.geometry.holes.length}</h4>{part.geometry.holes.map((h: Any) => (
-                                  <div className={'pi-feature' + (feature?.id === h.id ? ' hot' : '')} key={h.id} onMouseEnter={() => setFeature({ kind: 'hole', partId: part.id, ...h })} onMouseLeave={() => setFeature(null)}><em>{h.id}</em><span><b>Ø {fmt(h.diameter)}</b><small>{fmt(h.depth)} mm deep · {part.spec.feature_specs?.[h.id]?.designation || 'designation pending'}</small></span></div>
+                                  <div className={'pi-feature' + (feature?.id === h.id ? ' hot' : '')} key={h.id} onMouseEnter={() => setFeature({ kind: 'hole', partId: part.id, ...h })} onMouseLeave={() => setFeature(null)}><em>{h.id}</em><span><b>Ø {fmt(h.diameter)}</b><small>{fmt(h.depth)} mm deep · {part.spec.feature_specs?.[h.id]?.hardware?.name || part.spec.feature_specs?.[h.id]?.designation || 'no hardware'}</small></span></div>
                                 ))}</section>}
                                 {part.geometry.bends.length > 0 && <section className="pi-section"><h4>Bends · {part.geometry.bends.length}</h4>{part.geometry.bends.map((b: Any) => (
                                   <div className={'pi-feature' + (feature?.id === b.id ? ' hot' : '')} key={b.id} onMouseEnter={() => setFeature({ kind: 'bend', partId: part.id, ...b })} onMouseLeave={() => setFeature(null)}><em>{b.id}</em><span><b>{fmt(b.angle)}° · R{fmt(b.radius)}</b><small>{fmt(b.length)} mm long</small></span></div>
@@ -1156,6 +1171,10 @@ function App() {
       {error && <div className="error-toast" role="alert"><AlertTriangle size={18} /><span>{error}</span><button onClick={() => setError('')}><X size={17} /></button></div>}
       <DialogHost />
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
+      {holeCfg && rev && parts.find((p: Any) => p.id === holeCfg) && <HoleConfig part={parts.find((p: Any) => p.id === holeCfg)} revision={rev.id} editable={editable} navStyle={prefs.navStyle}
+        close={changed => { setHoleCfg(null); if (changed) loadRevision(rev.id).catch(fail); }} />}
+      {weldCfg && rev && <WeldConfig revision={rev.id} partIds={weldCfg} parts={parts} joints={rev.joints || []} editable={editable} navStyle={prefs.navStyle}
+        close={changed => { setWeldCfg(null); if (changed) refreshJoints(rev.id).catch(fail); }} />}
       {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}
       {excluding && <ExcludeDialog parts={excluding} busy={busy} close={() => setExcluding(null)} onConfirm={reason => action(async () => {
         if (excluding.length === 1) await api('/parts/' + excluding[0].id + '/flags', 'PATCH', { excluded: true, exclusion_reason: reason });

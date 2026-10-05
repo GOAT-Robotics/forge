@@ -148,4 +148,6 @@ def unfold(s,g,k=.4):
  if merged.geom_type!='Polygon' or not merged.is_valid:raise ValueError('Unfold produced disconnected or invalid outline')
  summed=sum(p.area for p in polys+rectangles)
  if summed-merged.area>max(1,summed*.003):raise ValueError('Unfolded flanges overlap')
+ # 3D -> flat transform of every developed skin plane (hardware hole resizing maps hole centres with it)
+ unfold.maps=[(np.array(by_index[pi]['origin'],float),np.array(by_index[pi]['normal'],float),r,t) for pi,(r,t) in maps.items()]
  return merged,bend_lines

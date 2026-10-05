@@ -724,6 +724,13 @@ def clean_joint(rid, a: JointIn):
             clean['side'] = f['side']
         if isinstance(f.get('key'), str) and len(f['key']) <= 60:
             clean['key'] = f['key']
+        # part of the seam only (mm along the seam from its start): manual welds, single stitches and tacks
+        rng = f.get('range')
+        if rng is not None:
+            if not (isinstance(rng, list) and len(rng) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in rng)
+                    and 0 <= rng[0] <= rng[1] <= float(f.get('length') or 1e9) + .5):
+                raise HTTPException(422, 'Invalid weld range on the seam')
+            clean['range'] = [round(float(rng[0]), 3), round(float(rng[1]), 3)]
         if f.get('other_part') in ids:
             clean['other_part'] = f['other_part']
             clean['other_occurrence'] = int(f.get('other_occurrence') or 0)
@@ -746,18 +753,20 @@ def clean_joint(rid, a: JointIn):
         edge_selections = [f for f in faces if f.get('selection') == 'edge']
         if w['type'] in ('linear', 'stitch') and not (edge_selections or len(face_selections) == 2):
             raise HTTPException(422, 'Select one or more seam edges, or exactly two mating faces')
-        if w['type'] == 'tack' and len(face_selections) != 2:
-            raise HTTPException(422, 'Select exactly two mating faces for a tack weld')
+        on_seam = bool(edge_selections) and all('range' in f for f in edge_selections)
+        if w['type'] == 'tack' and len(face_selections) != 2 and not on_seam:
+            raise HTTPException(422, 'Place the tack on a seam, or select exactly two mating faces')
         if w['type'] == 'patch' and not face_selections:
             raise HTTPException(422, 'Select one or more faces for a patch weld')
         placement = w.get('placement')
-        if w['type'] == 'tack' and (not isinstance(placement, dict) or placement.get('part') not in ids or not isinstance(placement.get('point'), list) or len(placement['point']) != 3):
+        if w['type'] == 'tack' and not on_seam and (not isinstance(placement, dict) or placement.get('part') not in ids or not isinstance(placement.get('point'), list) or len(placement['point']) != 3):
             raise HTTPException(422, 'Place the tack on one of the selected bodies')
         weld = {'process': w['process'], 'type': w['type'], 'size': str(w.get('size', ''))[:20], 'thickness': str(w.get('thickness', w.get('size', '')))[:20], 'length': str(w.get('length', ''))[:20],
                 'pitch': str(w.get('pitch', ''))[:20], 'sides': w.get('sides', 'one') if w.get('sides') in ('one', 'both', 'all_around') else 'one',
                 'finish': str(w.get('finish', ''))[:60], 'filler': str(w.get('filler', ''))[:60], 'quality': str(w.get('quality', ''))[:40],
                 'field': bool(w.get('field')), 'subtype': w.get('subtype', 'centered') if w.get('subtype') in ('centered', 'free') else 'centered',
-                'width': str(w.get('width', ''))[:20], 'placement': placement if isinstance(placement, dict) else None}
+                'width': str(w.get('width', ''))[:20], 'placement': placement if isinstance(placement, dict) else None,
+                'ground': bool(w.get('ground')), 'pattern': w.get('pattern') if w.get('pattern') in ('single', 'full', 'manual') else 'full'}
     return {'name': a.name.strip(), 'parts': ids, 'faces': faces, 'weld': weld, 'fasteners': a.fasteners, 'torque': a.torque, 'sequence': a.sequence, 'notes': a.notes}
 
 

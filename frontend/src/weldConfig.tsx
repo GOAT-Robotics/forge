@@ -1,0 +1,314 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as THREE from 'three';
+import { X, Crosshair, Trash2, Flame, LoaderCircle } from 'lucide-react';
+import PartScene, { type SceneApi, type SceneBody } from './partScene';
+import { api, assetJson } from './api';
+import type { Any } from './constants';
+import type { NavStyle } from './cadControls';
+import { pathLength, pathSection, pointAt } from './weld3d';
+import { seamSelection } from './welding';
+
+type Mode = 'full' | 'stitch' | 'tack' | 'manual';
+type Seam = Any & { world: THREE.Vector3[]; len: number };
+type Hit = { seam: Seam; s: number; px: number };
+type Candidate = { seam: Seam; type: 'linear' | 'stitch' | 'tack'; range: [number, number]; pitch?: number; length?: number; pattern: 'single' | 'full' | 'manual' };
+
+const COL = { preview: 0xf5c518, weld: 0xe0479e, remove: 0xef4444, focus: 0x2563eb, seam: 0xf59e0b };
+const PROCESSES = [['MIG/MAG (135)', 'MIG/MAG'], ['TIG (141)', 'TIG'], ['Laser (52)', 'Laser'], ['MMA (111)', 'Stick']];
+const seamId = (f: Any) => `${f.part}|${f.occurrence || 0}|${f.key ?? f.index}`;
+const fmt = (mm: number) => mm >= 1000 ? `${(mm / 1000).toFixed(2)} m` : `${mm < 10 ? mm.toFixed(1) : Math.round(mm)} mm`;
+const m4 = (m?: number[][]) => { const t = new THREE.Matrix4(); if (m) t.set(...(m.flat() as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number])); return t; };
+
+/** Evenly spaced pattern over a seam: n beads of `len` with `gap` between, centred. */
+function pattern(L: number, len: number, gap: number): [number, number, number] {
+  const n = Math.max(1, Math.floor((L + gap) / (len + gap)));
+  const used = n * len + (n - 1) * gap, off = Math.max(0, (L - used) / 2);
+  return [off, Math.min(L, L - off), len + gap];
+}
+
+/**
+ * Weld dialog: hover a seam to preview the weld, click to add it, click a weld to remove it. Full welds the
+ * whole seam; Stitch places one stitch (or a stitch pattern along the seam); Tack places one tack (or a row);
+ * Manual: press on a seam and drag along it. Overlapping welds on a seam merge. Each weld is saved at once.
+ */
+export default function WeldConfig({ revision, partIds, parts, joints, editable, navStyle, close }: {
+  revision: string; partIds: string[]; parts: Any[]; joints: Any[]; editable: boolean; navStyle?: NavStyle; close: (changed: boolean) => void;
+}) {
+  const [seams, setSeams] = useState<Seam[] | null>(null);
+  const [bodies, setBodies] = useState<SceneBody[] | null>(null);
+  const [message, setMessage] = useState('');
+  const [welds, setWelds] = useState<Any[]>(() => joints.filter(j => j.kind === 'weld' && (j.data.parts || []).every((p: string) => partIds.includes(p))));
+  const [mode, setMode] = useState<Mode>('full');
+  const [stitchLen, setStitchLen] = useState(25);
+  const [gap, setGap] = useState(50);
+  const [fullPattern, setFullPattern] = useState(false);
+  const [process, setProcess] = useState('MIG/MAG (135)');
+  const [hover, setHover] = useState<{ cand?: Candidate; weld?: string; merge?: string[] } | null>(null);
+  const [focus, setFocus] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{ seam: Seam; a: number; b: number } | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const changed = useRef(false);
+  const scene = useRef<SceneApi | null>(null);
+  const layer = useRef<{ seams: THREE.Group; welds: THREE.Group; preview: THREE.Group } | null>(null);
+  const matrices = useRef<Map<string, THREE.Matrix4>>(new Map());
+  const names = useMemo(() => Object.fromEntries(parts.map(p => [p.id, p.name])), [parts]);
+
+  // ---------------------------------------------------------------- seams + placements
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const [r, inst] = await Promise.all([api(`/revisions/${revision}/weld-seams`, 'POST', { parts: partIds }), assetJson(`/revisions/${revision}/assets/instances.json`).catch(() => ({}))]);
+        if (!live) return;
+        const keyOf = (p: string, o: number) => `${p}|${o}`;
+        const used = new Map<string, SceneBody>();
+        const add = (p: string, o = 0) => { const k = keyOf(p, o); if (!used.has(k)) used.set(k, { part: p, occurrence: o, matrix: inst?.[p]?.[o]?.matrix }); };
+        for (const s of r.seams || []) { add(s.part, s.occurrence || 0); add(s.other_part, s.other_occurrence || 0); }
+        for (const w of welds) for (const f of w.data.faces || []) add(f.part, f.occurrence || 0);
+        for (const p of partIds) if (![...used.values()].some(b => b.part === p)) add(p, 0);
+        // one part on its own: draw it at its own coordinates (no assembly placement needed)
+        const list = [...used.values()];
+        if (partIds.length === 1 && list.every(b => b.part === partIds[0] && (b.occurrence || 0) === (list[0].occurrence || 0))) list.forEach(b => { b.matrix = undefined; });
+        matrices.current = new Map(list.map(b => [keyOf(b.part, b.occurrence || 0), m4(b.matrix)]));
+        const ws: Seam[] = (r.seams || []).map((s: Any) => {
+          const t = matrices.current.get(keyOf(s.part, s.occurrence || 0)) || new THREE.Matrix4();
+          const world = (s.boundaries?.[0] || [s.start, s.end]).map((p: number[]) => new THREE.Vector3(...p).applyMatrix4(t));
+          return { ...s, world, len: pathLength(world) };
+        }).filter((s: Seam) => s.len > 0.5);
+        setBodies(list); setSeams(ws); setMessage(ws.length ? '' : r.message || 'No weldable seams were found.');
+      } catch (e: Any) { if (live) { setSeams([]); setBodies(partIds.map(p => ({ part: p }))); setMessage(e.message); } }
+    })();
+    return () => { live = false; };
+  }, [revision, partIds.join()]);
+
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); close(changed.current); } };
+    window.addEventListener('keydown', key, true); return () => window.removeEventListener('keydown', key, true);
+  }, []);
+
+  // world path of a saved weld face
+  const weldPaths = (w: Any) => (w.data.faces || []).filter((f: Any) => f.selection === 'edge').map((f: Any) => {
+    const t = matrices.current.get(`${f.part}|${f.occurrence || 0}`) || new THREE.Matrix4();
+    const path = (f.boundaries?.[0] || []).map((p: number[]) => new THREE.Vector3(...p).applyMatrix4(t));
+    return { face: f, path, len: pathLength(path) };
+  }).filter((x: Any) => x.path.length >= 2);
+
+  // ---------------------------------------------------------------- drawing
+  const tube = (path: THREE.Vector3[], r: number, color: number, opacity = 1) => {
+    if (path.length < 2 || pathLength(path) < 0.01) return null;
+    const curve = new THREE.CurvePath<THREE.Vector3>(); for (let i = 1; i < path.length; i++) if (path[i].distanceTo(path[i - 1]) > 1e-6) curve.add(new THREE.LineCurve3(path[i - 1], path[i]));
+    if (!curve.curves.length) return null;
+    const m = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.min(400, curve.curves.length * 6 + 8), r, 10, false), new THREE.MeshStandardMaterial({ color, roughness: 0.5, transparent: opacity < 1, opacity, depthTest: true }));
+    m.renderOrder = 12; return m;
+  };
+  const ball = (p: THREE.Vector3, r: number, color: number, opacity = 1) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 18, 12), new THREE.MeshStandardMaterial({ color, roughness: 0.5, transparent: opacity < 1, opacity })); m.position.copy(p); m.renderOrder = 12; return m; };
+  /** beads of one weld-like spec along a path */
+  const beads = (g: THREE.Group, path: THREE.Vector3[], type: string, range: number[] | undefined, pitch: number, seg: number, r: number, color: number, opacity = 1) => {
+    const L = pathLength(path); const [a, b] = range ? [Math.max(0, range[0]), Math.min(L, range[1])] : [0, L];
+    if (type === 'tack') { for (let s = a; s <= b + 0.01; s += Math.max(1, pitch)) { g.add(ball(pointAt(path, s), r * 1.7, color, opacity)); if (b - a < 0.01) break; } return; }
+    if (type === 'stitch') { for (let s = a; s < b - 0.01; s += Math.max(1, pitch)) { const m = tube(pathSection(path, s, Math.min(b, s + seg)), r, color, opacity); if (m) g.add(m); } return; }
+    const m = tube(a > 0.01 || b < L - 0.01 ? pathSection(path, a, b) : path, r, color, opacity); if (m) g.add(m);
+  };
+  const radius = () => { const s = scene.current; return s ? Math.max(0.3, s.radius * 0.0045) : 1; };
+  const clear = (g: THREE.Group) => { g.children.slice().forEach(c => { g.remove(c); c.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose?.(); (m.material as THREE.Material | undefined)?.dispose?.(); }); }); };
+
+  const drawAll = () => {
+    const L = layer.current, s = scene.current; if (!L || !s) return;
+    clear(L.seams); clear(L.welds); clear(L.preview);
+    const r = radius();
+    for (const seam of seams || []) {
+      const m = tube(seam.world, r * 0.4, COL.seam, 0.85); if (m) { m.renderOrder = 9; L.seams.add(m); }
+    }
+    for (const w of welds) {
+      const color = hover?.weld === w.id || hover?.merge?.includes(w.id) ? COL.remove : focus === w.id ? COL.focus : COL.weld;
+      const wd = w.data.weld || {};
+      for (const { face, path } of weldPaths(w)) beads(L.welds, path, wd.type || 'linear', face.range, Number(wd.pitch || 50), Number(wd.length || 25), r, color);
+    }
+    const c = hover?.cand;
+    if (c && !hover?.weld) beads(L.preview, c.seam.world, c.type, c.range, c.pitch || 0, c.length || 0, r * 1.15, COL.preview, 0.85);
+    if (drag) beads(L.preview, drag.seam.world, 'linear', [Math.min(drag.a, drag.b), Math.max(drag.a, drag.b)], 0, 0, r * 1.15, COL.preview, 0.9);
+    s.invalidate();
+  };
+  useEffect(drawAll, [seams, welds, hover, focus, drag]);
+
+  // ---------------------------------------------------------------- picking
+  const seamAt = (e: PointerEvent, s: SceneApi, only?: Seam): Hit | null => {
+    const rect = s.dom.getBoundingClientRect();
+    const scr = (p: THREE.Vector3) => { const q = p.clone().project(s.camera); return new THREE.Vector2((q.x + 1) / 2 * rect.width + rect.left, (1 - q.y) / 2 * rect.height + rect.top); };
+    const m = new THREE.Vector2(e.clientX, e.clientY);
+    const model = only ? null : s.hitModel(e.clientX, e.clientY);
+    let best: Hit | null = null;
+    for (const seam of only ? [only] : seams || []) {
+      let run = 0;
+      for (let i = 1; i < seam.world.length; i++) {
+        const A = seam.world[i - 1], B = seam.world[i], segLen = A.distanceTo(B);
+        const a = scr(A), b = scr(B), ab = b.clone().sub(a), t = Math.max(0, Math.min(1, ab.lengthSq() ? m.clone().sub(a).dot(ab) / ab.lengthSq() : 0));
+        const px = a.clone().addScaledVector(ab, t).distanceTo(m);
+        const P = A.clone().lerp(B, t);
+        if ((only || px < 14) && (!best || px < best.px)) {
+          // hidden behind the part? (a seam lies on the surface, so allow a little depth)
+          const occluded = model && model.distance < s.camera.position.distanceTo(P) - Math.max(1.5, 6 / s.pxPerMm(P));
+          if (!occluded || only) best = { seam, s: run + segLen * t, px };
+        }
+        run += segLen;
+      }
+    }
+    return best;
+  };
+  const weldAt = (e: PointerEvent, s: SceneApi, near?: Hit | null): string | null => {
+    // a saved weld under the cursor: on the hovered seam within its range (tacks: within a few mm)
+    if (!near) return null;
+    const id = seamId(near.seam);
+    for (const w of welds) {
+      const wd = w.data.weld || {};
+      for (const f of w.data.faces || []) {
+        if (f.selection !== 'edge' || seamId(f) !== id) continue;
+        const [a, b] = f.range || [0, near.seam.len];
+        const tol = Math.max(1.5, 8 / s.pxPerMm(pointAt(near.seam.world, near.s)));
+        if (wd.type === 'tack') {
+          const pitch = Math.max(1, Number(wd.pitch || 50));
+          for (let x = a; x <= b + 0.01; x += pitch) { if (Math.abs(near.s - x) < tol) return w.id; if (b - a < 0.01) break; }
+        } else if (near.s >= a - tol * 0.3 && near.s <= b + tol * 0.3) return w.id;
+      }
+    }
+    return null;
+  };
+  const candidate = (h: Hit): Candidate => {
+    const L = h.seam.len;
+    if (mode === 'full' || mode === 'manual') return { seam: h.seam, type: 'linear', range: [0, L], pattern: mode === 'manual' ? 'manual' : 'full' };
+    if (mode === 'stitch') {
+      if (fullPattern) { const [a, b, p] = pattern(L, stitchLen, gap); return { seam: h.seam, type: 'stitch', range: [a, b], pitch: p, length: stitchLen, pattern: 'full' }; }
+      const len = Math.min(stitchLen, L); const a = Math.max(0, Math.min(L - len, h.s - len / 2));
+      return { seam: h.seam, type: 'stitch', range: [a, a + len], pitch: len, length: len, pattern: 'single' };
+    }
+    if (fullPattern) { const [a, b, p] = pattern(L, 0, gap); return { seam: h.seam, type: 'tack', range: [a, b], pitch: p, pattern: 'full' }; }
+    return { seam: h.seam, type: 'tack', range: [h.s, h.s], pitch: 1, pattern: 'single' };
+  };
+  /** welds of the same kind on the same seam that a new one would overlap → merged into one */
+  const overlaps = (c: Candidate) => c.type === 'tack' ? [] : welds.filter(w => {
+    const wd = w.data.weld || {}; if ((wd.type || 'linear') !== c.type || (c.type === 'stitch' && Number(wd.length) !== Number(c.length || 0) && wd.pattern !== 'single')) return false;
+    return (w.data.faces || []).some((f: Any) => f.selection === 'edge' && seamId(f) === seamId(c.seam) && (f.range || [0, c.seam.len])[0] <= c.range[1] + 0.01 && (f.range || [0, c.seam.len])[1] >= c.range[0] - 0.01);
+  }).map(w => w.id);
+
+  // ---------------------------------------------------------------- saving
+  const payload = (c: Candidate, range: [number, number]) => {
+    const s = c.seam;
+    return {
+      kind: 'weld', parts: [...new Set([s.part, s.other_part].filter(Boolean))], name: '', sequence: 0,
+      faces: [{ ...seamSelection(s), range: [Math.max(0, range[0]), Math.min(s.length || s.len, range[1])] }],
+      weld: { process, type: c.type, size: String(s.size || 3), thickness: String(s.size || 3), sides: 'one', length: c.type === 'stitch' ? String(c.length) : '', pitch: c.pitch ? String(c.pitch) : '', ground: false, pattern: c.pattern },
+    };
+  };
+  const reload = async () => {
+    const all = await api(`/revisions/${revision}/joints`);
+    setWelds(all.filter((j: Any) => j.kind === 'weld' && (j.data.parts || []).every((p: string) => partIds.includes(p))));
+  };
+  const run = async (fn: () => Promise<void>) => { if (!editable) return; setBusy(true); setError(''); try { await fn(); changed.current = true; await reload(); } catch (e: Any) { setError(e.message); } finally { setBusy(false); } };
+  const addCandidate = (c: Candidate) => run(async () => {
+    const merge = overlaps(c);
+    if (!merge.length) { await api(`/revisions/${revision}/joints`, 'POST', payload(c, c.range)); return; }
+    let [a, b] = c.range;
+    for (const id of merge) for (const f of welds.find(w => w.id === id)!.data.faces) if (seamId(f) === seamId(c.seam)) { const r = f.range || [0, c.seam.len]; a = Math.min(a, r[0]); b = Math.max(b, r[1]); }
+    const keep = welds.find(w => w.id === merge[0])!;
+    const body = payload(c, [a, b]); body.weld = { ...keep.data.weld, ...body.weld, ground: !!keep.data.weld?.ground, pattern: c.pattern === 'full' || (a <= 0.01 && b >= c.seam.len - 0.01) ? 'full' : 'manual' };
+    await api(`/joints/${keep.id}`, 'PUT', body);
+    for (const id of merge.slice(1)) await api(`/joints/${id}`, 'DELETE');
+  });
+  const remove = (id: string) => run(async () => { await api(`/joints/${id}`, 'DELETE'); });
+  const setGround = (w: Any, v: boolean) => run(async () => { await api(`/joints/${w.id}`, 'PUT', { kind: 'weld', parts: w.data.parts, faces: w.data.faces, name: w.data.name || '', sequence: w.data.sequence || 0, notes: w.data.notes || '', weld: { ...w.data.weld, ground: v } }); });
+
+  // ---------------------------------------------------------------- pointer
+  const onHover = (e: PointerEvent, s: SceneApi) => {
+    if (busy) return;
+    const h = seamAt(e, s);
+    if (!h) { setHover(null); return; }
+    const existing = weldAt(e, s, h);
+    if (existing) { setHover({ weld: existing }); return; }
+    const c = candidate(h);
+    const merge = overlaps(c);
+    setHover({ cand: c, merge: merge.length ? merge : undefined });
+  };
+  const onClick = (e: PointerEvent, s: SceneApi) => {
+    if (!editable || busy || mode === 'manual') return;
+    const h = seamAt(e, s); if (!h) return;
+    const existing = weldAt(e, s, h);
+    if (existing) { remove(existing); setHover(null); return; }
+    addCandidate(candidate(h)); setHover(null);
+  };
+  const onPress = (e: PointerEvent, s: SceneApi) => {
+    if (!editable || busy || mode !== 'manual') return false;
+    const h = seamAt(e, s); if (!h || weldAt(e, s, h)) return false;
+    setDrag({ seam: h.seam, a: h.s, b: h.s }); setHover(null); return true;
+  };
+  const onDrag = (e: PointerEvent, s: SceneApi) => { setDrag(d => { if (!d) return d; const h = seamAt(e, s, d.seam); return h ? { ...d, b: h.s } : d; }); };
+  const onRelease = () => {
+    setDrag(d => {
+      if (d) {
+        const a = Math.min(d.a, d.b), b = Math.max(d.a, d.b);
+        if (b - a > 0.5) addCandidate({ seam: d.seam, type: 'linear', range: [a, b], pattern: 'manual' });
+      }
+      return null;
+    });
+  };
+  // clicking a weld in manual mode removes it too
+  const onClickManual = (e: PointerEvent, s: SceneApi) => { if (mode !== 'manual') return onClick(e, s); const h = seamAt(e, s); const w = h && weldAt(e, s, h); if (w) remove(w); };
+
+  // ---------------------------------------------------------------- list
+  const describe = (w: Any) => {
+    const wd = w.data.weld || {}; const faces = (w.data.faces || []).filter((f: Any) => f.selection === 'edge');
+    const spans = faces.map((f: Any) => { const r = f.range; return r ? r[1] - r[0] : Number(f.length || 0); });
+    const total = spans.reduce((a: number, b: number) => a + b, 0);
+    if (wd.type === 'tack') { const n = faces.reduce((k: number, f: Any) => k + (f.range ? Math.floor((f.range[1] - f.range[0]) / Math.max(1, Number(wd.pitch || 50)) + 1e-6) + 1 : 1), 0); return n > 1 ? `${n} tacks · ${fmt(Number(wd.pitch))} apart` : 'Tack'; }
+    if (wd.type === 'stitch') { const seg = Number(wd.length || 25), pitch = Number(wd.pitch || 50); const n = Math.max(1, Math.round((total - seg) / Math.max(1, pitch)) + 1); return n > 1 ? `Stitch ${n} × ${fmt(seg)} · ${fmt(pitch - seg)} gap` : `Stitch · ${fmt(seg)}`; }
+    if (wd.type === 'patch') return 'Patch (area)';
+    return `Length: ${fmt(total)}`;
+  };
+  const chip = drag ? { cls: 'warn', text: 'Release to finish weld' }
+    : hover?.weld ? { cls: 'danger', text: 'Click to remove weld' }
+    : hover?.merge ? { cls: 'danger', text: 'Click to merge welds' }
+    : hover?.cand ? { cls: 'warn', text: mode === 'manual' ? 'Hold and drag to weld' : 'Click to weld' }
+    : { cls: '', text: seams === null ? 'Finding seams…' : !seams.length ? 'No seams to weld' : mode === 'manual' ? 'Hold and drag along a seam' : 'Click to weld' };
+  const selParts = partIds.map(id => names[id] || id);
+
+  return (
+    <div className="overlay top cfg-overlay" onMouseDown={e => { if (e.target === e.currentTarget) close(changed.current); }}>
+      <section className="cfg-dialog" role="dialog" aria-modal="true" aria-label="Weld configuration">
+        <header className="cfg-head">
+          <div className="cfg-title"><b>Weld configuration</b><small title={selParts.join(', ')}>{selParts.length === 1 ? selParts[0] : `${selParts.length} parts · ${selParts.slice(0, 3).join(', ')}${selParts.length > 3 ? '…' : ''}`}</small></div>
+          <button type="button" className="icon cfg-close" aria-label="Close" onClick={() => close(changed.current)}><X size={18} /></button>
+        </header>
+        <div className="cfg-body">
+          {bodies ? <PartScene revision={revision} bodies={bodies} navStyle={navStyle} cursor={hover?.weld || hover?.cand ? 'pointer' : undefined}
+            onReady={s => { scene.current = s; const g = { seams: new THREE.Group(), welds: new THREE.Group(), preview: new THREE.Group() }; s.overlay.add(g.seams, g.welds, g.preview); layer.current = g; drawAll(); }}
+            onHover={onHover} onClick={onClickManual} onPress={onPress} onDrag={onDrag} onRelease={onRelease}>
+            <div className={'cfg-chip ' + chip.cls}>{seams === null ? <LoaderCircle size={16} className="spin" /> : <Crosshair size={16} />}<span><b>{chip.text}</b></span></div>
+            {message && <div className="cfg-msg">{message}</div>}
+          </PartScene> : <div className="pscene"><div className="pscene-state"><span className="spinner" />Finding seams…</div></div>}
+          <aside className="cfg-panel wc-panel">
+            <section className="wc-card">
+              <h4>Weld type</h4>
+              <div className="wc-seg" role="tablist">{([['full', 'Full'], ['stitch', 'Stitch'], ['tack', 'Tack'], ['manual', 'Manual']] as [Mode, string][]).map(([m, l]) => <button key={m} type="button" role="tab" aria-selected={mode === m} className={mode === m ? 'on' : ''} onClick={() => { setMode(m); setHover(null); }}>{l}</button>)}</div>
+              {mode === 'full' && <p className="wc-help">Click a seam to weld its whole length.</p>}
+              {mode === 'manual' && <p className="wc-help">Hold and drag along a seam. Release to finish the weld.</p>}
+              {(mode === 'stitch' || mode === 'tack') && <div className="wc-fields">
+                {mode === 'stitch' && <label>Length<span className="wc-num"><input type="number" min={2} max={500} step={1} value={stitchLen} onChange={e => setStitchLen(Math.max(1, Number(e.target.value) || 1))} /><i>mm</i></span></label>}
+                <label>Pattern<span className="wc-toggle"><input type="checkbox" role="switch" checked={fullPattern} onChange={e => setFullPattern(e.target.checked)} /><b>Full length</b></span></label>
+                {fullPattern && <label>Gap<span className="wc-num"><input type="number" min={2} max={1000} step={1} value={gap} onChange={e => setGap(Math.max(1, Number(e.target.value) || 1))} /><i>mm</i></span></label>}
+              </div>}
+              <label className="wc-proc">Process<select value={process} onChange={e => setProcess(e.target.value)}>{PROCESSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+            </section>
+            {error && <div className="cfg-error">{error}</div>}
+            {!welds.length ? <div className="wc-empty"><Flame size={34} /><b>No welds added yet</b><small>Click on the 3D model to add weld points</small></div>
+              : <div className="wc-list">{welds.map((w, i) => (
+                <div key={w.id} className={'wc-weld' + (focus === w.id ? ' focus' : '')} onMouseEnter={() => setFocus(w.id)} onMouseLeave={() => setFocus(null)}>
+                  <span><b>Weld #{i + 1}</b><small>{describe(w)}{(w.data.parts || []).length > 1 ? ` · ${(w.data.parts || []).map((p: string) => names[p] || p).join(' + ')}` : ''}</small></span>
+                  <label className="wc-ground"><input type="checkbox" checked={!!w.data.weld?.ground} disabled={!editable || busy} onChange={e => setGround(w, e.target.checked)} />Ground</label>
+                  <button type="button" className="icon wc-del" title="Delete weld" disabled={!editable || busy} onClick={() => remove(w.id)}><Trash2 size={16} /></button>
+                </div>))}</div>}
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}

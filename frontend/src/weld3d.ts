@@ -5,7 +5,7 @@ export type WeldSelection = {
   part: string; occurrence?: number; selection?: 'face' | 'edge'; type?: string; index?: number;
   point?: number[]; normal?: number[]; start?: number[]; end?: number[]; length?: number;
   boundaries?: number[][][]; preview_mesh?: { vertices: number[][]; triangles: number[][] };
-  joint?: 'fillet' | 'corner' | 'butt' | 'gap'; legs?: number[][]; opening?: number[]; gap?: number | null; other_part?: string; other_occurrence?: number;
+  joint?: 'fillet' | 'corner' | 'butt' | 'gap'; legs?: number[][]; range?: number[]; opening?: number[]; gap?: number | null; other_part?: string; other_occurrence?: number;
 };
 export type WeldShape = { id: string; label?: string; faces: WeldSelection[]; weld?: Record<string, unknown>; active?: boolean };
 

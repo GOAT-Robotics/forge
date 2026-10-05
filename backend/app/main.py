@@ -317,7 +317,8 @@ def validate_spec(p,spec):
   if key not in MANUAL_CHECKS or (value and (not isinstance(value,str) or len(value.strip())<10)):raise HTTPException(422,'Manual checks require a substantive verification note')
  for fid,fs in spec.feature_specs.items():
   if fid not in [h['id'] for h in p['geometry']['holes']]+[b['id'] for b in p['geometry']['bends']]+['DIM_X','DIM_Y','DIM_Z']:raise HTTPException(422,'Unknown feature ID')
-  if not isinstance(fs,dict) or set(fs)-{'designation','lower','upper'}:raise HTTPException(422,'Feature specification needs designation, lower and upper fields')
+  if not isinstance(fs,dict) or set(fs)-{'designation','lower','upper','hardware'}:raise HTTPException(422,'Feature specification needs designation, lower and upper fields')
+  if 'hardware' in fs and (not isinstance(fs['hardware'],dict) or fs['hardware'].get('type') not in HW_TYPES):raise HTTPException(422,'Invalid hole hardware')
   try:
    limits=[float(fs[k]) for k in ('lower','upper') if fs.get(k) is not None]
    if not all(math.isfinite(x) and x>0 for x in limits) or (len(limits)==2 and limits[0]>limits[1]):raise ValueError()
@@ -329,6 +330,50 @@ def validate_spec(p,spec):
   if not isinstance(op,dict) or not str(op.get('name','')).strip():raise HTTPException(422,'Each process operation needs a name')
   ops.append({'name':str(op['name']).strip()[:120],'detail':str(op.get('detail',''))[:400]})
  return ops
+from .hardware import CATALOG as HW_CATALOG,BY_ID as HW_BY_ID,TYPES as HW_TYPES,designation as hw_designation,clean_custom as hw_custom
+@app.get('/api/hardware-catalog')
+def hardware_catalog(request:Request):
+ user(request)
+ return {'types':HW_TYPES,'items':HW_CATALOG}
+class HoleHardware(BaseModel):
+ model_config=ConfigDict(extra='forbid')
+ holes:list[str]=Field(min_length=1,max_length=2000)
+ item:str|None=None
+ custom:dict|None=None
+ side:int|None=None
+@app.put('/api/parts/{pid}/hardware')
+def set_hole_hardware(pid:str,a:HoleHardware,request:Request):
+ """Assign (or remove) hole hardware — insert, tap or countersink — on the selected holes. The side is +1 / -1
+ along each hole's axis (which face the hardware is pressed in from); the drawing calls it near / far side."""
+ p=get_part(pid);u=revision_access(request,p['revision_id'],True,'part.edit');mutable(p['revision_id'])
+ holes={h['id']:h for h in p['geometry'].get('holes',[])}
+ if any(h not in holes for h in a.holes):raise HTTPException(422,'Unknown hole')
+ if a.side not in (None,1,-1):raise HTTPException(422,'Side must be 1 or -1')
+ item=None
+ if a.custom is not None:
+  try:item=hw_custom(a.custom)
+  except ValueError as e:raise HTTPException(422,str(e))
+ elif a.item:
+  if a.item not in HW_BY_ID:raise HTTPException(422,'Unknown hardware')
+  item=dict(HW_BY_ID[a.item])
+ spec=dict(p['spec']);fs={k:dict(v) for k,v in (spec.get('feature_specs') or {}).items()}
+ for hid in a.holes:
+  cur=fs.get(hid,{})
+  if item is None and a.side is not None and cur.get('hardware'):
+   cur['hardware']={**cur['hardware'],'side':a.side}  # flip only
+  elif item is None:
+   if cur.get('hardware'):cur.pop('hardware',None);cur.pop('designation',None)
+  else:
+   side=a.side if a.side is not None else (cur.get('hardware') or {}).get('side',1)
+   cur['hardware']={**item,'side':side,'axis':[round(float(x),6) for x in holes[hid].get('axis',[0,0,1])]};cur['designation']=hw_designation(item)
+  if cur:fs[hid]=cur
+  else:fs.pop(hid,None)
+ spec['feature_specs']=fs
+ with db.connect() as c:
+  c.execute('UPDATE parts SET spec=? WHERE id=?',(json.dumps(spec),pid))
+  db.audit(c,u['name'],'part.hardware.updated',{'part':pid,'holes':a.holes,'item':(item or {}).get('id'),'name':(item or {}).get('name'),'side':a.side},p['revision_id'])
+ invalidate(p['revision_id'],pid)
+ return {'ok':True,'feature_specs':fs}
 @app.patch('/api/parts/{pid}')
 def update_part(pid:str,a:PartEdit,request:Request):
  p=get_part(pid);u=revision_access(request,p['revision_id'],True);mutable(p['revision_id'])

@@ -1,4 +1,4 @@
-import time,json,traceback,os,zipfile,hashlib,re
+import time,json,traceback,os,zipfile,hashlib,re,math
 from pathlib import Path
 import numpy as np
 import trimesh,ezdxf
@@ -39,10 +39,41 @@ def parts_for(rid):
  for p in ps:p['geometry']=json.loads(p['geometry']);p['spec']=json.loads(p['spec'])
  return ps
 
+def hardware_holes(poly,g,spec):
+ """Holes with hole hardware are cut at the hardware's mounting / pilot hole (like a quoting portal's auto-adjust):
+ the hole centre is mapped into the flat with its skin's development transform and the matching cut-out is
+ replaced by a circle of the required diameter. Returns the new outline and what changed."""
+ from shapely.geometry import Polygon,Point
+ fs=spec.get('feature_specs') or {};maps=getattr(unfold,'maps',None) or [];th=float(g.get('thickness') or 0)
+ holes={h['id']:h for h in g.get('holes',[])};changes=[];rings=[list(r.coords) for r in poly.interiors]
+ for hid,f in fs.items():
+  hw=(f or {}).get('hardware') or {}
+  h=holes.get(hid)
+  if not h or not hw.get('hole'):continue
+  c=np.array(h['center'],float);ax=np.array(h['axis'],float)
+  # several (coplanar) flanges can hold the hole's plane: the right one maps the hole onto a matching cut-out
+  best=None
+  for o,n,R,t in maps:
+   if abs(np.dot(n,ax))<.99 or abs(np.dot(c-o,n))>th+.05:continue
+   q_=(R@(c-n*np.dot(c-o,n))+t)[:2]
+   for i,r in enumerate(rings):
+    pg=Polygon(r)
+    if pg.area<=0:continue
+    d=Point(pg.centroid).distance(Point(q_))
+    if d<.25 and abs(2*math.sqrt(pg.area/math.pi)-h['diameter'])<.1 and (best is None or d<best[0]):best=(d,i,q_)
+  if best is None:continue
+  q=best[2]
+  want=float(hw['hole'])
+  if abs(want-h['diameter'])<=.02:continue
+  k=64;rings[best[1]]=[(q[0]+want/2*math.cos(2*math.pi*j/k),q[1]+want/2*math.sin(2*math.pi*j/k)) for j in range(k+1)]
+  changes.append({'hole':hid,'center':[round(float(q[0]),4),round(float(q[1]),4)],'from':h['diameter'],'to':want,'item':hw.get('pn') or hw.get('name')})
+ if not changes:return poly,[]
+ out=Polygon(list(poly.exterior.coords),rings)
+ return (out if out.is_valid else poly),(changes if out.is_valid else [])
 def export_flat(shape,g,spec,folder):
  if g['category']!='sheet_metal':return
  try:
-  poly,bends=unfold(shape,g,spec.get('k_factor',.4));flat={'outline':list(poly.exterior.coords),'holes':[list(r.coords) for r in poly.interiors],'bends':bends,'k_factor':spec.get('k_factor',.4),'status':'provisional' if not spec.get('k_factor_approved') else 'approved_k'}
+  poly,bends=unfold(shape,g,spec.get('k_factor',.4));poly,hw_holes=hardware_holes(poly,g,spec);flat={'outline':list(poly.exterior.coords),'holes':[list(r.coords) for r in poly.interiors],'bends':bends,'k_factor':spec.get('k_factor',.4),'status':'provisional' if not spec.get('k_factor_approved') else 'approved_k','hardware_holes':hw_holes}
   (folder/'flat.json').write_text(json.dumps(flat));d=ezdxf.new('R2013');d.units=4;m=d.modelspace();d.layers.new('CUT');d.layers.new('BEND',dxfattribs={'color':3});d.layers.new('LABELS',dxfattribs={'color':2})
   for coords in [flat['outline']]+flat['holes']:m.add_lwpolyline(coords,close=True,dxfattribs={'layer':'CUT'})
   for b in bends:m.add_line(b['a'],b['b'],dxfattribs={'layer':'BEND'});m.add_text(f"{b['id']} {b['angle']:.1f}deg {b.get('direction','').upper()} R{b['radius']:.2f}",dxfattribs={'height':2.5,'insert':b['a'],'layer':'LABELS'})

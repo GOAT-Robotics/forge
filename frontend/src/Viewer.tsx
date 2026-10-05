@@ -82,6 +82,8 @@ const GHOST_OPACITY = 0.14;
 const EXPLODE_SPREAD = 0.9; // multiple of assembly radius at 100 % explode
 
 type Engine = {
+  /** render scheduling: last drawn camera state, and keep drawing until this time (ms) after a change */
+  camKey?: string; activeUntil: number;
   scene: THREE.Scene;
   meshes: THREE.Mesh[];
   renderer: THREE.WebGLRenderer;
@@ -161,6 +163,8 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   representativeRef.current = representativeOccurrences;
   const host = useRef<HTMLDivElement>(null);
   const engine = useRef<Engine | null>(null);
+  // any prop / state change may have changed the scene: draw for a moment
+  useEffect(() => { if (engine.current) engine.current.activeUntil = performance.now() + 700; });
   // Tool palette: labels while they fit the canvas, icons only (tooltips keep the names) when they would spill over.
   const palette = useRef<HTMLDivElement>(null);
   const fitPalette = () => {
@@ -248,7 +252,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const e: Engine = {
       scene, meshes, renderer, camera, controls, plane,
       center: new THREE.Vector3(), radius: 100, minZ: 0, maxZ: 100,
-      explodeCurrent: 0, explodeTarget: 0, fly: null, hovered: null, grid: null, planeGroup: null, featureGroup: null, weldGroup: null, savedWeldGroup: null, seamGroup: null, references: [], hoverGroup: null, edgeLines: [], loaded: false,
+      activeUntil: performance.now() + 2000, explodeCurrent: 0, explodeTarget: 0, fly: null, hovered: null, grid: null, planeGroup: null, featureGroup: null, weldGroup: null, savedWeldGroup: null, seamGroup: null, references: [], hoverGroup: null, edgeLines: [], loaded: false,
       fit: () => {}, applyExplode: () => {},
     };
     engine.current = e;
@@ -578,6 +582,9 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       .catch(err => { if (!cancelled) { setError(err.message); setLoading(false); } });
 
     // ---- Render loop --------------------------------------------------------------------------
+    const wake = () => { e.activeUntil = performance.now() + 700; };
+    for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'pointerup'] as const) container.addEventListener(ev, wake, { passive: true });
+    window.addEventListener('keydown', wake);
     let frames = 0, last = performance.now(), slow = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
@@ -600,7 +607,11 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         e.applyExplode();
       }
       if (!container.clientWidth) return; // kept mounted behind another tab: no GPU work
+      if (document.querySelector('.cfg-overlay')) return; // a configuration dialog has its own 3D view
       controls.update();
+      // idle model: no GPU work. Redraw while the camera moves, after any change (React commit, input) and while animating.
+      const camKey = camera.position.x.toFixed(3) + ',' + camera.position.y.toFixed(3) + ',' + camera.position.z.toFixed(3) + ',' + camera.quaternion.x.toFixed(5) + ',' + camera.quaternion.y.toFixed(5) + ',' + camera.quaternion.z.toFixed(5) + ',' + camera.quaternion.w.toFixed(5) + ',' + container.clientWidth + 'x' + container.clientHeight;
+      if (camKey !== e.camKey || e.fly || e.explodeTarget !== e.explodeCurrent || now < e.activeUntil) e.camKey = camKey; else return;
       renderer.render(scene, camera);
       drawTriad();
       frames++;
@@ -620,6 +631,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       cancelAnimationFrame(moveRaf);
       if (hoverTimer) clearTimeout(hoverTimer);
       obs.disconnect();
+      window.removeEventListener('keydown', wake);
       controls.dispose();
       renderer.domElement.removeEventListener('pointerdown', onDown);
       renderer.domElement.removeEventListener('pointerup', onUp);
@@ -871,14 +883,14 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const material = beadMaterial(w.process, draft);
     const world = (p: number[] | undefined, t: THREE.Matrix4) => new THREE.Vector3(...(p || [0, 0, 0])).applyMatrix4(t);
     const worldDir = (d: number[] | undefined, t: THREE.Matrix4) => d ? new THREE.Vector3(...d).transformDirection(t) : null;
-    const seams: { path: THREE.Vector3[]; legs: [THREE.Vector3, THREE.Vector3] | null; normal: THREE.Vector3 | null; joint?: string }[] = [];
+    const seams: { path: THREE.Vector3[]; legs: [THREE.Vector3, THREE.Vector3] | null; normal: THREE.Vector3 | null; joint?: string; range?: number[] }[] = [];
     const faceBoundaries: THREE.Vector3[][][] = [];
     for (const item of shape.faces || []) {
       const t = occurrenceMatrix(e, item.part, item.occurrence); if (!t) continue;
       const boundaries = (item.boundaries || []).map(path => path.map(point => world(point, t)));
       if (item.selection === 'edge') {
         const legs = item.legs?.length === 2 ? [worldDir(item.legs[0], t)!, worldDir(item.legs[1], t)!] as [THREE.Vector3, THREE.Vector3] : null;
-        for (const path of boundaries) if (path.length >= 2) seams.push({ path, legs, normal: worldDir(item.normal, t), joint: item.joint });
+        for (const path of boundaries) if (path.length >= 2) seams.push({ path, legs, normal: worldDir(item.normal, t), joint: item.joint, range: item.range });
       } else faceBoundaries.push(boundaries);
       if (draft || weldType === 'patch') {
         if (item.preview_mesh?.vertices?.length && item.preview_mesh.triangles?.length) {
@@ -900,12 +912,23 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       const mesh = new THREE.Mesh(beadGeometry(path, { joint: seam.joint, legs: seam.legs, normal: seam.normal, size, minVisible, ripple: !String(w.process || '').startsWith('Laser') }), material);
       mesh.userData.weldId = shape.id; mesh.renderOrder = 6; group.add(mesh);
     };
+    // a weld can cover part of its seam: range = [from, to] mm along the seam
+    const span = (seam: typeof seams[number]) => { const total = pathLength(seam.path); const r = seam.range; return r ? [Math.max(0, Math.min(total, r[0])), Math.max(0, Math.min(total, r[1]))] : [0, total]; };
     if (weldType === 'linear' || weldType === 'stitch' || !['patch', 'tack'].includes(weldType)) for (const seam of seams) {
+      const [from, to] = span(seam);
       if (weldType === 'stitch') {
         const pitch = Math.max(1, Number(w.pitch || 50)), segment = Math.min(pitch, Math.max(1, Number(w.length || 25)));
-        const total = pathLength(seam.path);
-        for (let start = 0; start < total; start += pitch) addBead(pathSection(seam.path, start, Math.min(total, start + segment)), seam);
-      } else addBead(seam.path, seam);
+        for (let start = from; start < to - 0.01; start += pitch) addBead(pathSection(seam.path, start, Math.min(to, start + segment)), seam);
+      } else addBead(from > 0 || to < pathLength(seam.path) - 0.01 ? pathSection(seam.path, from, to) : seam.path, seam);
+    }
+    // tacks placed on a seam: one at `from`, or a row every `pitch` from `from` to `to`
+    if (weldType === 'tack') for (const seam of seams) {
+      if (!seam.range) continue;
+      const [from, to] = span(seam), pitch = Math.max(1, Number(w.pitch || 40)), r = Math.max(Math.max(size, 2) * 0.6, minVisible);
+      for (let at = from; at <= to + 0.01; at += pitch) {
+        const tack = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), material); tack.position.copy(pointAt(seam.path, at)); tack.userData.weldId = shape.id; tack.renderOrder = 6; group.add(tack);
+        if (to - from < 0.01) break;
+      }
     }
     if (weldType === 'tack') {
       const placement = w.placement as { part?: string; point?: number[]; occurrence?: number } | undefined;

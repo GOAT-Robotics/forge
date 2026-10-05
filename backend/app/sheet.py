@@ -1202,13 +1202,37 @@ def draw_view_geometry(sh, v, hidden=True, layer='VISIBLE'):
 
 
 # --------------------------------------------------------------------------------------------- labels
-def callout_lines(group, spec):
-    """SolidWorks hole-callout wording: count, diameter, depth/THRU, thread, counterbore/countersink."""
+def hole_hardware(h, spec):
+    fs = spec.get('feature_specs', {}) or {}
+    return next(((fs.get(i) or {}).get('hardware') for i in h['ids'] if (fs.get(i) or {}).get('hardware')), None)
+
+
+def hardware_side(hw, view):
+    """'NEAR SIDE' / 'FAR SIDE' for the hardware's insertion face as seen in this view (view.n points at the reader)."""
+    if not hw or view is None or not hw.get('axis'):
+        return ''
+    d = float(np.dot(np.asarray(hw['axis'], float) * (hw.get('side') or 1), view.n))
+    return 'NEAR SIDE' if d > .3 else 'FAR SIDE' if d < -.3 else ''
+
+
+def hw_key(h, spec, view):
+    """Holes with different hardware (or side) never share a callout or a hole-table letter."""
+    hw = hole_hardware(h, spec)
+    return (hw.get('id'), hw.get('name'), hardware_side(hw, view)) if hw else None
+
+
+def callout_lines(group, spec, view=None):
+    """SolidWorks hole-callout wording: count, diameter, depth/THRU, thread, counterbore/countersink.
+    Hole hardware (insert, tap, countersink) chosen by the engineer: its line follows the size line, with the
+    insertion side for this view; an insert's mounting hole replaces the modelled diameter (hole to cut)."""
     h = group[0]
     n = len(group)
     pre = f'{n} x ' if n > 1 else ''
     thru = 'THRU ALL' if h.get('thru_all') else 'THRU'
     steps = h.get('steps') or [[h['dia'], h['depth']]]
+    hw = hole_hardware(h, spec)
+    if hw and hw.get('hole') and len(steps) == 1 and abs(float(hw['hole']) - steps[0][0]) > .02:
+        steps = [[float(hw['hole']), steps[0][1]]]
     lines = []
     for i, (dia, ln) in enumerate(steps):
         last = i == len(steps) - 1
@@ -1218,7 +1242,11 @@ def callout_lines(group, spec):
     desig = next((fs.get(i, {}).get('designation') for i in h['ids'] if (fs.get(i) or {}).get('designation')), None)
     inferred = False
     if desig:
-        lines.insert(1, str(desig))
+        side = hardware_side(hw, view)
+        if hw and hw.get('type') == 'tap':
+            lines.insert(1, str(desig) + (' ' + thru if h['through'] else ''))  # tapped through: no insertion side
+        else:
+            lines.insert(1, str(desig) + (f', {side}' if side else ''))
     else:
         th = thread_for(steps[0][0]) if INFER_THREADS and len(steps) == 1 and not (h['mouth'] and h['mouth'][0] == 'cbore') else None
         if th:
@@ -1534,7 +1562,11 @@ def pictorial_views(shape, n0, up0, defs, cache):
 def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
     g = p['geometry']
     sm = p.get('category') == 'sheet_metal'
-    holes = [] if sm else cache.setdefault('holes', hole_features(shape, g))
+    holes = cache.setdefault('holes', hole_features(shape, g))
+    if sm:
+        # sheet metal: hole sizes live in the flat pattern; only holes with hardware (inserts, taps, countersinks)
+        # get a callout so the press / tap operation and its side are on the drawing
+        holes = [h for h in holes if hole_hardware(h, p.get('spec') or {})]
     chamfers, fillets, arcs = ({}, {}, {}) if sm else cache.setdefault('edges', edge_notes(shape, g))
     n0, up0 = choose_main(g, holes, sm, landscape=cache.get('landscape', True))
     cache['frame'] = (n0, up0)
@@ -1578,6 +1610,13 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
         if k in views:
             tol = (g.get('thickness', 0) + .01) if sm else ((max(k if not isinstance(k, tuple) else k[0] for k in chamfers) + .01) if chamfers else 0.0)
             ordinate_candidates(views[k], holes, claimed, claimed_holes, sm, tol)
+    if sm:
+        # hardware holes on sheet metal: callout in the first view looking down the hole (positions are on the flat)
+        for h in holes:
+            if not h.get('views'):
+                vs = [k for k in ('main', 'top', 'right', 'left', 'bottom', 'rear') if k in views and abs(h['axis'] @ views[k].n) > .99]
+                if vs:
+                    h['views'] = [vs[0]]
 
     for v in views.values():
         v.angles, v.centrelines = [], []
@@ -1616,13 +1655,14 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
         for h in in_view:
             st = h['steps']
             key = (tuple((round(a, 2), None if (h['through'] and i == len(st) - 1) else round(b, 2)) for i, (a, b) in enumerate(st)),
-                   h['through'], h['thru_all'], None if h['through'] else round(h['depth'], 2), h['mouth'] and tuple(round(x, 2) for x in h['mouth'][1:]))
+                   h['through'], h['thru_all'], None if h['through'] else round(h['depth'], 2), h['mouth'] and tuple(round(x, 2) for x in h['mouth'][1:]),
+                   hw_key(h, spec, v))
             bygroup.setdefault(key, []).append(h)
         # CNC order: one tool at a time (smallest drill first; same drill with a counterbore / countersink right
         # after it), and within a tool the shortest path through its holes, starting where the last tool ended.
         pos = np.array(v.lo[:2], float)
         for key, grp in sorted(bygroup.items(), key=lambda kv: (round(kv[1][0]['dia'], 3), str(kv[0]))):
-            size_lines, inferred = callout_lines([grp[0]], spec)
+            size_lines, inferred = callout_lines([grp[0]], spec, v)
             inferred_any |= inferred
             if key not in letter_of:
                 letter_of[key] = next(letters, 'Z')
@@ -1647,10 +1687,11 @@ def machined_sheet(shape, p, rev, settings, cache, pictorials=None):
                 continue
             st = h['steps']
             key = (tuple((round(a, 2), None if (h['through'] and i == len(st) - 1) else round(b, 2)) for i, (a, b) in enumerate(st)),
-                   h['through'], h['thru_all'], None if h['through'] else round(h['depth'], 2), h['mouth'] and tuple(round(x, 2) for x in h['mouth'][1:]))
+                   h['through'], h['thru_all'], None if h['through'] else round(h['depth'], 2), h['mouth'] and tuple(round(x, 2) for x in h['mouth'][1:]),
+                   hw_key(h, spec, v))
             groups.setdefault(key, []).append(h)
         for grp in groups.values():
-            lines, inferred = callout_lines(grp, spec)
+            lines, inferred = callout_lines(grp, spec, views[k])
             inferred_any |= inferred
             labels_proto.append({'view': k, 'lines': lines, 'holes': grp})
     notes_proto = []
