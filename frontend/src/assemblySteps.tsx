@@ -30,8 +30,10 @@ const label = (f: Fastener) => f.designation || (f.kind === 'custom' ? f.name : 
  * into which holes, torque, thread locker, tools and notes — and the shop floor plays it back step by step: the new
  * components fly in onto what is already built, fasteners drop into their holes, the instruction card says the rest.
  */
-export default function AssemblySteps({ revision, parts, joints, editable, navStyle, addParts, close }: {
-  revision: string; parts: Any[]; joints: Any[]; editable: boolean; navStyle?: NavStyle;
+export default function AssemblySteps({ revision, parts, editable, navStyle, addParts, addKey, page, close }: {
+  revision: string; parts: Any[]; editable: boolean; navStyle?: NavStyle;
+  /** shown as a project page (top tab) instead of a dialog */
+  page?: boolean; addKey?: number;
   /** parts selected in the 3D view when the dialog was opened from "Add step" */
   addParts?: string[];
   close: () => void;
@@ -53,7 +55,8 @@ export default function AssemblySteps({ revision, parts, joints, editable, navSt
   const dirs = useRef(new Map<string, THREE.Vector3>());
   const anim = useRef({ t0: performance.now(), playing: false });
   const byId = useMemo(() => Object.fromEntries(parts.map(p => [p.id, p])), [parts]);
-  const added = useRef(false);
+  const handled = useRef<number | undefined>(undefined);
+  const [loaded, setLoaded] = useState(false);
 
   // ------------------------------------------------------------------ load
   const reload = async () => { const s = await api(`/revisions/${revision}/assembly-steps`); setSteps(s); return s as Step[]; };
@@ -61,21 +64,26 @@ export default function AssemblySteps({ revision, parts, joints, editable, navSt
     configCache = configCache || api('/assembly-config');
     Promise.all([configCache, reload(), assetJson(`/revisions/${revision}/assets/instances.json`).catch(() => ({}))])
       .then(async ([c, s, i]) => {
-        setCfg(c); setInst(i);
-        if (addParts?.length && editable && !added.current) {
-          added.current = true;
-          const used = new Set((s as Step[]).flatMap(x => x.parts.flatMap(e => e.occurrences.map(o => occKey(e.part, o)))));
-          const list: Occ[] = addParts.map(pid => {
-            const n = Math.max(i[pid]?.length || 0, byId[pid]?.quantity || 1, 1);
-            const free = Array.from({ length: n }, (_, k) => k).filter(k => !used.has(occKey(pid, k)));
-            return { part: pid, occurrences: free.length ? free : [0] };
-          });
-          const first = byId[addParts[0]];
-          const made = await api(`/revisions/${revision}/assembly-steps`, 'POST', { title: addParts.length === 1 ? `Fit ${first?.name || 'component'}` : `Fit ${addParts.length} components`, parts: list, method: 'place' });
-          const all = await reload(); setCur(Math.max(0, all.findIndex(x => x.id === made.id)));
-        } else setCur(0);
+        setCfg(c); setInst(i); setLoaded(true);
+        if (!(addParts?.length && editable && addKey && handled.current !== addKey)) setCur(0);
       }).catch(e => setError(e.message));
   }, [revision]);
+
+  // parts chosen in the 3D view ("Add step") become the next step
+  useEffect(() => {
+    if (!loaded || !steps || !addParts?.length || !editable || !addKey || handled.current === addKey) return;
+    handled.current = addKey;
+    const used = new Set(steps.flatMap(x => x.parts.flatMap(e => e.occurrences.map(o => occKey(e.part, o)))));
+    const list: Occ[] = addParts.map(pid => {
+      const n = Math.max(inst[pid]?.length || 0, byId[pid]?.quantity || 1, 1);
+      const free = Array.from({ length: n }, (_, k) => k).filter(k => !used.has(occKey(pid, k)));
+      return { part: pid, occurrences: free.length ? free : [0] };
+    });
+    const first = byId[addParts[0]];
+    api(`/revisions/${revision}/assembly-steps`, 'POST', { title: addParts.length === 1 ? `Fit ${first?.name || 'component'}` : `Fit ${addParts.length} components`, parts: list, method: 'place' })
+      .then(async made => { const all = await reload(); setCur(Math.max(0, all.findIndex(x => x.id === made.id))); setEdit(true); })
+      .catch(e => setError(e.message));
+  }, [loaded, addKey]);
 
   const step = steps?.[cur] || null;
   const placedBefore = useMemo(() => {
@@ -326,7 +334,7 @@ export default function AssemblySteps({ revision, parts, joints, editable, navSt
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest?.('input, textarea, select')) { if (e.key === 'Escape') (e.target as HTMLElement).blur(); return; }
-      if (e.key === 'Escape') { e.stopPropagation(); if (pick !== null) setPick(null); else { void flush(); close(); } }
+      if (e.key === 'Escape') { if (pick !== null) { e.stopPropagation(); setPick(null); } else if (!page) { e.stopPropagation(); void flush(); close(); } }
       else if (e.key === 'ArrowRight') setCur(c => Math.min((steps?.length || 1) - 1, c + 1));
       else if (e.key === 'ArrowLeft') setCur(c => Math.max(0, c - 1));
       else if (e.key === ' ') { e.preventDefault(); setPlaying(p => !p); }
@@ -337,19 +345,18 @@ export default function AssemblySteps({ revision, parts, joints, editable, navSt
 
   const total = steps?.length || 0;
   const unusedParts = useMemo(() => parts.filter(p => !p.excluded), [parts]);
-  const stepWelds = step ? joints.filter(j => j.kind === 'weld' && (j.data.parts || []).some((p: string) => step.parts.some(e => e.part === p) || [...placedBefore.keys()].some(k => k.startsWith(p + '#') && (placedBefore.get(k) ?? 99) <= cur))) : [];
 
   return (
-    <div className="overlay top cfg-overlay" role="dialog" aria-label="Assembly steps" onMouseDown={e => { if (e.target === e.currentTarget) { void flush(); close(); } }}>
-      <div className="cfg-dialog as-dialog">
+    <div className={page ? 'as-page cfg-overlay' : 'overlay top cfg-overlay'} role={page ? 'region' : 'dialog'} aria-label="Assembly steps" onMouseDown={e => { if (!page && e.target === e.currentTarget) { void flush(); close(); } }}>
+      <div className={page ? 'as-dialog as-page-inner' : 'cfg-dialog as-dialog'}>
         <header className="cfg-head">
-          <div className="cfg-title"><b>Assembly steps</b><small>{total ? `${total} step${total === 1 ? '' : 's'}` : 'No steps yet'}{saving ? ' · saving…' : ''}</small></div>
+          <div className="cfg-title"><b>Assembly steps</b><small>{editable ? 'Select parts in the Model view and use “Add step”, or add components here · ' : ''}{total ? `${total} step${total === 1 ? '' : 's'}` : 'No steps yet'}{saving ? ' · saving…' : ''}</small></div>
           {editable && <div className="as-mode" role="tablist">
             <button type="button" className={edit ? 'on' : ''} onClick={() => setEdit(true)}><Pencil size={14} />Build</button>
             <button type="button" className={!edit ? 'on' : ''} onClick={() => { void flush(); setEdit(false); setPick(null); }}><Eye size={14} />Shop floor view</button>
           </div>}
           <button type="button" className="as-pdf" disabled={!total} title="Work instruction PDF (one page per step)" onClick={() => run(() => download(`/revisions/${revision}/assembly-instructions.pdf`, 'assembly-instructions.pdf'))}><FileDown size={15} />PDF</button>
-          <button type="button" className="icon cfg-close" aria-label="Close" onClick={() => { void flush(); close(); }}><X size={18} /></button>
+          {!page && <button type="button" className="icon cfg-close" aria-label="Close" onClick={() => { void flush(); close(); }}><X size={18} /></button>}
         </header>
         <div className={'as-body' + (edit ? ' editing' : '')}>
           <aside className="as-list">
@@ -382,7 +389,6 @@ export default function AssemblySteps({ revision, parts, joints, editable, navSt
               <span className="as-method">{cfg?.methods[step.method]}</span>
               {step.parts.length > 0 && <div className="as-sec"><h5>Components</h5>{step.parts.map(e => <div key={e.part} className="as-comp"><i style={{ background: '#4f8ff7' }} />{byId[e.part]?.name || e.part}<b>×{e.occurrences.length}</b></div>)}</div>}
               {step.fasteners.length > 0 && <div className="as-sec"><h5>Fasteners</h5>{step.fasteners.map((f, i) => <div key={i} className="as-fast"><i style={{ background: FCOL[i % FCOL.length] }} /><span><b>{f.qty} × {label(f)}</b>{(f.torque || f.threadlock || f.note) && <small>{[f.torque && 'Torque ' + f.torque, f.threadlock, f.note].filter(Boolean).join(' · ')}</small>}</span></div>)}</div>}
-              {step.welds.length > 0 && <div className="as-sec"><h5>Welds</h5><p>{step.welds.length} weld{step.welds.length === 1 ? '' : 's'} — see weld list</p></div>}
               {step.tools && <div className="as-sec"><h5>Tools</h5><p>{step.tools}</p></div>}
               {step.notes && <div className="as-sec"><h5>Instructions</h5><p className="as-notes">{step.notes}</p></div>}
               {step.check && <div className="as-sec as-check"><h5>Check</h5><p>{step.check}</p></div>}
@@ -402,7 +408,7 @@ export default function AssemblySteps({ revision, parts, joints, editable, navSt
               <label className="as-field"><span>Step {cur + 1} title</span><input value={step.title} placeholder={`e.g. Fit ${byId[step.parts[0]?.part]?.name || 'the bracket'} to the frame`} maxLength={160} onChange={e => change({ title: e.target.value })} /></label>
 
               <div className="as-field"><span>How is it joined?</span>
-                <div className="as-chips">{cfg && Object.entries(cfg.methods).map(([k, v]) => <button type="button" key={k} className={step.method === k ? 'on' : ''} onClick={() => change({ method: k }, true)}>{v}</button>)}</div></div>
+                <div className="as-chips">{cfg && Object.entries(cfg.methods).filter(([k]) => k !== 'weld' || step.method === 'weld').map(([k, v]) => <button type="button" key={k} className={step.method === k ? 'on' : ''} onClick={() => change({ method: k }, true)}>{v}</button>)}</div></div>
 
               <div className="as-field"><span>Components in this step</span>
                 {step.parts.map(e => { const p = byId[e.part]; const n = Math.max(inst[e.part]?.length || 0, p?.quantity || 1, 1); return (
@@ -416,13 +422,10 @@ export default function AssemblySteps({ revision, parts, joints, editable, navSt
               </div>
 
               <div className="as-field"><span>Fasteners</span>
-                {step.fasteners.map((f, i) => <FastenerCard key={i} f={f} i={i} cfg={cfg!} picking={pick === i} onPick={() => setPick(pick === i ? null : i)} set={p => setFastener(i, p)} remove={() => { change({ fasteners: step.fasteners.filter((_, k) => k !== i) }, true); setPick(null); }} />)}
+                {cfg && step.fasteners.map((f, i) => <FastenerCard key={i} f={f} i={i} cfg={cfg} picking={pick === i} onPick={() => setPick(pick === i ? null : i)} set={p => setFastener(i, p)} remove={() => { change({ fasteners: step.fasteners.filter((_, k) => k !== i) }, true); setPick(null); }} />)}
                 <div className="as-add-fast">{KINDS.map(([k, v]) => <button type="button" key={k} className="mini" onClick={() => addFastener(k)}><Plus size={12} />{v}</button>)}</div>
               </div>
 
-              {(step.method === 'weld' || step.welds.length > 0) && <div className="as-field"><span>Welds done in this step</span>
-                {stepWelds.length ? stepWelds.map((j, i) => <label key={j.id} className="as-check-row"><input type="checkbox" checked={step.welds.includes(j.id)} onChange={e => change({ welds: e.target.checked ? [...step.welds, j.id] : step.welds.filter(x => x !== j.id) }, true)} />{j.data.name || `Weld ${i + 1}`} <small>{j.data.weld?.type} {j.data.weld?.size ? 'a' + j.data.weld.size : ''}</small></label>) : <small className="muted">No welds on these components yet — add them with the Weld tool.</small>}
-              </div>}
 
               <label className="as-field"><span><Wrench size={12} /> Tools</span><input value={step.tools} placeholder="e.g. 4 mm hex key, torque wrench 2–10 N·m" maxLength={300} onChange={e => change({ tools: e.target.value })} /></label>
               <label className="as-field"><span>Instructions for the shop floor</span><textarea rows={5} value={step.notes} maxLength={4000} placeholder="How to hold, align and fit it; order of tightening; anything that is easy to get wrong." onChange={e => change({ notes: e.target.value })} /></label>

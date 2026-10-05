@@ -173,7 +173,7 @@ main.canvas-focus .doc-bar { display: none; }
 .cad-pop { position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-pop); white-space: nowrap; }
 .cad-pop label { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: none; letter-spacing: 0; }
 .cad-pop input[type='range'] { width: 160px; accent-color: var(--accent); padding: 0; }
-@container canvas (max-width: 860px) { .cad-palette button > span { display: none; } .cad-palette button { padding: 0 9px; } }
+/* labels hide automatically (Viewer fitPalette) when the palette would not fit */
 .cad-status { position: absolute; z-index: 5; left: 14px; bottom: 18px; display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--faint); pointer-events: none; max-width: 22%; }
 .cad-status b { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @container canvas (max-width: 1100px) { .cad-status { display: none; } }
@@ -870,3 +870,20 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .cad-palette.tight button.icon-only { width: 30px; }
 .cad-palette.tight .sep { margin: 0 2px; }
 .cad-palette.tight .display-seg { margin: 0 1px; padding: 0 1px; }
+
+/* view & display panel (right side of the canvas) */
+.view-cube { grid-template-columns: repeat(2, 64px); }
+.view-cube button { width: 64px; display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px; padding: 0 7px; font-size: 11.5px; font-weight: 600; }
+.view-cube button svg { flex: none; }
+.view-cube button.wide { grid-column: 1 / -1; width: auto; }
+.view-cube .vc-head { grid-column: 1 / -1; width: auto; height: 24px; justify-content: space-between; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; }
+.view-cube.collapsed { grid-template-columns: 70px; }
+.view-cube.collapsed .vc-head { color: var(--ink); }
+
+/* assembly steps as a project page */
+.as-page { height: 100%; min-height: 0; display: flex; padding: 12px; box-sizing: border-box; }
+.as-page-inner { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.as-page { height: calc(100vh - 48px); }
+.as-fgrid { gap: 6px 8px; }
+.as-fgrid label { gap: 2px; }
+.as-fgrid input, .as-fgrid select, .as-fgrid .wc-num { height: 32px; min-height: 0; }

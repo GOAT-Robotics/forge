@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { CadControls, upFor, type NavStyle } from './cadControls';
-import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, Crosshair, Flame, CircleDashed, Square, Grid3x3, Shapes } from 'lucide-react';
+import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, ChevronUp, ChevronDown, Crosshair, Flame, CircleDashed, Square, Grid3x3, Shapes } from 'lucide-react';
 import { loadSecureModel } from './api';
 import { beadGeometry, beadMaterial, labelSprite, pathLength, pathSection, pointAt, resample, type WeldShape, type WeldSelection } from './weld3d';
 
@@ -192,6 +192,8 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   const [section, setSection] = useState(100);
   const [measure, setMeasure] = useState(false);
   const [ghost, setGhost] = useState(true);
+  const [viewPanel, setViewPanelState] = useState(() => { try { return localStorage.getItem('forge-view-panel') !== 'closed'; } catch { return true; } });
+  const setViewPanel = (v: boolean) => { setViewPanelState(v); try { localStorage.setItem('forge-view-panel', v ? 'open' : 'closed'); } catch { /* ignore */ } };
   const [distance, setDistance] = useState<number | null>(null);
   const [hoverName, setHoverName] = useState('');
   const [showWelds, setShowWelds] = useState(true);
@@ -1149,18 +1151,28 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           </span>
         </div>
       )}
-      <div className="view-cube" role="toolbar" aria-label="Standard views">
-        <button title="Isometric (7)" onClick={() => engine.current?.fit(VIEW_DIRS.iso, null)}><Box size={15} /></button>
-        <button title="Fit everything (F)" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={15} /></button>
-        <button title="Top (5)" onClick={() => engine.current?.fit(VIEW_DIRS.top, null)}>Top</button>
-        <button title="Bottom (6)" onClick={() => engine.current?.fit(VIEW_DIRS.bottom, null)}>Bot</button>
-        <button title="Front (1)" onClick={() => engine.current?.fit(VIEW_DIRS.front, null)}>Front</button>
-        <button title="Back (2)" onClick={() => engine.current?.fit(VIEW_DIRS.back, null)}>Back</button>
-        <button title="Right (4)" onClick={() => engine.current?.fit(VIEW_DIRS.right, null)}>Right</button>
-        <button title="Left (3)" onClick={() => engine.current?.fit(VIEW_DIRS.left, null)}>Left</button>
-        <i className="vc-sep" />
-        {onShowPlanes ? <button className={showPlanes ? 'selected' : ''} title="Front / Top / Right planes and origin (P)" onClick={() => onShowPlanes(!showPlanes)}><Square size={14} /></button> : <span />}
-        <button title="Fit selected part (Z)" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={15} /></button>
+      <div className={'view-cube' + (viewPanel ? '' : ' collapsed')} role="toolbar" aria-label="Views and display">
+        <button type="button" className="vc-head" title={viewPanel ? 'Hide the view panel' : 'Show views and display styles'} onClick={() => setViewPanel(!viewPanel)}>
+          <span>View</span>{viewPanel ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+        {viewPanel && <>
+          <button title="Isometric (7)" onClick={() => engine.current?.fit(VIEW_DIRS.iso, null)}><Box size={14} />Iso</button>
+          <button title="Fit everything (F)" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={14} />Fit</button>
+          <button title="Top (5)" onClick={() => engine.current?.fit(VIEW_DIRS.top, null)}>Top</button>
+          <button title="Bottom (6)" onClick={() => engine.current?.fit(VIEW_DIRS.bottom, null)}>Bottom</button>
+          <button title="Front (1)" onClick={() => engine.current?.fit(VIEW_DIRS.front, null)}>Front</button>
+          <button title="Back (2)" onClick={() => engine.current?.fit(VIEW_DIRS.back, null)}>Back</button>
+          <button title="Right (4)" onClick={() => engine.current?.fit(VIEW_DIRS.right, null)}>Right</button>
+          <button title="Left (3)" onClick={() => engine.current?.fit(VIEW_DIRS.left, null)}>Left</button>
+          <button className="wide" title="Zoom to the selected part (Z)" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={14} />Zoom to selection</button>
+          <i className="vc-sep" />
+          {onDisplayMode && ([['shaded', 'Shaded', Box], ['edges', 'Edges', Shapes], ['wireframe', 'Wire', Grid3x3]] as const).map(([m, label, Icon]) =>
+            <button key={m} type="button" className={displayMode === m ? 'selected' : ''} title={m === 'edges' ? 'Shaded with edges' : label} onClick={() => onDisplayMode(m)}><Icon size={14} />{label}</button>)}
+          <button className={ghost ? 'selected' : ''} title="Fade the other parts while a part is selected" onClick={() => setGhost(!ghost)}><EyeOff size={14} />Ghost</button>
+          {onShowPlanes && <button className={showPlanes ? 'selected' : ''} title="Front / Top / Right planes and origin (P)" onClick={() => onShowPlanes(!showPlanes)}><Square size={14} />Planes</button>}
+          {welds.length > 0 && <button className={showWelds ? 'selected' : ''} title={showWelds ? 'Hide weld beads' : 'Show weld beads'} onClick={() => setShowWelds(!showWelds)}><Flame size={14} />Welds</button>}
+          {refCount > 0 && <button className={showRefs ? 'selected' : ''} title="Reference surfaces (sketch circles, boundaries) — not solid parts" onClick={() => setShowRefs(!showRefs)}><CircleDashed size={14} />Refs</button>}
+        </>}
       </div>
       {loading && <div className="viewer-state"><span className="spinner" />Preparing lightweight 3D geometry…</div>}
       {error && <div className="viewer-state">{error}</div>}
@@ -1176,13 +1188,6 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           <button className={explode > 0 || popover === 'explode' ? 'selected' : ''} title="Explode the assembly" onClick={() => setPopover(popover === 'explode' ? null : 'explode')}><Layers size={16} /><span>Explode</span></button>
           {popover === 'explode' && <span className="cad-pop"><label>Explode<input aria-label="Explode assembly" type="range" min="0" max="100" value={explode} onChange={ev => setExplode(+ev.target.value)} /></label><button type="button" className="mini" onClick={() => setExplode(explode > 0 ? 0 : 100)}>{explode > 0 ? 'Collapse' : 'Full'}</button></span>}
         </span>
-        <button className={ghost ? 'selected' : ''} title={ghost ? 'Other parts are ghosted while a part is selected' : 'Other parts stay solid while a part is selected'} onClick={() => setGhost(!ghost)}>{ghost ? <EyeOff size={16} /> : <Eye size={16} />}<span>Ghost</span></button>
-        {welds.length > 0 && <button className={showWelds ? 'selected' : ''} title={showWelds ? `Hide the ${welds.length} configured weld(s)` : `Show the ${welds.length} configured weld(s)`} onClick={() => setShowWelds(!showWelds)}><Flame size={16} /><span>Beads</span></button>}
-        {onDisplayMode && <span className="display-seg" role="group" aria-label="Display style">
-          {([['shaded', 'Shaded', Box], ['edges', 'Shaded with edges', Shapes], ['wireframe', 'Wireframe', Grid3x3]] as const).map(([m, label, Icon]) =>
-            <button key={m} type="button" className={displayMode === m ? 'selected' : ''} title={label} onClick={() => onDisplayMode(m)}><Icon size={15} /></button>)}
-        </span>}
-        {refCount > 0 && <button className={showRefs ? 'selected' : ''} title={showRefs ? 'Hide reference surfaces (sketch circles, boundaries)' : `Show ${refCount} reference surface body(ies) — not solid parts`} onClick={() => setShowRefs(!showRefs)}><CircleDashed size={16} /><span>Refs</span></button>}
         {toolbarEnd ? <i className="sep" /> : null}
         {toolbarEnd}
       </div>
