@@ -58,6 +58,14 @@ def test_assembly_steps_crud_order_and_instructions(tmp_path, monkeypatch):
         assert client.post(url + '/order', headers=H, json={'ids': ids[1:] + ids[:1]}).status_code == 200
         assert client.get(url).json()[-1]['id'] == c['id']
         assert client.put(f"/api/assembly-steps/{c['id']}", headers=H, json={'title': 'Final check', 'method': 'other', 'check': 'All screws marked'}).json()['check'] == 'All screws marked'
+        # the PDF is rendered by the worker: missing → queued (generating) → ready
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions.pdf').status_code == 404
+        assert client.post(f'/api/revisions/{rid}/assembly-instructions', headers=H).json()['state'] == 'generating'
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions').json()['state'] == 'generating'
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions.pdf').status_code == 409
+        from app import worker
+        assert worker.run_once()
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions').json()['state'] == 'ready'
         pdf = client.get(f'/api/revisions/{rid}/assembly-instructions.pdf')
         assert pdf.status_code == 200 and pdf.content[:4] == b'%PDF'
         from pypdf import PdfReader
@@ -94,6 +102,14 @@ def test_sub_assemblies_build_then_fit_into_main(tmp_path, monkeypatch):
         assert st[1] == {('bracket', 0): 'done', ('bracket', 1): 'new'}                     # only the sub-assembly
         assert st[2] == {('base', 0): 'new'}                                                   # main starts on its own
         assert st[3] == {('base', 0): 'done', ('bracket', 0): 'new', ('bracket', 1): 'new'}   # whole unit fitted
+        # the PDF is rendered by the worker: missing → queued (generating) → ready
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions.pdf').status_code == 404
+        assert client.post(f'/api/revisions/{rid}/assembly-instructions', headers=H).json()['state'] == 'generating'
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions').json()['state'] == 'generating'
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions.pdf').status_code == 409
+        from app import worker
+        assert worker.run_once()
+        assert client.get(f'/api/revisions/{rid}/assembly-instructions').json()['state'] == 'ready'
         pdf = client.get(f'/api/revisions/{rid}/assembly-instructions.pdf')
         assert pdf.status_code == 200 and pdf.content[:4] == b'%PDF'
         # reorder inside the sub-assembly only

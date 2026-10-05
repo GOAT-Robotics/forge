@@ -47,7 +47,7 @@ def editable_revision(rid):
     r = get_rev(rid)
     if r['state'] != 'active' or r['status'] != 'ready':
         raise HTTPException(409, 'Only an active, ready revision can be edited. Upload a new revision for released designs.')
-    if db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running")', (rid,)):
+    if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind!="instructions" AND status IN ("queued","running")', (rid,)):
         raise HTTPException(409, 'A CAD job is active; wait for completion')
     return r
 
@@ -792,6 +792,7 @@ def add_joint(rid: str, a: JointIn, request: Request):
     id = db.uid()
     with db.connect() as c:
         c.execute('INSERT INTO joints VALUES(?,?,?,?,?,?,?)', (id, rid, a.kind, json.dumps(data), db.now(), u['name'], db.now()))
+        (db.revdir(rid) / 'welding.pdf').unlink(missing_ok=True)
         db.audit(c, u['name'], 'joint.created', {'id': id, 'kind': a.kind, **data}, rid)
     return {'id': id}
 
@@ -806,6 +807,7 @@ def edit_joint(jid: str, a: JointIn, request: Request):
     data = clean_joint(j['revision_id'], a)
     with db.connect() as c:
         c.execute('UPDATE joints SET kind=?,data=?,updated=? WHERE id=?', (a.kind, json.dumps(data), db.now(), jid))
+        (db.revdir(j['revision_id']) / 'welding.pdf').unlink(missing_ok=True)
         db.audit(c, u['name'], 'joint.updated', {'id': jid, 'before': json.loads(j['data']), 'after': data}, j['revision_id'])
     return {'ok': True}
 
@@ -819,6 +821,7 @@ def delete_joint(jid: str, request: Request):
     editable_revision(j['revision_id'])
     with db.connect() as c:
         c.execute('DELETE FROM joints WHERE id=?', (jid,))
+        (db.revdir(j['revision_id']) / 'welding.pdf').unlink(missing_ok=True)
         db.audit(c, u['name'], 'joint.deleted', {'id': jid, **json.loads(j['data'])}, j['revision_id'])
     return {'ok': True}
 

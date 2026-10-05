@@ -438,7 +438,7 @@ NEW = (0.33, 0.58, 0.96)
 VIEW_N = np.array([1.0, -1.25, 0.9]) / np.linalg.norm([1.0, -1.25, 0.9])
 
 
-def instructions_pdf(rid):
+def instructions_pdf(rid, progress=None):
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.units import mm
     from reportlab.lib.utils import ImageReader
@@ -496,6 +496,8 @@ def instructions_pdf(rid):
     states = build_states(steps)
     gname = {g['id']: g['name'] for g in groups_of(rid)}
     for k, s in enumerate(steps):
+        if progress:
+            progress(k + 1, len(steps))
         header(f"{('Sub-assembly ' + gname.get(s.get('group'), '') + ' · ') if s.get('group') else 'Main assembly · '}Step {k + 1} of {len(steps)}")
         meshes = []
         for (pid, o), state in states[k].items():
@@ -612,10 +614,62 @@ def instructions_pdf(rid):
     return out
 
 
+def instructions_job(rid):
+    return db.row("SELECT * FROM jobs WHERE revision_id=? AND kind='instructions' ORDER BY created DESC LIMIT 1", (rid,))
+
+
+@router.get('/api/revisions/{rid}/assembly-instructions')
+def instructions_status(rid: str, request: Request):
+    """Work-instruction PDF state: ready (current with the steps), generating (with progress), failed or missing."""
+    revision_access(request, rid)
+    out = db.revdir(rid) / 'assembly-instructions.pdf'
+    if not out.exists():
+        try:
+            storage.restore(rid, 'assembly-instructions.pdf', out)
+        except Exception:
+            pass
+    j = instructions_job(rid)
+    if j and j['status'] in ('queued', 'running'):
+        r = db.row('SELECT progress,message FROM revisions WHERE id=?', (rid,))
+        return {'state': 'generating', 'progress': r['progress'] if j['status'] == 'running' else 0, 'message': r['message'] if j['status'] == 'running' else 'Waiting for the worker'}
+    if out.exists():
+        return {'state': 'ready', 'size': out.stat().st_size}
+    if j and j['status'] == 'failed':
+        return {'state': 'failed', 'error': j['error']}
+    return {'state': 'missing'}
+
+
+@router.post('/api/revisions/{rid}/assembly-instructions')
+def generate_instructions(rid: str, request: Request):
+    """Queue the work-instruction PDF (rendering every step can take a while on large assemblies)."""
+    u = revision_access(request, rid)
+    if u.get('role') == 'vendor':
+        raise HTTPException(403, 'Vendor links are read-only')
+    if not db.row('SELECT id FROM assembly_steps WHERE revision_id=? LIMIT 1', (rid,)):
+        raise HTTPException(422, 'Write the assembly steps first')
+    j = instructions_job(rid)
+    if j and j['status'] in ('queued', 'running'):
+        return {'job': j['id'], 'state': 'generating'}
+    (db.revdir(rid) / 'assembly-instructions.pdf').unlink(missing_ok=True)
+    jid = db.uid()
+    with db.connect() as c:
+        c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)', (jid, rid, 'instructions', 'queued', db.now(), '', '{}'))
+        db.audit(c, u['name'], 'assembly.instructions.requested', {}, rid)
+    return {'job': jid, 'state': 'generating'}
+
+
 @router.get('/api/revisions/{rid}/assembly-instructions.pdf')
 def instructions(rid: str, request: Request):
     revision_access(request, rid)
     out = db.revdir(rid) / 'assembly-instructions.pdf'
     if not out.exists():
-        instructions_pdf(rid)
+        try:
+            storage.restore(rid, 'assembly-instructions.pdf', out)
+        except Exception:
+            pass
+    if not out.exists():
+        j = instructions_job(rid)
+        if j and j['status'] in ('queued', 'running'):
+            raise HTTPException(409, 'The work instructions are being generated')
+        raise HTTPException(404, 'Generate the work instructions first')
     return FileResponse(out, media_type='application/pdf', filename='assembly-instructions.pdf')

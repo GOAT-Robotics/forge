@@ -214,7 +214,7 @@ def process_import(rid):
  if not parts:raise ValueError('No usable solid bodies found; export solids as STEP or BREP')
  if prev_rev and pid_map:carry_assembly_steps(prev_rev['id'],rid,pid_map)
  with stage(rid,73,'Writing lightweight assembly mesh'):scene.export(folder/'assembly.glb');(folder/'instances.json').write_text(json.dumps(instances))
- with stage(rid,78,f'Detecting mating surfaces between {len(parts)} parts'):fits=detect_fits(parts,instances)
+ fits=[]  # mates come from the STEP assembly itself (placements); no geometric fit guessing
  with db.connect() as c:
   for f in fits:c.execute('INSERT INTO fits VALUES(?,?,?,0)',(db.uid(),rid,json.dumps(f)))
  with stage(rid,82,'Rendering assembly documentation'):
@@ -272,8 +272,9 @@ def process_documents(rid,payload):
   assembly_pdf(rev,parts_for(rid),fits,folder,detailed=False);progress(rid,100,'Assembly drawing updated');return
  project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));
  if payload.get('release'):rev['status']='released'
- parts=parts_for(rid);full=not payload.get('part_id');settings=db.project_settings(rev['project_id'])
- selected=[p for p in parts if p['id']==payload.get('part_id')] if not full else [p for p in parts if p['category']!='purchased' and not p.get('excluded')]
+ parts=parts_for(rid);full=not payload.get('part_id') and not payload.get('part_ids');settings=db.project_settings(rev['project_id'])
+ pick=set(payload.get('part_ids') or [payload.get('part_id')])
+ selected=[p for p in parts if p['id'] in pick] if not full else [p for p in parts if p['category']!='purchased' and not p.get('excluded')]
  from .cad import read_brep
  # Whole-pack runs also produce one PDF per discipline: every machining sheet in one file, every sheet-metal sheet in another.
  combined={}
@@ -325,11 +326,19 @@ def process_documents(rid,payload):
  fits=db.rows('SELECT * FROM fits WHERE revision_id=?',(rid,))
  for f in fits:f['data']=json.loads(f['data'])
  with stage(rid,88,'Generating assembly and mating drawings'):
-  if not payload.get('part_id') or not (folder/'assembly.pdf').exists():assembly_pdf(rev,parts,fits,folder,detailed=not bool(payload.get('part_id')))
- if not payload.get('part_id'):
+  if full or not (folder/'assembly.pdf').exists():assembly_pdf(rev,parts,fits,folder,detailed=full)
+ if full and db.row('SELECT id FROM assembly_steps WHERE revision_id=? LIMIT 1',(rid,)):
+  with stage(rid,92,'Rendering assembly work instructions'):
+   from .assembly import instructions_pdf
+   instructions_pdf(rid)
+ if full and db.row("SELECT id FROM joints WHERE revision_id=? AND kind='weld' LIMIT 1",(rid,)):
+  with stage(rid,94,'Drawing the welding document'):
+   from .welding import welding_pdf
+   welding_pdf(rid)
+ if full:
   with stage(rid,97,'Packaging manufacturing documents'),zipfile.ZipFile(folder/'manufacturing-pack.zip','w',zipfile.ZIP_DEFLATED) as z:
    z.write(folder/'assembly.pdf','assembly.pdf');
-   for extra in ['assembly.dxf','machining-drawings.pdf','sheet-metal-drawings.pdf']:
+   for extra in ['assembly.dxf','machining-drawings.pdf','sheet-metal-drawings.pdf','assembly-instructions.pdf','welding.pdf']:
     if (folder/extra).exists():z.write(folder/extra,extra)
    z.writestr('parts.json',json.dumps(parts,indent=2));z.writestr('fits.json',json.dumps(fits,indent=2));z.writestr('revision.json',json.dumps(rev,indent=2))
    for p in selected:
@@ -356,13 +365,19 @@ def process_documents(rid,payload):
  if full:(folder/'.documents-stale').unlink(missing_ok=True)
  progress(rid,100,'Documents generated')
 
+def process_instructions(rid):
+ """Assembly work instructions: one rendered page per step (can take minutes on a large assembly)."""
+ from .assembly import instructions_pdf
+ instructions_pdf(rid,progress=lambda k,n:progress(rid,int(100*k/max(n,1)),f'Assembly instructions: page {k}/{n}'))
+ progress(rid,100,'Assembly instructions ready')
+
 def run_once():
  with db.connect() as c:
   c.execute('BEGIN IMMEDIATE');job=c.execute('SELECT * FROM jobs WHERE status="queued" ORDER BY created LIMIT 1').fetchone()
   if not job:return False
   job=dict(job);c.execute('UPDATE jobs SET status="running" WHERE id=?',(job['id'],))
  try:
-  (process_import(job['revision_id']) if job['kind']=='import' else process_documents(job['revision_id'],json.loads(job['payload'])))
+  (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_documents(job['revision_id'],json.loads(job['payload'])))
   storage.sync_revision(job['revision_id'],db.revdir(job['revision_id']))
   with db.connect() as c:c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
  except Exception as e:

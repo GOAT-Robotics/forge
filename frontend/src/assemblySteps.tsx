@@ -4,7 +4,7 @@ import {
   X, Plus, Trash2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play, Pause, RotateCcw, FileDown, Pencil, Eye, Crosshair, Search, Wrench, ListOrdered, Check, Boxes, Package,
 } from 'lucide-react';
 import PartScene, { type SceneApi, type SceneBody } from './partScene';
-import { api, assetJson, download } from './api';
+import { api, assetJson, download, vendorId } from './api';
 import type { Any } from './constants';
 import type { NavStyle } from './cadControls';
 
@@ -397,6 +397,20 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
   });
 
   const total = steps?.length || 0;
+  // work-instruction PDF: rendered by the worker (large assemblies take a while); any step change makes it stale
+  const [pdf, setPdf] = useState<{ state: string; progress?: number; message?: string; error?: string }>({ state: 'missing' });
+  const canGenerate = !vendorId;
+  const pdfStatus = () => api(`/revisions/${revision}/assembly-instructions`).then(setPdf).catch(() => { /* offline: keep the last state */ });
+  useEffect(() => { void pdfStatus(); }, [revision, steps, saving]);
+  useEffect(() => {
+    if (pdf.state !== 'generating') return;
+    const t = window.setInterval(pdfStatus, 2000);
+    return () => window.clearInterval(t);
+  }, [pdf.state]);
+  const pdfAction = () => run(async () => {
+    if (pdf.state === 'ready') { await download(`/revisions/${revision}/assembly-instructions.pdf`, 'assembly-instructions.pdf'); return; }
+    await api(`/revisions/${revision}/assembly-instructions`, 'POST'); setPdf({ state: 'generating', progress: 0 });
+  });
   const unusedParts = useMemo(() => parts.filter(p => !p.excluded), [parts]);
 
   return (
@@ -408,7 +422,9 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
             <button type="button" className={edit ? 'on' : ''} onClick={() => setEdit(true)}><Pencil size={14} />Build</button>
             <button type="button" className={!edit ? 'on' : ''} onClick={() => { void flush(); setEdit(false); setPick(null); }}><Eye size={14} />Shop floor view</button>
           </div>}
-          <button type="button" className="as-pdf" disabled={!total} title="Work instruction PDF (one page per step)" onClick={() => run(() => download(`/revisions/${revision}/assembly-instructions.pdf`, 'assembly-instructions.pdf'))}><FileDown size={15} />PDF</button>
+          <button type="button" className={'as-pdf' + (pdf.state === 'generating' ? ' busy' : '')} disabled={!total || pdf.state === 'generating' || (pdf.state === 'missing' && !canGenerate)}
+            title={pdf.state === 'ready' ? 'Download the work instructions (one page per step)' : pdf.state === 'generating' ? (pdf.message || 'Generating…') : pdf.state === 'failed' ? 'Generation failed: ' + (pdf.error || '') + ' — click to try again' : 'Render the work instructions PDF (one page per step)'}
+            onClick={pdfAction}>{pdf.state === 'generating' ? <><span className="spinner" />{pdf.progress ? `PDF ${pdf.progress}%` : 'Preparing PDF…'}</> : <><FileDown size={15} />{pdf.state === 'ready' ? 'Download PDF' : pdf.state === 'failed' ? 'Retry PDF' : 'Create PDF'}</>}</button>
           {!page && <button type="button" className="icon cfg-close" aria-label="Close" onClick={() => { void flush(); close(); }}><X size={18} /></button>}
         </header>
         <div className={'as-body' + (edit ? ' editing' : '')}>

@@ -61,7 +61,7 @@ def classifiable(rid):
 def mutable(rid):
  r=get_rev(rid)
  if r['state']!='active' or r['status']!='ready':raise HTTPException(409,'Only an active, ready revision can be edited. Upload a new revision for archived or released designs.')
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'A CAD job is active; wait for completion')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind!="instructions" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'A CAD job is active; wait for completion')
  return r
 def deserialize(p):
  p['geometry']=json.loads(p['geometry']);p['spec']=json.loads(p['spec']);return p
@@ -571,6 +571,79 @@ def group_spec(rid:str,a:GroupSpec,request:Request):
  invalidate(rid)
  for pid in ids:invalidate(rid,pid)
  return {'ok':True,'updated':n}
+class BulkReady(BaseModel):
+ model_config=ConfigDict(extra='forbid')
+ ids:list[str]=Field(min_length=1,max_length=2000)
+ fill:dict[str,str]=Field(default_factory=dict)
+ overwrite:bool=False
+ manual_checks:dict[str,str]=Field(default_factory=dict)
+ approve_k:bool=False
+ waive_warnings:str=Field(default='',max_length=300)
+ design_review:bool=False
+ drawing_review:bool=False
+ regenerate:bool=False
+READY_FIELDS=('material','process','finish','general_tolerance','datums')
+@app.post('/api/revisions/{rid}/parts/bulk-ready')
+def bulk_ready(rid:str,a:BulkReady,request:Request):
+ """Make many parts production ready at once: fill the specification where it is empty, record the engineering
+ verifications, accept warnings with one reason, approve K factors, then sign off the design (only parts with no
+ open blocker) and the drawings (only current drawings). Every part reports what is still open."""
+ u=revision_access(request,rid,True);mutable(rid);proj=project_of_revision(rid)
+ if set(a.fill)-set(READY_FIELDS):raise HTTPException(422,'Unsupported field')
+ if set(a.manual_checks)-set(MANUAL_CHECKS):raise HTTPException(422,'Unknown verification')
+ if any(len(v.strip())<10 for v in a.manual_checks.values()):raise HTTPException(422,'Write at least 10 characters for each verification')
+ if a.waive_warnings and len(a.waive_warnings.strip())<10:raise HTTPException(422,'Give a reason of at least 10 characters for accepting the warnings')
+ if a.design_review:require(u,'design.review',proj)
+ if a.drawing_review:require(u,'drawing.review',proj)
+ rules=json.loads((db.row('SELECT rules FROM projects WHERE id=?',(proj,)) or {}).get('rules') or '{}')
+ results=[];stale=[]
+ for pid in dict.fromkeys(a.ids):
+  row=db.row('SELECT * FROM parts WHERE id=? AND revision_id=?',(pid,rid))
+  if not row:raise HTTPException(422,'Part outside revision: '+pid)
+  p=deserialize(row)
+  if p['category']=='purchased' or p.get('excluded'):
+   results.append({'id':pid,'name':p['name'],'skipped':'purchased' if p['category']=='purchased' else 'not for production'});continue
+  spec=dict(p['spec']);before=json.dumps(spec,sort_keys=True)
+  for k,v in a.fill.items():
+   if v.strip() and (a.overwrite or not str(spec.get(k,'')).strip()):spec[k]=v.strip()
+  mc=dict(spec.get('manual_checks') or {})
+  for k,v in a.manual_checks.items():
+   if a.overwrite or len(str(mc.get(k,'')).strip())<10:mc[k]=v.strip()
+  spec['manual_checks']=mc
+  if a.approve_k and p['geometry'].get('bends'):spec['k_factor_approved']=True
+  if a.waive_warnings:
+   w=dict(spec.get('rule_waivers') or {})
+   for f in evaluate(p['geometry'],spec,rules):
+    key=f['code']+(':'+f['feature'] if f['feature'] else '')
+    if f['severity']=='warning' and not w.get(key):w[key]=a.waive_warnings.strip()
+   spec['rule_waivers']=w
+  changed=json.dumps(spec,sort_keys=True)!=before
+  if changed:
+   sp=Spec(**{**db.DEFAULT_SPEC,**spec});sp.operations=validate_spec(p,sp);spec=json.loads(sp.model_dump_json())
+   with db.connect() as c:c.execute('UPDATE parts SET spec=? WHERE id=?',(json.dumps(spec),pid))
+   invalidate(rid,pid)
+  findings=evaluate(p['geometry'],spec,rules)
+  open_=[f['title'] for f in findings if f['severity']=='blocker' and (not f['waiver'] or f['code'] in ('GEO001','FLAT001'))]
+  open_+=[f['title']+' (warning)' for f in findings if f['severity']=='warning' and not f['waiver']]
+  reviewed=bool(p['reviewed']) and not changed
+  if a.design_review and not open_ and not reviewed:
+   with db.connect() as c:c.execute('UPDATE parts SET reviewed=1,reviewed_by=?,reviewed_at=? WHERE id=?',(u['name'],db.now(),pid))
+   reviewed=True
+  elif changed and p['reviewed']:
+   with db.connect() as c:c.execute("UPDATE parts SET reviewed=0,reviewed_by='',reviewed_at='' WHERE id=?",(pid,))
+  folder=db.revdir(rid)/'parts'/pid
+  current=(folder/'drawing-scene.json').exists() and not (folder/'.drawing-invalid').exists()
+  doc=bool(db.row('SELECT doc_reviewed FROM parts WHERE id=?',(pid,))['doc_reviewed'])
+  if a.drawing_review and reviewed and current and not doc:
+   with db.connect() as c:c.execute('UPDATE parts SET doc_reviewed=1,doc_reviewed_by=?,doc_reviewed_at=? WHERE id=?',(u['name'],db.now(),pid))
+   doc=True
+  if not current:stale.append(pid)
+  results.append({'id':pid,'name':p['name'],'category':p['category'],'design':reviewed,'drawing':'reviewed' if doc else 'current' if current else 'regenerate','open':open_,'ready':reviewed and doc and not [x for x in open_ if not x.endswith('(warning)')]})
+ job=None
+ if a.regenerate and stale:
+  with db.connect() as c:job=enqueue(c,rid,'documents',{'part_ids':stale})
+ with db.connect() as c:db.audit(c,u['name'],'parts.bulk_ready',{'count':len(results),'fill':sorted(a.fill),'checks':sorted(a.manual_checks),'approve_k':a.approve_k,'waived':bool(a.waive_warnings),'design_review':a.design_review,'drawing_review':a.drawing_review,'regenerate':bool(job)},rid)
+ return {'results':results,'job':job}
 class BulkParts(BaseModel):
  model_config=ConfigDict(extra='forbid')
  ids:list[str]=Field(min_length=1,max_length=2000);excluded:bool|None=None;exclusion_reason:str=Field(default='',max_length=300);hidden:bool|None=None;category:str|None=None
@@ -635,7 +708,7 @@ def set_production(rid:str,pid:str,a:ProductionEdit,request:Request):
 async def documents(rid:str,request:Request):
  u=revision_access(request,rid,True,'drawing.edit');r=get_rev(rid)
  if r['status']!='ready':raise HTTPException(409,'Only draft revisions can regenerate documents; released artifacts are locked')
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Job already active')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind!="instructions" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Job already active')
  body=await request.json()
  if set(body)-{'part_id'}:raise HTTPException(422,'Only part_id is accepted; use the release workflow for releases')
  if body.get('part_id') and get_part(body['part_id'])['revision_id']!=rid:raise HTTPException(422,'Part outside revision')
@@ -799,6 +872,8 @@ from .quality import router as quality_router
 app.include_router(quality_router)
 from .assembly import router as assembly_router
 app.include_router(assembly_router)
+from .welding import router as welding_router
+app.include_router(welding_router)
 # Built UI is served by the same origin; no CORS, no second production web server.
 STATIC=Path(os.getenv('STATIC_DIR',Path(__file__).resolve().parents[2]/'frontend/dist'))
 if STATIC.exists():

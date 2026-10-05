@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { usePinchZoom } from './pinchZoom';
-import { X, Download, ExternalLink, LoaderCircle, Plus, Trash2, ArrowUp, ArrowDown, Check, Eye, EyeOff, Box, CheckCircle2, Circle, Ban, Undo2, Settings, Layers, Link2, Flame } from 'lucide-react';
+import { X, Download, ExternalLink, LoaderCircle, Plus, Trash2, ArrowUp, ArrowDown, Check, Eye, EyeOff, Box, CheckCircle2, Circle, Ban, Undo2, Settings, Layers, Link2, Flame , Sparkles } from 'lucide-react';
 import { asset, assetJson, saveBlob } from './api';
 import { categories, RAL, suggestions, fmt } from './constants';
 import type { Any } from './constants';
@@ -612,7 +612,7 @@ export function SpecEditor({ editing, setEditing, config, onSave, busy }: { edit
 // ---------------------------------------------------------------------------------------------
 // Multi-selection: inspector panel and group specification editor
 // ---------------------------------------------------------------------------------------------
-export function GroupPanel({ parts, vendor, editable, busy, onEdit, onBulk, onExclude, onRemove, onFocus, onClear, onJoint, onProcess, templates = [] }: { parts: Any[]; vendor: boolean; editable: boolean; busy: boolean; onEdit: () => void; onBulk: (body: Any) => void; onExclude: () => void; onRemove: (id: string) => void; onFocus: (id: string) => void; onClear: () => void; onJoint?: () => void; onProcess?: (templateId: string) => void; templates?: Any[] }) {
+export function GroupPanel({ parts, vendor, editable, busy, onEdit, onReady, onBulk, onExclude, onRemove, onFocus, onClear, onJoint, onProcess, templates = [] }: { parts: Any[]; vendor: boolean; editable: boolean; busy: boolean; onEdit: () => void; onReady?: () => void; onBulk: (body: Any) => void; onExclude: () => void; onRemove: (id: string) => void; onFocus: (id: string) => void; onClear: () => void; onJoint?: () => void; onProcess?: (templateId: string) => void; templates?: Any[] }) {
   const cats = Object.entries(categories).map(([k, v]) => [k, v, parts.filter(p => p.category === k).length] as const).filter(x => x[2] > 0);
   const excluded = parts.filter(p => p.excluded).length, hidden = parts.filter(p => p.hidden).length;
   const qty = parts.reduce((n, p) => n + p.quantity, 0);
@@ -626,7 +626,8 @@ export function GroupPanel({ parts, vendor, editable, busy, onEdit, onBulk, onEx
       <div className="inspector-body">
         {!vendor && (
           <div className="group-actions">
-            <button type="button" className="primary full" disabled={!editable || busy} title={editable ? 'Set material, process, finish, coating and more for all selected parts at once' : 'Only on an active, ready revision (owner/engineer)'} onClick={onEdit}><Settings size={15} />Edit group manufacturing details</button>
+            {onReady && <button type="button" className="primary full" disabled={!editable || busy} title="Fill what is missing, verify, and sign off all selected parts at once" onClick={onReady}><Sparkles size={15} />Make production ready</button>}
+            <button type="button" className={(onReady ? '' : 'primary ') + 'full'} disabled={!editable || busy} title={editable ? 'Set material, process, finish, coating and more for all selected parts at once' : 'Only on an active, ready revision (owner/engineer)'} onClick={onEdit}><Settings size={15} />Edit group manufacturing details</button>
             {editable && (
               <label className="select-action">Set category for all
                 <Select size="sm" value="" disabled={busy} placeholder="Choose…" onChange={v => { if (v) onBulk({ category: v }); }} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} />

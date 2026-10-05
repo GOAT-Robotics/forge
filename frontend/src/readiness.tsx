@@ -14,7 +14,7 @@ type Step = {
   done: (s: Any, p: Any) => boolean; show?: (p: Any, s: Any) => boolean;
 };
 
-const MANUAL: Record<string, { title: string; help: string; answers: string[] }> = {
+export const MANUAL: Record<string, { title: string; help: string; answers: string[] }> = {
   load_strength: { title: 'Strength & loads', help: 'Will the part survive its loads (static, fatigue, impact) with margin? Geometry alone cannot tell; an engineer confirms it.', answers: ['Verified: proven carry-over design, same loads as the previous revision', 'Verified: hand calculation / FEA attached to the design record', 'Not applicable: non-structural cover / bracket, no significant load'] },
   functional_gdt: { title: 'Functional dimensions & fits', help: 'Are the dimensions that matter for assembly (hole positions, mating faces, fits) toleranced and taken from the right datums?', answers: ['Verified: critical dimensions and fits toleranced on the drawing', 'Verified: general tolerance is sufficient, no functional fits', 'Not applicable: no mating features'] },
   threads: { title: 'Threads', help: 'Threads are never guessed from geometry. Confirm thread size, pitch, depth and which holes are tapped.', answers: ['Verified: all tapped holes called out with size, pitch and depth', 'Not applicable: no threaded features', 'Verified: threads come from inserts / PEM hardware, called out'] },
@@ -23,15 +23,15 @@ const MANUAL: Record<string, { title: string; help: string; answers: string[] }>
   coating: { title: 'Coating effects', help: 'Coating adds thickness. Confirm fits, threads and contact faces are masked or allowed for.', answers: ['Verified: threads and bores masked, fits allow coating thickness', 'Not applicable: uncoated part', 'Verified: coating thickness within tolerance stack'] },
 };
 
-const DATUMS = [
+export const DATUMS = [
   'A = bottom face, B = left edge, C = front edge (as drawn)',
   'A = mounting face, B = locating hole, C = second locating hole',
   'A = bend face (flat side), B/C = outer edges',
   'Not applicable: general tolerance only',
 ];
 
-const procFor = (cat: string) => cat === 'sheet_metal' ? ['Laser cutting + CNC bending', 'Laser cutting', 'Sheet metal fabrication + welding', 'Waterjet cutting'] : cat === 'machining' ? ['CNC milling (3-axis)', 'CNC turning', 'Turn-mill', 'CNC milling (5-axis)', 'Wire EDM'] : suggestions.process.slice(0, 6);
-const matFor = (cat: string) => cat === 'sheet_metal' ? ['Mild steel IS 513 CR2 (CRCA)', 'Stainless steel SS304 (X5CrNi18-10)', 'Aluminium 5052-H32', 'Mild steel HR IS 1079'] : ['Aluminium 6061-T6', 'Mild steel IS 2062 E250 BR', 'Alloy steel EN8 (080M40)', 'Stainless steel SS304 (X5CrNi18-10)', 'Alloy steel EN24 (817M40)'];
+export const procFor = (cat: string) => cat === 'sheet_metal' ? ['Laser cutting + CNC bending', 'Laser cutting', 'Sheet metal fabrication + welding', 'Waterjet cutting'] : cat === 'machining' ? ['CNC milling (3-axis)', 'CNC turning', 'Turn-mill', 'CNC milling (5-axis)', 'Wire EDM'] : suggestions.process.slice(0, 6);
+export const matFor = (cat: string) => cat === 'sheet_metal' ? ['Mild steel IS 513 CR2 (CRCA)', 'Stainless steel SS304 (X5CrNi18-10)', 'Aluminium 5052-H32', 'Mild steel HR IS 1079'] : ['Aluminium 6061-T6', 'Mild steel IS 2062 E250 BR', 'Alloy steel EN8 (080M40)', 'Stainless steel SS304 (X5CrNi18-10)', 'Alloy steel EN24 (817M40)'];
 
 function Choice({ options, value, onPick, hint }: { options: string[]; value: string; onPick: (v: string) => void; hint?: string }) {
   return <div className="rw-choices">{options.map(o => <button type="button" key={o} className={value === o ? 'selected' : ''} onClick={() => onPick(o)}>{value === o && <Check size={13} />}{o}{hint === o && <em>from CAD</em>}</button>)}</div>;

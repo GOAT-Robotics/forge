@@ -18,6 +18,7 @@ import type { Any } from './constants';
 import { Select } from './controls';
 import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams } from './welding';
 import { ReadinessWizard } from './readiness';
+import BulkReady from './bulkReady';
 import { QualityPage } from './quality';
 import HoleConfig from './holeConfig';
 import WeldConfig from './weldConfig';
@@ -102,6 +103,7 @@ function App() {
   const [weldListOpen, setWeldListOpen] = useState(false);
   const [holeCfg, setHoleCfg] = useState<string | null>(null);
   const [bendSim, setBendSim] = useState<string | null>(null);
+  const [bulkReady, setBulkReady] = useState(false);
   const [stepsAdd, setStepsAdd] = useState<{ ids: string[]; n: number } | null>(null);
   const addToSteps = (ids: string[]) => { setStepsAdd({ ids, n: Date.now() }); setTab('steps'); };
   /** press-brake simulation: shown where it is shared; editors can preview it on any formed part */
@@ -342,7 +344,7 @@ function App() {
   const releaseParts = (rev?.parts || []).filter((p: Any) => !p.excluded && p.category !== 'purchased');
   const readyCount = releaseParts.filter(partReady).length;
   const blocking = findings.filter((f: Any) => f.severity === 'blocker' && !f.waiver).length;
-  const job = rev?.jobs?.find((j: Any) => ['queued', 'running'].includes(j.status));
+  const job = rev?.jobs?.find((j: Any) => ['queued', 'running'].includes(j.status) && j.kind !== 'instructions');
   const appearance = useMemo<Record<string, PartAppearance>>(() => {
     const out: Record<string, PartAppearance> = {};
     for (const p of parts) out[p.id] = { color: (colorBy === 'coating' && p.spec.coating_hex) || categoryColors[p.category] || categoryColors.other, category: p.category, name: p.name };
@@ -748,6 +750,7 @@ function App() {
                         { value: 'hidden', label: 'Hidden in viewer', hint: String(hiddenIds.length) },
                         { value: 'excluded', label: 'Not for production', hint: String(parts.filter((p: Any) => p.excluded).length) },
                       ]} /></div>
+                        {editable && <button type="button" className="icon" title="Make many parts production ready (all sheet metal, all machining or the selection)" onClick={() => setBulkReady(true)}><Sparkles size={14} /></button>}
                         <button type="button" className="icon" onClick={() => stepPart(-1)} disabled={!filtered.length} title="Previous part (↑)"><ArrowUp size={14} /></button><button type="button" className="icon" onClick={() => stepPart(1)} disabled={!filtered.length} title="Next part (↓)"><ArrowDown size={14} /></button></div>
                       <button className={'assembly-root ' + (!selected ? 'chosen' : '')} onClick={() => choosePart(null)}>
                         <Layers size={18} /><span>Complete assembly<small>{rev.manifest.occurrences || 0} body instances</small></span>
@@ -923,7 +926,7 @@ function App() {
                       ) : multi.length > 1 ? (
                         <GroupPanel templates={templates.filter((t: Any) => t.kind === 'process')} onProcess={tid => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: multi, template_id: tid }); await loadRevision(rev.id); notify('Process template applied'); })}
                           onJoint={() => startWeld([...multi])} parts={parts.filter((p: Any) => multi.includes(p.id))} vendor={vendor} editable={editable} busy={busy}
-                          onEdit={() => { setEditing({ group: parts.filter((p: Any) => multi.includes(p.id)) }); setModal('group-spec'); }}
+                          onEdit={() => { setEditing({ group: parts.filter((p: Any) => multi.includes(p.id)) }); setModal('group-spec'); }} onReady={() => setBulkReady(true)}
                           onBulk={bulk} onExclude={() => setExcluding(parts.filter((p: Any) => multi.includes(p.id)))} onRemove={id => { const next = multi.filter(x => x !== id); setMulti(next); if (selected === id) setSelected(next[next.length - 1] || null); }}
                           onFocus={id => setSelected(id)} onClear={() => choosePart(null)} />
                       ) : part ? (() => {
@@ -1106,33 +1109,16 @@ function App() {
                 {tab === 'assembly' && (
                   <section className="content-page">
                     <div className="page-title">
-                      <div><h2>Assembly & mating</h2><p>From geometric candidates to toleranced, approved interfaces.</p></div>
+                      <div><h2>Assembly & welding</h2><p>Joints and welds on the assembly from the STEP file. Build order and fasteners are in Steps.</p></div>
                       <div className="flex">
                         <button onClick={() => doc(`/revisions/${rev.id}/assets/assembly.pdf`, 'assembly.pdf', 'Assembly & mating record')}><Eye size={16} />Assembly document</button>
+                        <button disabled={!(rev.joints || []).some((j: Any) => j.kind === 'weld')} title="Weld schedule and one page per weldment with every weld numbered (ISO 2553 sizes)" onClick={() => doc(`/revisions/${rev.id}/welding.pdf`, 'welding.pdf', 'Welding document')}><Flame size={16} />Welding document</button>
                         {editable && <button onClick={() => { setTab('parts'); startWeld(multi.length ? [...multi] : []); notify('Click the components to weld in the 3D view — Forge finds the seams where they touch.'); }}><Plus size={16} />Add joint / weld</button>}
-                        {editable && <button className="primary" onClick={() => { setEditing({ data: { label: 'New interface', part_a: parts[0]?.id, part_b: parts[1]?.id || parts[0]?.id, feature_a: '', feature_b: '', fit: '', instructions: '', torque: '' }, approved: false }); setModal('fit'); }}><Plus size={16} />Add interface</button>}
                       </div>
                     </div>
                     <JointCards joints={rev.joints || []} parts={parts} editable={editable}
                       onEdit={j => { setTab('parts'); editWeld(j); }}
                       onDelete={async j => { if (await ask({ title: 'Delete this joint?', confirm: 'Delete', danger: true }) === null) return; setRev((r: Any) => r && { ...r, joints: (r.joints || []).filter((x: Any) => x.id !== j.id) }); api('/joints/' + j.id, 'DELETE').catch(fail).finally(() => refreshJoints(rev.id).catch(fail)); }} />
-                    <h3 className="section-sub"><Target size={15} />Fits & interfaces</h3>
-                    <div className="notice"><Target size={17} />Automatic candidates use coaxial cylindrical surfaces and axial overlap. They do not recover mates, interference intent or tolerance classes from STEP.</div>
-                    <div className="fit-grid">
-                      {related.filter(f => f && f.data).map(f => (
-                        <article className="fit-card" key={f.id}>
-                          <header><Badge kind={f.approved ? 'success' : 'warning'}>{f.approved ? 'Approved' : 'Review required'}</Badge><b>{f.data.label}</b></header>
-                          <h3>{f.data.part_a_name || parts.find((p: Any) => p.id === f.data.part_a)?.name} <span>↔</span> {f.data.part_b_name || parts.find((p: Any) => p.id === f.data.part_b)?.name}</h3>
-                          <p>{f.data.feature_a} / {f.data.feature_b}</p>
-                          <div className="fit-number">{f.data.nominal_clearance !== undefined ? fmt(f.data.nominal_clearance) + ' mm' : 'Not computed'}<small>Nominal diametral clearance</small></div>
-                          <p><strong>Fit:</strong> {f.data.fit || 'Unspecified'}</p>
-                          <p><strong>Assembly:</strong> {f.data.instructions || 'Instructions required'}</p>
-                          {f.data.min_clearance !== undefined && <p>Clearance range: {fmt(f.data.min_clearance)} to {fmt(f.data.max_clearance)} mm</p>}
-                          {editable && <button onClick={() => { setEditing(JSON.parse(JSON.stringify(f))); setModal('fit'); }}>Specify & review <ArrowUpRight size={15} /></button>}
-                        </article>
-                      ))}
-                    </div>
-                    {!related.length && <div className="empty-inline"><Layers size={30} /><h3>No mating records yet</h3><p>Add interfaces that are not discoverable from cylindrical geometry.</p></div>}
                   </section>
                 )}
 
@@ -1209,6 +1195,8 @@ function App() {
       {error && <div className="error-toast" role="alert"><AlertTriangle size={18} /><span>{error}</span><button onClick={() => setError('')}><X size={17} /></button></div>}
       <DialogHost />
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
+      {bulkReady && rev && <BulkReady revision={rev.id} parts={parts} selection={multi.length > 1 ? multi : category === 'sheet_metal' || category === 'machining' ? parts.filter((p: Any) => p.category === category).map((p: Any) => p.id) : []}
+        canDesign={can('design.review')} canDrawing={can('drawing.review')} close={() => setBulkReady(false)} done={() => loadRevision(rev.id)} />}
       {bendSim && rev && parts.find((p: Any) => p.id === bendSim) && <PressBrake revision={rev.id} part={bendSim} name={parts.find((p: Any) => p.id === bendSim).name} navStyle={prefs.navStyle} close={() => setBendSim(null)} />}
       {holeCfg && rev && parts.find((p: Any) => p.id === holeCfg) && <HoleConfig part={parts.find((p: Any) => p.id === holeCfg)} revision={rev.id} editable={editable} navStyle={prefs.navStyle}
         close={changed => { setHoleCfg(null); if (changed) loadRevision(rev.id).catch(fail); }} />}

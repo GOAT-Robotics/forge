@@ -745,7 +745,7 @@ export function JointCards({ joints, parts, editable, onEdit, onDelete }: { join
       <h3 className="section-sub"><Flame size={15} />Joints & welds</h3>
       <div className="fit-grid">{joints.map(j => (
         <article className="fit-card" key={j.id}>
-          <header><Badge kind={j.kind === 'weld' ? 'warning' : 'neutral'}>{j.kind.replace('_', ' ')}</Badge><b>{j.data.name || `#${j.data.sequence || ''}`}</b></header>
+          <header><Badge kind={j.kind === 'weld' ? 'warning' : 'neutral'}>{j.kind.replace('_', ' ')}</Badge><b>{j.data.name || (j.kind === 'weld' ? `W${joints.filter(x => x.kind === 'weld').indexOf(j) + 1}` : '')}</b></header>
           <h3>{j.data.parts.map(named).join(' + ')}</h3>
           {j.kind === 'weld' && <p><strong>{j.data.weld.process}</strong> · {j.data.weld.type}{j.data.weld.size && ` ${j.data.weld.size}`}{j.data.weld.length && ` × ${j.data.weld.length}`}{j.data.weld.pitch && ` (${j.data.weld.pitch})`} · {j.data.weld.sides?.replace('_', ' ')}{j.data.weld.field ? ' · field' : ''}</p>}
           {j.data.fasteners && <p><strong>Fasteners:</strong> {j.data.fasteners}{j.data.torque && ` · ${j.data.torque}`}</p>}

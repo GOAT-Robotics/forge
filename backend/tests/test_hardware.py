@@ -109,3 +109,55 @@ def test_weld_ranges_tacks_on_seams_and_ground(tmp_path, monkeypatch):
         assert post([{**seam, 'range': [0, 180]}], {**base, 'type': 'linear'}).status_code == 422
         # a tack with neither a seam position nor a face pair is still refused
         assert post([seam], {**base, 'type': 'tack'}).status_code == 422
+
+
+def test_bulk_production_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, 'ROOT', tmp_path)
+    with TestClient(app) as client:
+        rid, pid, shape, g = _fixture(tmp_path, client)
+        g['flat_status'] = 'supported'
+        with db.connect() as c:
+            c.execute("UPDATE users SET role='admin'")
+            c.execute('UPDATE parts SET geometry=? WHERE id=?', (json.dumps(g), pid))
+        H = {'X-Forge-Request': '1'}
+        url = f'/api/revisions/{rid}/parts/bulk-ready'
+        # design sign-off is refused while blockers are open
+        r = client.post(url, headers=H, json={'ids': [pid], 'design_review': True}).json()['results'][0]
+        assert not r['design'] and any('Material' in x for x in r['open'])
+        checks = {k: 'Verified for this bracket family' for k in ('load_strength', 'functional_gdt', 'threads', 'process_tooling', 'assembly', 'coating')}
+        fill = {'material': 'Aluminium 5052-H32', 'process': 'Laser cutting', 'finish': 'Natural', 'general_tolerance': 'ISO 2768-mK', 'datums': 'A = bottom face'}
+        assert client.post(url, headers=H, json={'ids': [pid], 'manual_checks': {'threads': 'short'}}).status_code == 422
+        r = client.post(url, headers=H, json={'ids': [pid], 'fill': fill, 'manual_checks': checks, 'waive_warnings': 'Accepted for this design family', 'design_review': True, 'drawing_review': True}).json()['results'][0]
+        assert r['design'] and r['drawing'] == 'regenerate' and not [x for x in r['open'] if not x.endswith('(warning)')], r['open']
+        p = db.row('SELECT spec,reviewed FROM parts WHERE id=?', (pid,))
+        spec = json.loads(p['spec'])
+        assert p['reviewed'] == 1 and spec['material'] == 'Aluminium 5052-H32' and spec['manual_checks']['threads'].startswith('Verified')
+        # existing values are kept unless overwrite is asked for
+        client.post(url, headers=H, json={'ids': [pid], 'fill': {'material': 'Steel'}})
+        assert json.loads(db.row('SELECT spec FROM parts WHERE id=?', (pid,))['spec'])['material'] == 'Aluminium 5052-H32'
+        # a drawing that is current can be signed off in bulk
+        folder = db.revdir(rid) / 'parts' / pid
+        (folder / 'drawing-scene.json').write_text('{}')
+        (folder / '.drawing-invalid').unlink(missing_ok=True)   # as after regeneration
+        r = client.post(url, headers=H, json={'ids': [pid], 'drawing_review': True}).json()['results'][0]
+        assert r['drawing'] == 'reviewed' and r['ready']
+
+
+def test_welding_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, 'ROOT', tmp_path)
+    with TestClient(app) as client:
+        rid, pid, shape, g = _fixture(tmp_path, client)
+        H = {'X-Forge-Request': '1'}
+        assert client.get(f'/api/revisions/{rid}/welding.pdf').status_code == 404
+        seam = {'part': pid, 'occurrence': 0, 'selection': 'edge', 'index': 3, 'type': 'line', 'length': 100.0,
+                'boundaries': [[[0, 0, 0], [100, 0, 0]]], 'joint': 'fillet', 'other_part': pid, 'other_occurrence': 0}
+        base = {'process': 'MIG/MAG (135)', 'size': '3'}
+        client.post(f'/api/revisions/{rid}/joints', headers=H, json={'kind': 'weld', 'parts': [pid], 'faces': [{**seam, 'range': [0, 100]}], 'weld': {**base, 'type': 'stitch', 'length': '20', 'pitch': '40', 'pattern': 'full', 'ground': True}})
+        from app.welding import weld_rows
+        r = weld_rows(rid)[0]
+        assert r['symbol'] == 'a3 fillet 3 × 20 (40)' and r['weld_length'] == 60 and r['seam'] == 100 and r['ground']
+        pdf = client.get(f'/api/revisions/{rid}/welding.pdf')
+        assert pdf.status_code == 200 and pdf.content[:4] == b'%PDF'
+        from pypdf import PdfReader
+        import io
+        assert 'W1' in PdfReader(io.BytesIO(pdf.content)).pages[0].extract_text()
