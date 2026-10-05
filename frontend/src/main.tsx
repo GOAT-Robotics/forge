@@ -736,7 +736,8 @@ function App() {
               <div className="empty-page"><Upload size={42} /><h2>Every part starts here.</h2><p>Upload STEP, IGES or BREP. Assemblies and multi-body parts stay connected.</p><button className="primary" onClick={() => setModal('upload')}>Upload CAD file</button></div>
             ) : (
               <>
-                {job && !importingRevision && <div className="job-pill" role="status" aria-live="polite">{rev.progress >= 100 ? <CheckCircle2 size={15} /> : <LoaderCircle size={15} className="spin" />}<span>{rev.message || 'Job queued'}</span><progress max="100" value={rev.progress} /><b>{rev.progress}%</b></div>}
+                {job && !importingRevision && <div className="job-pill" role="status" aria-live="polite"><LoaderCircle size={15} className="spin" /><span>{rev.message || 'Job queued'}</span><progress max="100" value={Math.min(rev.progress, 99)} /><b>{Math.min(rev.progress, 99)}%</b></div>}
+                {!job && rev.jobs?.[0]?.status === 'failed' && rev.jobs[0].kind !== 'import' && <div className="error-banner">Document generation failed: {rev.jobs[0].error || 'Retry generation.'}</div>}
                 {rev.status === 'failed' && <div className="error-banner">Import failed: {rev.message}. The previous active revision is preserved.</div>}
                 {rev.state === 'archived' && <div className="notice"><Archive size={15} />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
 

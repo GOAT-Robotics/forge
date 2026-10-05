@@ -379,29 +379,56 @@ def process_welding(rid):
  from .welding import welding_pdf
  progress(rid,20,'Drawing the welding document');welding_pdf(rid);progress(rid,100,'Welding document ready')
 
+def perform_job(job):
+ (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else process_documents(job['revision_id'],json.loads(job['payload'])))
+ progress(job['revision_id'],99,'Uploading generated artifacts')
+ storage.sync_revision(job['revision_id'],db.revdir(job['revision_id']))
+
 def run_once():
  with db.connect() as c:
   c.execute('BEGIN IMMEDIATE');job=c.execute('SELECT * FROM jobs WHERE status="queued" ORDER BY created LIMIT 1').fetchone()
   if not job:return False
   job=dict(job);c.execute('UPDATE jobs SET status="running" WHERE id=?',(job['id'],))
+  c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',('Starting '+job['kind'],job['revision_id']))
  try:
-  (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else process_documents(job['revision_id'],json.loads(job['payload'])))
-  storage.sync_revision(job['revision_id'],db.revdir(job['revision_id']))
-  with db.connect() as c:c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
+  if job['kind']=='import':perform_job(job)
+  else:
+   import sys
+   from .job_timeout import run_bounded
+   timeout=float(os.getenv('FORGE_DOCUMENT_TIMEOUT_SECONDS','1800'))
+   if not math.isfinite(timeout) or timeout<=0:raise ValueError('FORGE_DOCUMENT_TIMEOUT_SECONDS must be positive')
+   run_bounded([sys.executable,'-m','app.worker','--job',job['id']],timeout,env={**os.environ,'DATA_DIR':str(db.ROOT),'PYTHONPATH':str(Path(__file__).resolve().parent.parent)+os.pathsep+os.getenv('PYTHONPATH','')})
+  with db.connect() as c:
+   c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
+   c.execute('UPDATE revisions SET progress=100,message=? WHERE id=?',({'import':'Analysis complete','instructions':'Assembly instructions ready','welding':'Welding document ready'}.get(job['kind'],'Documents generated'),job['revision_id']))
  except Exception as e:
   traceback.print_exc()
-  if json.loads(job['payload']).get('release'):
+  payload=json.loads(job['payload'])
+  if job['kind']=='documents' and not payload.get('assembly_only'):
+   ids=payload.get('part_ids') or ([payload['part_id']] if payload.get('part_id') else [p['id'] for p in db.rows('SELECT id FROM parts WHERE revision_id=?',(job['revision_id'],))])
+   for pid in ids:
+    part_folder=db.revdir(job['revision_id'])/'parts'/pid;part_folder.mkdir(parents=True,exist_ok=True)
+    (part_folder/'.drawing-invalid').write_text('Document generation failed; regenerate before review')
+  if payload.get('release'):
    # Never leave partial outputs stamped RELEASED after a failed release.
    folder=db.revdir(job['revision_id'])
    for artifact in folder.rglob('*'):
     if artifact.suffix in ('.pdf','.dxf','.zip') or artifact.name in ('flat.json','flat.glb','projections.json','drawing-scene.json','characteristics.json'):artifact.unlink(missing_ok=True)
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="failed",error=? WHERE id=?',(str(e)[:1000],job['id']))
+   c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',('Job failed: '+str(e)[:900],job['revision_id']))
    if json.loads(job['payload']).get('release'):c.execute('UPDATE revisions SET status="ready",release_by=NULL,release_at=NULL WHERE id=?',(job['revision_id'],))
-   if job['kind']=='import':c.execute('UPDATE revisions SET status="failed",message=? WHERE id=?',(str(e)[:1000],job['revision_id']))
+   if job['kind']=='import':c.execute('UPDATE revisions SET status="failed" WHERE id=?',(job['revision_id'],))
  return True
 if __name__=='__main__':
- db.init()
- with db.connect() as c:c.execute('UPDATE jobs SET status="queued" WHERE status="running"')
- while True:
-  if not run_once():time.sleep(1)
+ import sys
+ if len(sys.argv)==3 and sys.argv[1]=='--job':
+  perform_job(db.row('SELECT * FROM jobs WHERE id=?',(sys.argv[2],)))
+ else:
+  db.init()
+  # An interrupted job must not silently restart indefinitely after container restarts.
+  with db.connect() as c:
+   c.execute('UPDATE jobs SET status="failed",error="Worker restarted before job completed; retry generation" WHERE status="running" AND kind!="import"')
+   c.execute('UPDATE jobs SET status="queued" WHERE status="running" AND kind="import"')
+  while True:
+   if not run_once():time.sleep(1)
