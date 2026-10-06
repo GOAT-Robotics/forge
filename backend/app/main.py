@@ -308,6 +308,9 @@ def revision(rid:str,request:Request):
  r['assets']=[f.name for f in db.revdir(rid).glob('*') if f.suffix in ('.pdf','.dxf','.zip')];r['jobs']=db.rows('SELECT * FROM jobs WHERE revision_id=? ORDER BY created DESC LIMIT 10',(rid,));r['access']=access['role']
  r['permissions']=sorted(perms_for(access,r['project_id'])) if access['role']!='vendor' else (['cad.download'] if access.get('allow_cad') else [])
  r['joints']=[{**j,'data':json.loads(j['data'])} for j in db.rows('SELECT * FROM joints WHERE revision_id=? ORDER BY created',(rid,))]
+ from .weldments import listing as weldment_listing
+ try:r['weldments']=weldment_listing(rid,r.get('state')=='active' and r.get('status')=='ready' and access['role']!='vendor')
+ except Exception:r['weldments']=[]
  r['job_orders']=db.rows('SELECT id,number,title,status,quantity,due FROM job_orders WHERE revision_id=? ORDER BY number',(rid,)) if access['role']!='vendor' else []
  return r
 def attach_assembly_paths(rid,parts):
@@ -891,6 +894,8 @@ from .assembly import router as assembly_router
 app.include_router(assembly_router)
 from .welding import router as welding_router
 app.include_router(welding_router)
+from .weldments import router as weldments_router
+app.include_router(weldments_router)
 # Built UI is served by the same origin; no CORS, no second production web server.
 STATIC=Path(os.getenv('STATIC_DIR',Path(__file__).resolve().parents[2]/'frontend/dist'))
 if STATIC.exists():

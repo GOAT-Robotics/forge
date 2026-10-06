@@ -37,6 +37,8 @@ def init():
  CREATE TABLE IF NOT EXISTS measurements(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL,part_id TEXT NOT NULL,serial TEXT NOT NULL,char_key TEXT NOT NULL,char_no TEXT NOT NULL,label TEXT NOT NULL,nominal REAL,lower_limit REAL,upper_limit REAL,unit TEXT NOT NULL,critical INTEGER DEFAULT 0,value REAL,attr TEXT DEFAULT '',result TEXT NOT NULL,instrument TEXT DEFAULT '',note TEXT DEFAULT '',actor TEXT NOT NULL,created TEXT NOT NULL,first_article INTEGER DEFAULT 0,disposition TEXT DEFAULT '',disposition_note TEXT DEFAULT '',disposition_by TEXT DEFAULT '',disposition_at TEXT DEFAULT '');
  CREATE TABLE IF NOT EXISTS assembly_steps(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),seq INTEGER NOT NULL,data TEXT NOT NULL,created TEXT NOT NULL,author TEXT NOT NULL,updated TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS assembly_groups(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),seq INTEGER NOT NULL,name TEXT NOT NULL,notes TEXT DEFAULT '',created TEXT NOT NULL,author TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS weldments(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),name TEXT NOT NULL,parts TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,author TEXT NOT NULL);
+ CREATE INDEX IF NOT EXISTS idx_weldments ON weldments(revision_id);
  CREATE INDEX IF NOT EXISTS idx_assembly_steps ON assembly_steps(revision_id,seq);
  CREATE INDEX IF NOT EXISTS idx_measurements ON measurements(part_id,serial);
  CREATE INDEX IF NOT EXISTS idx_jo_items ON jo_items(job_order_id);

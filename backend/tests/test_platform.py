@@ -434,6 +434,36 @@ def test_weld_seams_assembly_tree_and_purchased_left_off_assembly_drawing(tmp_pa
         assert j.status_code == 200, j.text
         saved = client.get('/api/revisions/' + r['id']).json()['joints'][0]['data']
         assert len(saved['faces']) == 5 and all(f['joint'] == 'fillet' and len(f['legs']) == 2 for f in saved['faces'])
+        # weld assemblies: a weld from before them gets one, named automatically
+        rid, ids = r['id'], {k: v['id'] for k, v in parts.items()}
+        wm = client.get(f"/api/revisions/{rid}/weldments", headers=H).json()
+        assert len(wm) == 1 and wm[0]['name'].startswith('WLD-01') and len(wm[0]['welds']) == 1
+        # opening the weld configuration on a selection joins the weld assembly it touches
+        o = client.post(f"/api/revisions/{rid}/weldments", headers=H, json={'parts': [ids['RIB'], ids['IPC TOP COVER']]}).json()
+        assert o['id'] == wm[0]['id'] and ids['IPC TOP COVER'] in o['parts'] and len(o['parts']) == 4
+        assert client.put(f"/api/weldments/{o['id']}", headers=H, json={'name': 'Frame weldment'}).json()['name'] == 'Frame weldment'
+        assert client.post(f"/api/revisions/{rid}/weldments", headers=H, json={'parts': [ids['IPC BOTTOM COVER']], 'name': 'frame WELDMENT'}).status_code == 409
+        other = client.post(f"/api/revisions/{rid}/weldments", headers=H, json={'parts': [ids['IPC BOTTOM COVER']]}).json()
+        assert other['id'] != o['id'] and other['name'].startswith('WLD-01')
+        # a part is in one weld assembly only
+        assert client.put(f"/api/weldments/{other['id']}", headers=H, json={'parts': [ids['IPC BOTTOM COVER'], ids['RIB']]}).status_code == 409
+        assert client.delete(f"/api/weldments/{other['id']}", headers=H).json()['removed_welds'] == 0
+        # the welding document is drawn per weld assembly
+        from app.welding import welding_pdf, weld_rows, weldments as weld_groups
+        groups = weld_groups(weld_rows(rid), rid)
+        assert [g['name'] for g in groups] == ['Frame weldment'] and groups[0]['rows'][0]['assembly'] == 'Frame weldment'
+        assert welding_pdf(rid).stat().st_size > 2000
+        # taking out a part without welds keeps the welds; taking out a welded part removes its welds
+        keep = [x for x in o['parts'] if x != ids['IPC TOP COVER']]
+        assert client.put(f"/api/weldments/{o['id']}", headers=H, json={'parts': keep}).json()['removed_welds'] == 0
+        j2 = client.post(f"/api/revisions/{rid}/joints", headers=H, json={'kind': 'weld', 'parts': [ids['BASE PLATE'], ids['UPRIGHT']], 'faces': faces[:1],
+                                                                       'weld': {'type': 'linear', 'process': 'MIG/MAG (135)', 'size': '4', 'sides': 'one'}})
+        assert j2.status_code == 200, j2.text
+        assert client.post(f"/api/revisions/{rid}/welds/delete", headers=H, json={'ids': [j2.json()['id']]}).json()['removed'] == 1
+        gone = client.put(f"/api/weldments/{o['id']}", headers=H, json={'parts': [x for x in keep if x != ids['RIB']]}).json()
+        assert gone['removed_welds'] == 1 and gone['welds'] == []
+        j = client.post(f"/api/revisions/{rid}/joints", headers=H, json={'kind': 'weld', 'parts': [ids['BASE PLATE'], ids['UPRIGHT'], ids['RIB']], 'faces': faces,
+                                                                      'weld': {'type': 'linear', 'process': 'MIG/MAG (135)', 'size': '4', 'sides': 'one'}})
         # purchased parts are left off the assembly drawing unless overridden
         from app.drawings import shows_on_assembly
         pcb = parts['IPC PCB']

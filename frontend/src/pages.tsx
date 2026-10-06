@@ -137,11 +137,11 @@ export function Dashboard({ openJobOrder, openProject, ctx }: { openJobOrder: (i
 
 // ============================================================================ Job orders
 type JoScope = 'all' | 'sheet_metal' | 'machining' | 'selected' | 'custom';
-export function JobOrderDialog({ projects, projectId, close, onCreated, ctx, selection }: { projects: Any[]; projectId?: string; close: () => void; onCreated: (jo: Any) => void; ctx: Ctx; selection?: { id: string; name: string }[] }) {
+export function JobOrderDialog({ projects, projectId, close, onCreated, ctx, selection, title }: { projects: Any[]; projectId?: string; close: () => void; onCreated: (jo: Any) => void; ctx: Ctx; selection?: { id: string; name: string }[]; title?: string }) {
   const [pid, setPid] = useState(projectId || projects.find(p => p.active_status === 'released')?.id || projects[0]?.id || '');
   const [project, setProject] = useState<Any>(null);
   const [rev, setRev] = useState<Any>(null);
-  const [form, setForm] = useState<Any>({ title: '', quantity: 1, due: '', priority: 'normal', customer: '', requirement: '', include_purchased: true });
+  const [form, setForm] = useState<Any>({ title: title || '', quantity: 1, due: '', priority: 'normal', customer: '', requirement: '', include_purchased: true });
   const [mode, setMode] = useState<JoScope>(selection?.length ? 'selected' : 'all');
   const [qty, setQty] = useState<Record<string, number>>({});        // custom quantities (part id → count)
   const [picked, setPicked] = useState<Set<string>>(new Set());       // custom scope: ticked parts

@@ -1103,6 +1103,11 @@ def job_order_items(jo_id, rid, quantity, selection, include_purchased):
         for i, (step, kind) in enumerate(default_steps(p)):
             items.append((p, i, step, kind, req))
     rows = [(db.uid(), jo_id, p['id'], p['name'], p['category'], seq, step, kind, req) for p, seq, step, kind, req in items]
+    from .weldments import _rows as weldment_rows, weldment_of
+    try:
+        groups = weldment_rows(rid)
+    except Exception:
+        groups = []
     for j in db.rows('SELECT * FROM joints WHERE revision_id=? ORDER BY created', (rid,)):
         d = json.loads(j['data'])
         names = [parts[x]['name'] for x in d['parts'] if x in parts]
@@ -1113,7 +1118,9 @@ def job_order_items(jo_id, rid, quantity, selection, include_purchased):
             continue   # a partial job order (sheet metal only, a selection) carries only welds among its own parts
         what = ('Weld ' + d['weld'].get('process', '') + ' ' + d['weld'].get('type', '') + (' a' + d['weld']['size'] if d['weld'].get('size') else '')) if j['kind'] == 'weld' else j['kind'].replace('_', ' ').title()
         required = (wanted[d['parts'][0]] if wanted is not None else parts[d['parts'][0]]['quantity'] * quantity) if single_part_weld else quantity
-        rows.append((db.uid(), jo_id, 'joint:' + j['id'], ' + '.join(names)[:300], 'assembly', 1000 + d.get('sequence', 0), what.strip(), 'assembly', required))
+        grp = weldment_of(groups, d['parts']) if j['kind'] == 'weld' else None
+        label = (f"{grp['name']}: " if grp else '') + ' + '.join(names)   # welds listed under their weld assembly
+        rows.append((db.uid(), jo_id, 'joint:' + j['id'], label[:300], 'assembly', 1000 + d.get('sequence', 0), what.strip(), 'assembly', required))
     return rows
 
 

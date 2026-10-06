@@ -1057,3 +1057,44 @@ button.doc-status:hover { filter: brightness(.97); box-shadow: 0 0 0 1px current
 .wc-sidetag.outside { background: #fef3c7; color: #b45309; }
 
 .cfg-msgs .cfg-msg { position: static; display: flex; align-items: center; gap: 6px; }
+
+/* weld assemblies */
+.wc-asm h4 { display: flex; align-items: center; gap: 7px; }
+.wc-asm h4 svg { color: #e0479e; }
+.wc-name { height: 36px; border: 1px solid #cbd5e1; border-radius: 9px; padding: 0 10px; font-size: 14px; font-weight: 600; color: var(--ink); background: #fff; }
+.wc-name:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.wc-parts { display: flex; flex-wrap: wrap; gap: 6px; }
+.wc-part { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 3px 4px 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: #f8fafc; font-size: 12px; color: var(--text); }
+.wc-part > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.wc-part small { min-width: 18px; padding: 0 5px; border-radius: 9px; background: #fce7f3; color: #be185d; font-size: 11px; font-weight: 600; text-align: center; }
+.wc-part.hot { border-color: #93c5fd; background: #eff6ff; }
+.wc-part button.icon { width: 20px; height: 20px; min-height: 0; border-radius: 50%; border: 0; box-shadow: none; background: transparent; color: #94a3b8; }
+.wc-part button.icon:hover { background: #fee2e2; color: #dc2626; }
+.wc-listhead { display: flex; align-items: center; gap: 10px; padding: 2px 4px; font-size: 13px; color: var(--muted); }
+.wc-listhead b { font-weight: 600; color: var(--text); margin-right: auto; }
+.wc-listhead .mini.danger { color: #dc2626; border-color: #fecaca; }
+.wc-check { display: inline-flex; margin: 0; }
+.wc-weld.with-pick { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+.wc-weld.picked { border-color: #93c5fd; background: #f8fbff; }
+.wc-pick, .wc-check input { width: 16px; height: 16px; margin: 0; accent-color: #3b82f6; }
+.wc-confirm { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid #fecaca; border-radius: 12px; background: #fff5f5; }
+.wc-confirm b { font-size: 13.5px; color: #991b1b; }
+.wc-confirm small { color: #7f1d1d; font-size: 12.5px; }
+.wc-confirm div { display: flex; justify-content: flex-end; gap: 8px; }
+.wc-confirm button.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
+.wc-jo { order: 2; display: inline-flex; align-items: center; gap: 6px; height: 36px; }
+.wc-asmname { color: #be185d; }
+.pi-card.weld-asm > svg { color: #e0479e; flex: none; margin-top: 1px; }
+.pi-card.weld-asm .flex { gap: 6px; flex-wrap: wrap; }
+.weld-node .weld-glyph { color: #e0479e; }
+.wa-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.wa-card { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.wa-card header { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 8px; }
+.wa-card header svg { color: #e0479e; }
+.wa-card header small { grid-column: 2; color: var(--muted); font-size: 12px; }
+.wa-card ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 12.5px; color: var(--text); }
+.wa-card li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wa-card footer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.wa-card footer .danger { margin-left: auto; color: #dc2626; }
+.wa-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 48px 16px; border: 1px dashed var(--line); border-radius: 12px; color: #94a3b8; text-align: center; }
+.wa-empty b { color: #475569; font-weight: 500; }

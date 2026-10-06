@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { X, Crosshair, Trash2, Flame, LoaderCircle } from 'lucide-react';
+import { X, Crosshair, Trash2, Flame, LoaderCircle, ClipboardList, Layers, Target } from 'lucide-react';
 import PartScene, { type SceneApi, type SceneBody } from './partScene';
 import { api, assetJson } from './api';
 import type { Any } from './constants';
@@ -33,9 +33,15 @@ function pattern(L: number, len: number, gap: number): [number, number, number] 
  * whole seam; Stitch places one stitch (or a stitch pattern along the seam); Tack places one tack (or a row);
  * Manual: press on a seam and drag along it. Overlapping welds on a seam merge. Each weld is saved at once.
  */
-export default function WeldConfig({ revision, partIds, parts, joints, editable, navStyle, close }: {
-  revision: string; partIds: string[]; parts: Any[]; joints: Any[]; editable: boolean; navStyle?: NavStyle; close: (changed: boolean) => void;
+export default function WeldConfig({ revision, partIds: initialParts, weldment, parts, joints, editable, navStyle, canJobOrder, onJobOrder, close }: {
+  revision: string; partIds: string[]; weldment?: Any | null; parts: Any[]; joints: Any[]; editable: boolean; navStyle?: NavStyle;
+  canJobOrder?: boolean; onJobOrder?: (w: Any) => void; close: (changed: boolean) => void;
 }) {
+  const [partIds, setPartIds] = useState<string[]>(initialParts);
+  const [asm, setAsm] = useState<Any | null>(weldment || null);
+  const [name, setName] = useState<string>(weldment?.name || '');
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [confirm, setConfirm] = useState<{ title: string; text: string; go: () => void } | null>(null);
   const [seams, setSeams] = useState<Seam[] | null>(null);
   const [bodies, setBodies] = useState<SceneBody[] | null>(null);
   const [message, setMessage] = useState('');
@@ -57,6 +63,8 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
   const layer = useRef<{ seams: THREE.Group; welds: THREE.Group; preview: THREE.Group } | null>(null);
   const matrices = useRef<Map<string, THREE.Matrix4>>(new Map());
   const names = useMemo(() => Object.fromEntries(parts.map(p => [p.id, p.name])), [parts]);
+  const [hotPart, setHotPart] = useState<string | null>(null);
+  const short = (pid: string) => { const p = parts.find(x => x.id === pid); if (!p) return pid; if (p.alias) return p.alias; const n = String(p.name); return n.includes(',') ? n.slice(n.lastIndexOf(',') + 1).trim() || n : n; };
 
   // ---------------------------------------------------------------- seams + placements
   useEffect(() => {
@@ -155,7 +163,7 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
       const m = tube(lifted(seam.world, seam.air, rs), rs, seam.side === 'inside' ? COL.inside : COL.outside, 0.9); if (m) { m.renderOrder = 9; L.seams.add(m); }
     }
     for (const w of welds) {
-      const color = hover?.weld === w.id || hover?.merge?.includes(w.id) ? COL.remove : focus === w.id ? COL.focus : COL.weld;
+      const color = hover?.weld === w.id || hover?.merge?.includes(w.id) ? COL.remove : focus === w.id || picked.has(w.id) || (hotPart && (w.data.parts || []).includes(hotPart)) ? COL.focus : COL.weld;
       const wd = w.data.weld || {};
       for (const { face, path } of weldPaths(w)) { const air = airOf(face), rw = rOf(face, air); beads(L.welds, lifted(path, air, rw), wd.type || 'linear', face.range, Number(wd.pitch || 50), Number(wd.length || 25), rw, color); }
     }
@@ -164,7 +172,7 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
     if (drag) { const rp = rOf(drag.seam, drag.seam.air) * 1.1; beads(L.preview, lifted(drag.seam.world, drag.seam.air, rp), 'linear', [Math.min(drag.a, drag.b), Math.max(drag.a, drag.b)], 0, 0, rp, COL.preview, 0.9); }
     s.invalidate();
   };
-  useEffect(drawAll, [seams, welds, hover, focus, drag, side]);
+  useEffect(drawAll, [seams, welds, hover, focus, drag, side, picked, hotPart]);
 
   // ---------------------------------------------------------------- picking
   const seamAt = (e: PointerEvent, s: SceneApi, only?: Seam): Hit | null => {
@@ -254,6 +262,33 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
     for (const id of merge.slice(1)) await api(`/joints/${id}`, 'DELETE');
   });
   const remove = (id: string) => run(async () => { await api(`/joints/${id}`, 'DELETE'); });
+  const removeMany = (ids: string[]) => setConfirm({
+    title: ids.length === welds.length ? `Clear all ${ids.length} welds?` : `Delete ${ids.length} weld${ids.length === 1 ? '' : 's'}?`,
+    text: 'They are removed from the assembly, its drawing and new job orders.',
+    go: () => run(async () => { await api(`/revisions/${revision}/welds/delete`, 'POST', { ids }); setPicked(new Set()); }),
+  });
+  const saveName = async () => {
+    if (!asm || !editable || name.trim() === asm.name) return;
+    try { const w = await api(`/weldments/${asm.id}`, 'PUT', { name: name.trim() }); setAsm(w); setName(w.name); changed.current = true; }
+    catch (e: Any) { setError(e.message); setName(asm.name); }
+  };
+  /** take a part out of the weld assembly; its welds go with it */
+  const removePart = (pid: string) => {
+    if (!asm || !editable) return;
+    const hit = welds.filter(w => (w.data.parts || []).includes(pid)).length;
+    const left = partIds.filter(p => p !== pid);
+    const go = () => run(async () => {
+      if (!left.length) { await api(`/weldments/${asm.id}`, 'DELETE'); changed.current = true; close(true); return; }
+      const w = await api(`/weldments/${asm.id}`, 'PUT', { parts: left }); setAsm(w); setPartIds(w.parts); setSeams(null); setBodies(null);
+    });
+    if (!hit && left.length) { go(); return; }
+    setConfirm({ title: `Remove ${names[pid] || 'this part'}?`, text: left.length ? `It leaves ${asm.name}${hit ? ` with its ${hit} weld${hit === 1 ? '' : 's'}` : ''}.` : `It is the last part: ${asm.name} is deleted${hit ? ` with its ${hit} weld${hit === 1 ? '' : 's'}` : ''}.`, go });
+  };
+  /** closing a weld assembly that never got a weld drops it (it was only opened) */
+  const finish = async () => {
+    if (asm && editable && !welds.length) { try { await api(`/weldments/${asm.id}`, 'DELETE'); } catch { /* ignore */ } }
+    close(changed.current);
+  };
   const setGround = (w: Any, v: boolean) => run(async () => { await api(`/joints/${w.id}`, 'PUT', { kind: 'weld', parts: w.data.parts, faces: w.data.faces, name: w.data.name || '', sequence: w.data.sequence || 0, notes: w.data.notes || '', weld: { ...w.data.weld, ground: v } }); });
 
   // ---------------------------------------------------------------- pointer
@@ -310,11 +345,12 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
   const selParts = partIds.map(id => names[id] || id);
 
   return (
-    <div className="overlay top cfg-overlay" onMouseDown={e => { if (e.target === e.currentTarget) close(changed.current); }}>
+    <div className="overlay top cfg-overlay" onMouseDown={e => { if (e.target === e.currentTarget) finish(); }}>
       <section className="cfg-dialog" role="dialog" aria-modal="true" aria-label="Weld configuration">
         <header className="cfg-head">
-          <div className="cfg-title"><b>Weld configuration</b><small title={selParts.join(', ')}>{selParts.length === 1 ? selParts[0] : `${selParts.length} parts · ${selParts.slice(0, 3).join(', ')}${selParts.length > 3 ? '…' : ''}`}</small></div>
-          <button type="button" className="icon cfg-close" aria-label="Close" onClick={() => close(changed.current)}><X size={18} /></button>
+          <div className="cfg-title"><b>Weld configuration{asm ? <> · <span className="wc-asmname">{asm.name}</span></> : null}</b><small title={selParts.join(', ')}>{selParts.length === 1 ? selParts[0] : `${selParts.length} parts · ${selParts.slice(0, 3).join(', ')}${selParts.length > 3 ? '…' : ''}`}</small></div>
+          {asm && canJobOrder && onJobOrder && <button type="button" className="wc-jo" disabled={busy} onClick={() => onJobOrder(asm)}><ClipboardList size={15} />Job order</button>}
+          <button type="button" className="icon cfg-close" aria-label="Close" onClick={finish}><X size={18} /></button>
         </header>
         <div className="cfg-body">
           {bodies ? <PartScene revision={revision} bodies={bodies} navStyle={navStyle} cursor={hover?.weld || hover?.cand ? 'pointer' : undefined}
@@ -327,6 +363,18 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
             </div>}
           </PartScene> : <div className="pscene"><div className="pscene-state"><span className="spinner" />Finding seams…</div></div>}
           <aside className="cfg-panel wc-panel">
+            {asm && <section className="wc-card wc-asm">
+              <h4><Layers size={15} />Weld assembly</h4>
+              <input className="wc-name" aria-label="Weld assembly name" value={name} disabled={!editable} placeholder="Name — left empty, Forge names it" maxLength={120}
+                onChange={e => setName(e.target.value)} onBlur={saveName} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setName(asm.name); }} />
+              <div className="wc-parts">{partIds.map(pid => {
+                const n = welds.filter(w => (w.data.parts || []).includes(pid)).length;
+                return <span key={pid} className={'wc-part' + (hotPart === pid ? ' hot' : '')} title={names[pid] || pid} onMouseEnter={() => setHotPart(pid)} onMouseLeave={() => setHotPart(null)}>
+                  <span>{short(pid)}</span>{n > 0 && <small>{n}</small>}
+                  {editable && <button type="button" className="icon" aria-label={`Remove ${names[pid] || 'part'} from the weld assembly`} title="Remove from the weld assembly" disabled={busy} onClick={() => removePart(pid)}><X size={12} /></button>}
+                </span>;
+              })}</div>
+            </section>}
             <section className="wc-card">
               <h4>Weld type</h4>
               <div className="wc-seg" role="tablist">{([['full', 'Full'], ['stitch', 'Stitch'], ['tack', 'Tack'], ['manual', 'Manual']] as [Mode, string][]).map(([m, l]) => <button key={m} type="button" role="tab" aria-selected={mode === m} className={mode === m ? 'on' : ''} onClick={() => { setMode(m); setHover(null); }}>{l}</button>)}</div>
@@ -345,9 +393,18 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
               <label className="wc-proc">Process<select value={process} onChange={e => setProcess(e.target.value)}>{PROCESSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
             </section>
             {error && <div className="cfg-error">{error}</div>}
+            {confirm && <div className="wc-confirm"><b>{confirm.title}</b><small>{confirm.text}</small><div><button type="button" onClick={() => setConfirm(null)}>Cancel</button><button type="button" className="danger" onClick={() => { const go = confirm.go; setConfirm(null); go(); }}>Remove</button></div></div>}
             {!welds.length ? <div className="wc-empty"><Flame size={34} /><b>No welds added yet</b><small>Click on the 3D model to add weld points</small></div>
-              : <div className="wc-list">{welds.map((w, i) => (
-                <div key={w.id} className={'wc-weld' + (focus === w.id ? ' focus' : '')} onMouseEnter={() => setFocus(w.id)} onMouseLeave={() => setFocus(null)}>
+              : <div className="wc-list">
+                <div className="wc-listhead">
+                  {editable && <label className="wc-check" title="Select all"><input type="checkbox" checked={picked.size > 0 && welds.every(w => picked.has(w.id))} ref={el => { if (el) el.indeterminate = picked.size > 0 && !welds.every(w => picked.has(w.id)); }} onChange={e => setPicked(e.target.checked ? new Set(welds.map(w => w.id)) : new Set())} /></label>}
+                  <b>{welds.length} weld{welds.length === 1 ? '' : 's'}</b>
+                  {editable && picked.size > 0 && <button type="button" className="mini danger" disabled={busy} onClick={() => removeMany([...picked])}><Trash2 size={13} />Delete {picked.size}</button>}
+                  {editable && !picked.size && <button type="button" className="mini" disabled={busy} onClick={() => removeMany(welds.map(w => w.id))}><Trash2 size={13} />Clear all</button>}
+                </div>
+                {welds.map((w, i) => (
+                <div key={w.id} className={'wc-weld' + (editable ? ' with-pick' : '') + (focus === w.id ? ' focus' : '') + (picked.has(w.id) ? ' picked' : '')} onMouseEnter={() => setFocus(w.id)} onMouseLeave={() => setFocus(null)}>
+                  {editable && <input type="checkbox" className="wc-pick" aria-label={`Select weld ${i + 1}`} checked={picked.has(w.id)} onChange={e => setPicked(p => { const n = new Set(p); e.target.checked ? n.add(w.id) : n.delete(w.id); return n; })} />}
                   <span><b>Weld #{i + 1}{(() => { const sd = (w.data.faces || []).find((f: Any) => f.side)?.side; return sd ? <em className={'wc-sidetag ' + sd}>{sd}</em> : null; })()}</b><small>{describe(w)}{(w.data.parts || []).length > 1 ? ` · ${(w.data.parts || []).map((p: string) => names[p] || p).join(' + ')}` : ''}</small></span>
                   <label className="wc-ground"><input type="checkbox" checked={!!w.data.weld?.ground} disabled={!editable || busy} onChange={e => setGround(w, e.target.checked)} />Ground</label>
                   <button type="button" className="icon wc-del" title="Delete weld" disabled={!editable || busy} onClick={() => remove(w.id)}><Trash2 size={16} /></button>
@@ -355,6 +412,28 @@ export default function WeldConfig({ revision, partIds, parts, joints, editable,
           </aside>
         </div>
       </section>
+    </div>
+  );
+}
+
+/** Weld assemblies of a revision (Assembly tab): name, parts, welds; open, job order, delete. */
+export function WeldAssemblies({ weldments, parts, editable, canJobOrder, onOpen, onJobOrder, onSelect, onDelete }: {
+  weldments: Any[]; parts: Any[]; editable: boolean; canJobOrder: boolean; onOpen: (w: Any) => void; onJobOrder: (w: Any) => void; onSelect: (w: Any) => void; onDelete: (w: Any) => void;
+}) {
+  const byId = new Map(parts.map(p => [p.id, p]));
+  if (!weldments.length) return <div className="wa-empty"><Flame size={30} /><b>No weld assemblies yet</b><small>Select the parts to weld in the model (Ctrl/⌘-click for several) and press Weld.</small></div>;
+  return (
+    <div className="wa-grid">{weldments.map(w => (
+      <article key={w.id} className="wa-card">
+        <header><Flame size={16} /><b>{w.name}</b><small>{w.parts.length} part{w.parts.length === 1 ? '' : 's'} · {(w.welds || []).length} weld{(w.welds || []).length === 1 ? '' : 's'}</small></header>
+        <ul>{w.parts.slice(0, 8).map((pid: string) => { const p = byId.get(pid); return <li key={pid} title={p?.name}>{p?.alias ? <span className="alias-chip">{p.alias}</span> : null}{p?.name || pid}</li>; })}{w.parts.length > 8 && <li className="muted">+ {w.parts.length - 8} more</li>}</ul>
+        <footer>
+          <button type="button" className="primary" onClick={() => onOpen(w)}><Flame size={14} />Weld configuration</button>
+          <button type="button" onClick={() => onSelect(w)}><Target size={14} />Show in model</button>
+          {canJobOrder && <button type="button" onClick={() => onJobOrder(w)}><ClipboardList size={14} />Job order</button>}
+          {editable && <button type="button" className="icon danger" title="Delete the weld assembly and its welds" onClick={() => onDelete(w)}><Trash2 size={15} /></button>}
+        </footer>
+      </article>))}
     </div>
   );
 }

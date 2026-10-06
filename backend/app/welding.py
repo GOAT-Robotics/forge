@@ -126,8 +126,32 @@ def iso2553(joint, size, t, seg, pitch, length):
     return f"{dim} {glyph}".strip()
 
 
-def weldments(rows):
-    """Groups of welds whose parts are connected by welds (one picture per welded unit)."""
+def weldments(rows, rid=None):
+    """Welds grouped by weld assembly: the stored weldments (named, with every part they hold, welded or not),
+    else groups of parts connected by welds. With `rid` returns [{'name', 'parts', 'rows'}] and renumbers
+    the rows so the welds of one assembly follow each other (W1…); without, lists of rows."""
+    if rid is not None:
+        from .weldments import listing
+        try:
+            stored = listing(rid, False)
+        except Exception:
+            stored = []
+        out, used = [], set()
+        for w in stored:
+            mine = [r for r in rows if set(r['part_ids'] or []) & set(w['parts']) and r['id'] not in used]
+            used |= {r['id'] for r in mine}
+            out.append({'name': w['name'], 'parts': list(w['parts']), 'rows': mine})
+        rest = [r for r in rows if r['id'] not in used]
+        for k, g in enumerate(weldments(rest)):
+            out.append({'name': f'Welded unit {k + 1}', 'parts': list(dict.fromkeys(p for r in g for p in r['part_ids'])), 'rows': g})
+        out = [g for g in out if g['rows']]
+        n = 0
+        for g in out:
+            for r in g['rows']:
+                n += 1
+                r['n'] = n
+                r['assembly'] = g['name']
+        return out
     parent = {}
 
     def find(x):
@@ -186,12 +210,13 @@ def welding_pdf(rid):
             text = text[:-1]
         return text + '…'
 
-    groups = weldments(rows)
+    groups = weldments(rows, rid)
+    rows = [r for g in groups for r in g['rows']]
     per_page = 24
     sched_pages = max(1, math.ceil(len(rows) / per_page))
     pages = sched_pages + len(groups)
     # ---- schedule
-    cols = [('W', 10), ('Parts', 80), ('Joint', 18), ('Symbol (ISO 2553)', 42), ('Process', 32), ('Seam mm', 18), ('Weld mm', 18), ('Pattern', 28), ('Finish', 20)]
+    cols = [('W', 10), ('Assembly', 34), ('Parts', 46), ('Joint', 18), ('Symbol (ISO 2553)', 42), ('Process', 32), ('Seam mm', 18), ('Weld mm', 18), ('Pattern', 28), ('Finish', 20)]
     if not rows:
         header('Weld schedule', 1, 1)
         c.setFont('Helvetica', 12)
@@ -212,7 +237,7 @@ def welding_pdf(rid):
         y -= 7 * mm
         for r in rows[pg * per_page:(pg + 1) * per_page]:
             x = 12 * mm
-            cells = [f"W{r['n']}", ' + '.join(r['parts']), r['joint'], r['symbol'], r['process'], f"{r['seam']:g}", f"{r['weld_length']:g}" if r['type'] != 'tack' else '—',
+            cells = [f"W{r['n']}", r.get('assembly', ''), ' + '.join(r['parts']), r['joint'], r['symbol'], r['process'], f"{r['seam']:g}", f"{r['weld_length']:g}" if r['type'] != 'tack' else '—',
                      r['pattern'], 'Ground flush' if r['ground'] else 'As welded']
             for (name, w), val in zip(cols, cells):
                 font = 'Helvetica-Bold' if name == 'W' else (sym_font if name.startswith('Symbol') else 'Helvetica')
@@ -245,21 +270,33 @@ def welding_pdf(rid):
     right = np.cross([0, 0, 1.0], VIEW_N)
     right /= np.linalg.norm(right)
     up = np.cross(VIEW_N, right)
-    for gi, grp in enumerate(groups):
-        names = sorted({n for r in grp for n in r['parts']})
-        header(f"Weldment {gi + 1} of {len(groups)}", sched_pages + gi + 1, pages)
+    info = {p['id']: p for p in db.rows('SELECT id,name,alias,spec,geometry FROM parts WHERE revision_id=?', (rid,))}
+    for gi, g in enumerate(groups):
+        grp = g['rows']
+        header(f"Weld assembly {gi + 1} of {len(groups)}", sched_pages + gi + 1, pages)
         c.setFillColorRGB(.06, .09, .16)
         c.setFont('Helvetica-Bold', 13)
-        c.drawString(12 * mm, H - 21 * mm, fit('Weldment ' + str(gi + 1) + ': ' + ', '.join(names), W - 24 * mm, 'Helvetica-Bold', 13))
+        c.drawString(12 * mm, H - 21 * mm, fit(g['name'], W - 24 * mm, 'Helvetica-Bold', 13))
+        # every body of the assembly: those the welds join, plus the first occurrence of a part without welds yet
         bodies = sorted({b for r in grp for b in r['bodies']})
-        meshes = []
+        for pid in g['parts']:
+            if not any(b[0] == pid for b in bodies):
+                bodies.append((pid, 0))
+        items = [pid for pid in dict.fromkeys(list(g['parts']) + [b[0] for b in bodies])]
+        item_no = {pid: i + 1 for i, pid in enumerate(items)}
+        c.setFont('Helvetica', 8.5)
+        c.setFillColorRGB(.4, .45, .52)
+        c.drawString(12 * mm, H - 25.5 * mm, f"Weld assembly · {len(items)} part{'s' if len(items) != 1 else ''} · {len(grp)} weld{'s' if len(grp) != 1 else ''}")
+        meshes, centres = [], {}
         for pid, o in bodies:
             md = part_mesh(rid, pid)
             if md is None:
                 continue
             lst = inst.get(pid) or []
             M = np.array(lst[o]['matrix'], float) if o < len(lst) else np.eye(4)
-            meshes.append(placed(md, M, DONE))
+            pm = placed(md, M, DONE)
+            meshes.append(pm)
+            centres.setdefault(pid, []).append(np.asarray(pm['v'], float).mean(0))
         box = (12 * mm, 16 * mm, 196 * mm, H - 28 * mm)
         if meshes:
             md = merge(meshes)
@@ -279,6 +316,28 @@ def welding_pdf(rid):
             c.drawImage(ImageReader(io.BytesIO(img)), ix, iy, iw, ih)
             P = lambda q: (ix + (q @ right - lo[0]) * sc, iy + (q @ up - lo[1]) * sc)  # noqa: E731
             placed_tags = []
+            cx, cy = ix + iw / 2, iy + ih / 2
+            # item balloons (the parts of the assembly), blue, at each part's first body
+            for pid, pts in centres.items():
+                mid = np.array(P(pts[0]))
+                d = mid - np.array([cx, cy])
+                d = d / (np.linalg.norm(d) or 1)
+                tag = mid + d * 18 * mm
+                for _ in range(12):
+                    if all(np.linalg.norm(tag - t) > 9 * mm for t in placed_tags):
+                        break
+                    tag = tag + np.array([-d[1], d[0]]) * 6 * mm
+                placed_tags.append(tag)
+                c.setStrokeColorRGB(.15, .35, .75)
+                c.setLineWidth(.6)
+                c.line(mid[0], mid[1], tag[0], tag[1])
+                c.setFillColorRGB(.15, .35, .75)
+                c.circle(mid[0], mid[1], .7 * mm, stroke=0, fill=1)
+                c.setFillColorRGB(1, 1, 1)
+                c.circle(tag[0], tag[1], 3.6 * mm, stroke=1, fill=1)
+                c.setFillColorRGB(.15, .35, .75)
+                c.setFont('Helvetica-Bold', 8.5)
+                c.drawCentredString(tag[0], tag[1] - 1.1 * mm, str(item_no[pid]))
             for r in grp:
                 c.setStrokeColorRGB(.86, .15, .1)
                 c.setFillColorRGB(.86, .15, .1)
@@ -302,7 +361,6 @@ def welding_pdf(rid):
                     continue
                 mid = pts_all[len(pts_all) // 2]
                 # balloon placed outward from the picture centre, away from other tags
-                cx, cy = ix + iw / 2, iy + ih / 2
                 d = np.array([mid[0] - cx, mid[1] - cy])
                 d = d / (np.linalg.norm(d) or 1)
                 tag = np.array(mid) + d * 14 * mm
@@ -318,8 +376,40 @@ def welding_pdf(rid):
                 c.setFillColorRGB(.86, .15, .1)
                 c.setFont('Helvetica-Bold', 8)
                 c.drawCentredString(tag[0], tag[1] - 1 * mm, f"W{r['n']}")
-        # weld list for this weldment
+        # parts list (the assembly), then the welds
         x0, y = 204 * mm, H - 30 * mm
+        c.setFillColorRGB(.06, .09, .16)
+        c.setFont('Helvetica-Bold', 9)
+        c.drawString(x0, y, 'PARTS')
+        y -= 5 * mm
+        for pid in items:
+            if y < 70 * mm:
+                c.setFont('Helvetica', 8)
+                c.drawString(x0, y, f"… {len(items) - item_no[pid] + 1} more")
+                y -= 5 * mm
+                break
+            p = info.get(pid) or {}
+            spec, geo = load(p.get('spec'), {}), load(p.get('geometry'), {})
+            qty = len({o for b, o in bodies if b == pid}) or 1
+            c.setFillColorRGB(.15, .35, .75)
+            c.setFont('Helvetica-Bold', 8.5)
+            c.drawString(x0, y, str(item_no[pid]))
+            c.setFillColorRGB(.06, .09, .16)
+            c.setFont('Helvetica', 8)
+            c.drawString(x0 + 6 * mm, y, fit(f"{qty} × " + ((p.get('alias') + ' · ') if p.get('alias') else '') + str(p.get('name') or pid), 75 * mm, 'Helvetica', 8))
+            thk = geo.get('thickness')
+            extra = ' · '.join(x for x in (str(spec.get('material') or ''), f"t {thk:g} mm" if isinstance(thk, (int, float)) and thk else '') if x)
+            if extra:
+                y -= 3.6 * mm
+                c.setFillColorRGB(.4, .45, .52)
+                c.setFont('Helvetica', 7)
+                c.drawString(x0 + 6 * mm, y, fit(extra, 75 * mm, 'Helvetica', 7))
+            y -= 4.8 * mm
+        y -= 3 * mm
+        c.setFillColorRGB(.06, .09, .16)
+        c.setFont('Helvetica-Bold', 9)
+        c.drawString(x0, y, 'WELDS')
+        y -= 5.5 * mm
         for r in grp:
             if y < 22 * mm:
                 c.setFont('Helvetica', 8)

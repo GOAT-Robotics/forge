@@ -380,8 +380,23 @@ def _gap_seams(a: Body, b: Body, max_gap: float, edges=None, target=None, self_m
                 opening = -opening
         else:
             opening = None
+        # a plate edge standing (or lying) just off the other part: a fillet that has to bridge the gap. Its
+        # legs and air side are those of the fillet (the edge's free face + the other part's face), so a clamp
+        # set 1 mm proud of a curved cover is an inside fillet like its neighbours, not a separate "gap" side.
+        n_free = n_other = None
+        own = [n for n in (face_normal(f, p) for f in a.edge_faces(edge)) if n is not None]
+        vq = _vertex(q)
+        nbs = [face_normal(b.faces[i], q) for i in cand if _dist(vq, b.faces[i]) <= 1e-3]
+        nbs = [n for n in nbs if n is not None]
+        if own and nbs:
+            nb = np.asarray(nbs[0], float)
+            if float(np.dot(nb, p - q)) < 0:
+                nb = -nb
+            free = sorted((n for n in own if float(np.dot(n, nb)) > -.7), key=lambda n: abs(float(np.dot(n, nb))))
+            if free and abs(float(np.dot(free[0], nb))) < .5:
+                n_free, n_other = np.asarray(free[0], float), nb
         out.append({'body': a, 'other': b, 'index': index, 'path': mids, 'length': length, 'joint': 'gap', 'gap': gap,
-                    'n_free': None, 'n_other': None, 'angle': None, 'opening': opening})
+                    'n_free': n_free, 'n_other': n_other, 'angle': None, 'opening': opening})
     return out
 
 
@@ -575,9 +590,9 @@ def access_side(s):
     """Where the welder works from: the air side of the seam (world direction), and whether that is the inside
     or the outside of the two parts together (towards / away from their combined centre)."""
     nf, no = s.get('n_free'), s.get('n_other')
-    if s['joint'] == 'gap' and s.get('opening') is not None:
+    if s['joint'] == 'gap' and s.get('opening') is not None and (nf is None or no is None):
         d = np.asarray(s['opening'], float)
-    elif s['joint'] == 'fillet' and nf is not None and no is not None:
+    elif s['joint'] in ('fillet', 'gap') and nf is not None and no is not None:
         d = np.asarray(nf, float) + np.asarray(no, float)
     elif nf is not None:
         d = np.asarray(nf, float)
@@ -621,6 +636,8 @@ def chain(seams):
     # ends this close are one joint line: round / relieved corners of a contour leave a few mm where neither
     # edge lies on the other part, but the welder carries the bead round them
     tol_of = lambda x: max(1.0, min(8.0, 6 * min(x['body'].thickness or 1, x['other'].thickness or 1)))
+    # straight on across a gap this wide (notches, tab slots, reliefs cut into a flange) it is still one weld line
+    notch_of = lambda x: max(25.0, 12 * min(x['body'].thickness or 1, x['other'].thickness or 1))
     joined = True
     while joined:
         joined = False
@@ -634,18 +651,26 @@ def chain(seams):
                 if (a['body'] is not b['body'] or a['other'] is not b['other'] or a['joint'] != b['joint'] or a['_side'] != b['_side']):
                     continue
                 pa, pb = np.asarray(a['path'], float), np.asarray(b['path'], float)
-                tol = tol_of(a)
+                tol, far = tol_of(a), notch_of(a)
                 for qa, qb in ((pa, pb), (pa, pb[::-1]), (pa[::-1], pb), (pa[::-1], pb[::-1])):
                     gap = float(np.linalg.norm(qa[-1] - qb[0]))
-                    if gap > tol:
+                    if gap > far:
                         continue
                     ta, tb = _tangent(qa, True), _tangent(qb, False)
+                    if ta is None or tb is None:
+                        continue
+                    if gap > tol:
+                        # across a notch / tab slot: one joint line only when it runs straight on over the gap
+                        g = (qb[0] - qa[-1]) / gap
+                        if float(np.dot(ta, tb)) < .95 or float(np.dot(g, ta)) < .9 or float(np.dot(g, tb)) < .9:
+                            continue
                     # smooth continuation; across a small rounded corner any turn short of doubling back
-                    if ta is None or tb is None or float(np.dot(ta, tb)) < (.82 if gap < .2 else .5):
+                    elif float(np.dot(ta, tb)) < (.82 if gap < .2 else .5):
                         continue
                     path = np.vstack([qa, qb[1:]]) if gap < .05 else np.vstack([qa, qb])
                     longer = a if a['length'] >= b['length'] else b
-                    merged = {**longer, 'path': path, 'length': a['length'] + b['length'] + (gap if gap >= .05 else 0), 'index': min(a['index'], b['index']) if a['index'] >= 0 and b['index'] >= 0 else -1,
+                    # the weld runs round a small corner (counted) but stops at a notch (not counted)
+                    merged = {**longer, 'path': path, 'length': a['length'] + b['length'] + (gap if .05 <= gap <= tol else 0), 'index': min(a['index'], b['index']) if a['index'] >= 0 and b['index'] >= 0 else -1,
                               '_members': a['_members'] + b['_members']}
                     if a['joint'] == 'gap':
                         merged['gap'] = max(a.get('gap') or 0, b.get('gap') or 0)

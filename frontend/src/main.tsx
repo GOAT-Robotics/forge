@@ -13,7 +13,7 @@ import type { PartAppearance } from './Viewer';
 import { api, asset, download, vendorId, headers } from './api';
 import { Badge, Modal, DocumentPreview, FlatPattern, SpecEditor, Swatch, ProductionChecklist, GroupPanel, GroupSpecEditor, ExcludeDialog, ask, DialogHost } from './components';
 import { Sidebar, TopBar, PageHeader, initTheme, LogoMark, Progress, type Page } from './shell';
-import { Dashboard, JobOrdersPage, JobOrderDialog, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, ConfiguredWelds, StatusBadge } from './pages';
+import { Dashboard, JobOrdersPage, JobOrderDialog, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, StatusBadge } from './pages';
 import { categories, categoryColors, date, fmt } from './constants';
 import type { Any } from './constants';
 import { Select } from './controls';
@@ -23,7 +23,7 @@ import BulkReady from './bulkReady';
 import { JobDocButton } from './docJob';
 import { QualityPage } from './quality';
 import HoleConfig from './holeConfig';
-import WeldConfig from './weldConfig';
+import WeldConfig, { WeldAssemblies } from './weldConfig';
 import PressBrake from './pressBrake';
 import AssemblySteps from './assemblySteps';
 import { usePrefs, comboOf, ShortcutsDialog, KeyChip } from './prefs';
@@ -94,6 +94,7 @@ function App() {
   const [overview, setOverview] = useState(false);
   const [layout, setLayoutState] = useState<{ left: boolean; right: boolean; focus: boolean }>(() => { try { return { left: true, right: true, ...JSON.parse(localStorage.getItem('forge-layout') || '{}'), focus: false }; } catch { return { left: true, right: true, focus: false }; } });
   const setLayout = (patch: Partial<typeof layout>) => setLayoutState(l => { const n = { ...l, ...patch }; try { localStorage.setItem('forge-layout', JSON.stringify({ left: n.left, right: n.right })); } catch { /* ignore */ } return n; });
+  const [weldView, setWeldView] = useState(() => { try { return localStorage.getItem('forge-nav-weld') === '1'; } catch { return false; } });
   const [treeView, setTreeView] = useState(() => { try { return localStorage.getItem('forge-nav-tree') !== 'list'; } catch { return true; } });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const colorBy = 'coating' as 'coating' | 'type';  // coating colour where specified, otherwise part-type colour
@@ -106,7 +107,6 @@ function App() {
   const [page, setPage] = useState<Page>(route.current.page);
   const [joId, setJoId] = useState<string | null>(route.current.jo);
   const [jointDraft, setJointDraft] = useState<Any>(null);
-  const [weldListOpen, setWeldListOpen] = useState(false);
   const [holeCfg, setHoleCfg] = useState<string | null>(null);
   const [bendSim, setBendSim] = useState<string | null>(null);
   const [bulkReady, setBulkReady] = useState(false);
@@ -120,7 +120,8 @@ function App() {
   // the simulation develops the part itself (also rolled curves the import could not flatten); it reports why if it cannot
   const canBend = (p: Any) => p?.category === 'sheet_metal' && p.geometry?.bends?.length > 0;
   const showBend = (p: Any) => canBend(p) && (p.bend_sim || editable);
-  const [weldCfg, setWeldCfg] = useState<string[] | null>(null);
+  const [weldCfg, setWeldCfg] = useState<{ parts: string[]; weldment: Any | null } | null>(null);
+  const [joTitle, setJoTitle] = useState('');
   const [weldPreviewStatus, setWeldPreviewStatus] = useState<{ valid: boolean; message: string } | null>(null);
   const [hoverGeometry, setHoverGeometry] = useState<Any>(null);
   const hoverRequest = useRef(0);
@@ -159,7 +160,7 @@ function App() {
   const [revLoading, setRevLoading] = useState(false);
   const loadRevision = useCallback(async (id: string) => { setRevLoading(true); try { const r = await api('/revisions/' + id); setRev(r); return r; } finally { setRevLoading(false); } }, []);
   /** Joints only: fast refresh after a weld is saved or removed (a full revision reload evaluates every part). */
-  const refreshJoints = useCallback(async (id: string) => { const joints = await api(`/revisions/${id}/joints`); setRev((r: Any) => r && r.id === id ? { ...r, joints } : r); }, []);
+  const refreshJoints = useCallback(async (id: string) => { const [joints, weldments] = await Promise.all([api(`/revisions/${id}/joints`), api(`/revisions/${id}/weldments`).catch(() => null)]); setRev((r: Any) => r && r.id === id ? { ...r, joints, weldments: weldments || r.weldments } : r); }, []);
   /** Open whatever the URL points at (after sign-in). */
   const openRoute = async () => {
     const r = route.current;
@@ -331,8 +332,14 @@ function App() {
   };
   const startWeld = (ids: string[], _extra: Any = {}) => {
     if (!ids.length) { notify('Select the part to weld first — Ctrl/⌘-click to weld several parts together.'); return; }
-    setWeldCfg([...new Set(ids)]);
+    const uniq = [...new Set(ids)];
+    // the weld configuration works on one weld assembly: the selection joined with the assemblies it touches
+    if (!editable || !rev) { setWeldCfg({ parts: weldmentOf(uniq[0])?.parts || uniq, weldment: weldmentOf(uniq[0]) }); return; }
+    action(async () => { const w = await api(`/revisions/${rev.id}/weldments`, 'POST', { parts: uniq }); setWeldCfg({ parts: w.parts, weldment: w }); });
   };
+  const weldmentOf = (pid?: string | null) => (rev?.weldments || []).find((w: Any) => pid && (w.parts || []).includes(pid)) || null;
+  const openWeldment = (w: Any) => { if (editable) startWeld(w.parts); else setWeldCfg({ parts: w.parts, weldment: w }); };
+  const weldmentJobOrder = (w: Any) => { setJoTitle(w.name); setJoSelection(parts.filter((p: Any) => (w.parts || []).includes(p.id)).map((p: Any) => ({ id: p.id, name: p.name }))); };
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const startWeldStudio = (ids: string[], extra: Any = {}) => {
     const draft = { kind: 'weld', parts: ids, faces: [], weld: { type: 'linear', process: 'MIG/MAG (135)', sides: 'one' }, sequence: (rev?.joints?.length || 0) + 1, ...extra };
@@ -342,7 +349,7 @@ function App() {
     setAddingParts(false);
     if (ids.length >= 1) detectSeams(draft, true);
   };
-  const editWeld = (j: Any) => { setWeldCfg([...new Set<string>(j.data.parts || [])]); };
+  const editWeld = (j: Any) => { const w = weldmentOf((j.data.parts || [])[0]); if (w) openWeldment(w); else startWeld(j.data.parts || []); };
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const editWeldStudio = (j: Any) => {
     const draft = { id: j.id, kind: j.kind, ...j.data };
@@ -496,6 +503,30 @@ function App() {
       {node.parts.map(renderRow)}
     </React.Fragment>
   );
+  /** Navigator grouped by weld assembly: each assembly with its parts, then the parts not welded. */
+  const renderWeldGroups = () => {
+    const inAny = new Set<string>((rev?.weldments || []).flatMap((w: Any) => w.parts || []));
+    const groups = [...(rev?.weldments || []).map((w: Any) => ({ key: 'w:' + w.id, w, rows: filtered.filter((p: Any) => (w.parts || []).includes(p.id)) })),
+      { key: 'w:none', w: null, rows: filtered.filter((p: Any) => !inAny.has(p.id)) }].filter(g => g.rows.length);
+    return groups.map(g => {
+      const open = !collapsed.has(g.key);
+      const ids = g.rows.map((p: Any) => p.id);
+      const chosen = ids.every((id: string) => multi.includes(id));
+      return (
+        <div key={g.key} className="asm-node weld-node" style={{ ['--depth' as Any]: 0 }}>
+          <div className={'asm-row' + (chosen ? ' chosen' : '')}>
+            <button type="button" className="icon asm-toggle" aria-label={open ? 'Collapse' : 'Expand'} onClick={() => setCollapsed(c => { const n = new Set(c); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
+            <button type="button" className="asm-name" title={g.w ? 'Select the parts of this weld assembly' : 'Select the parts that are not welded'} onClick={() => { setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; if (mode !== '3d') setMode('3d'); }}>
+              {g.w ? <Flame size={15} className="weld-glyph" /> : <Folder size={15} />}<strong>{g.w ? g.w.name : 'Not welded'}</strong><small>{ids.length} part{ids.length === 1 ? '' : 's'}{g.w ? ` · ${(g.w.welds || []).length} weld${(g.w.welds || []).length === 1 ? '' : 's'}` : ''}</small>
+            </button>
+            {g.w && <button type="button" className="icon row-eye" title="Weld configuration" onClick={() => openWeldment(g.w)}><Flame size={14} /></button>}
+            <button type="button" className={'icon row-eye' + (chosen && isolate ? ' selected' : '')} title="Isolate (show only these parts)" onClick={() => { if (chosen && isolate) { setIsolate(false); return; } setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; setIsolate(true); if (mode !== '3d') setMode('3d'); }}><Target size={14} /></button>
+          </div>
+          {open && <div className="asm-children">{g.rows.map(renderRow)}</div>}
+        </div>
+      );
+    });
+  };
   const bulk = (body: Any) => action(async () => { const r = await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: multi, ...body }); await loadRevision(rev.id); notify(`${r.updated} parts updated`); });
 
   /** Chunked upload: proxies and tunnels (Cloudflare caps a request at 100 MB) never see one huge body.
@@ -584,8 +615,7 @@ function App() {
 
   const goHome = () => { if (vendor) return; setProject(null); setRev(null); go('projects'); };
   // ---- CAD workspace chrome: heads-up info and the floating tool palette ------------------------
-  const weldTotal = (rev?.joints || []).filter((j: Any) => j.kind === 'weld').length;
-  const inspectorContent = !!(jointDraft || weldListOpen || multi.length > 1 || part || overview);
+  const inspectorContent = !!(jointDraft || multi.length > 1 || part || overview);
   const canvasHud = !rev ? null : jointDraft ? (
     <div className="hud-card"><Flame size={15} className="weld-title-icon" /><span><b>{jointDraft.id ? 'Edit weld' : 'Weld setup'}</b><small>{(jointDraft.parts || []).length} component{(jointDraft.parts || []).length === 1 ? '' : 's'} · {(jointDraft.faces || []).filter((f: Any) => f.selection === 'edge').length} seam(s)</small></span></div>
   ) : multi.length > 1 ? (
@@ -624,8 +654,6 @@ function App() {
     {!vendor && editable && <button type="button" className={jointDraft ? 'selected' : ''} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame size={16} /><span>Weld</span></button>}
     {part && part.geometry.holes.length > 0 && part.category !== 'purchased' && multi.length < 2 && <button type="button" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot size={16} /><span>Holes</span></button>}
     {part && multi.length < 2 && showBend(part) && <button type="button" title={part.bend_sim ? 'Forming simulation (press brake and rolling)' : 'Forming simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical size={16} /><span>Bending</span></button>}
-    {!vendor && <><button type="button" className={weldListOpen ? 'selected' : ''} disabled={!!jointDraft} title="Configured welds" onClick={() => setWeldListOpen(v => !v)}><ListChecks size={16} /><span>Welds{weldTotal ? ` ${weldTotal}` : ''}</span></button>
-</>}
   </>;
   const canvasToolsEnd = !rev ? null : <>
     <button type="button" className={overview && !part && multi.length < 2 && !jointDraft ? 'selected' : ''} title="Revision overview: drawing sets, readiness, part types" onClick={() => { setOverview(o => !o); if (part || multi.length > 1) choosePart(null); setLayout({ right: true, focus: false }); }}><PanelRight size={16} /><span>Overview</span></button>
@@ -770,7 +798,7 @@ function App() {
                 {(tab === 'parts' || modelSeen.current === rev.id) && (
                   <div className={(tab === 'parts' ? '' : 'kept-hidden ') + 'workspace cad' + (layout.left && !layout.focus ? '' : ' no-left') + (layout.right && !layout.focus && inspectorContent ? '' : ' no-right')}>
                     <aside className="part-list">
-                      <div className={'list-heading' + (multi.length > 1 ? ' multi' : '')}><h3>{multi.length > 1 ? `${multi.length} selected` : 'Part navigator'}</h3><div className="flex">{multi.length > 1 && <button type="button" className="mini" onClick={() => choosePart(null)}><X size={12} />Clear</button>}{suppressedIds.length > 0 && <button type="button" className={'mini' + (showHidden ? ' selected' : '')} title={showHidden ? 'Hide purchased and hidden parts' : 'Override: show purchased and hidden parts'} onClick={() => setShowHidden(!showHidden)}>{showHidden ? <Eye size={13} /> : <EyeOff size={13} />}{suppressedIds.length}</button>}{hasTree && <button type="button" className={'mini' + (treeView ? ' selected' : '')} title={treeView ? 'Show a flat list' : 'Show the CAD assembly tree'} onClick={() => { const v = !treeView; setTreeView(v); try { localStorage.setItem('forge-nav-tree', v ? 'tree' : 'list'); } catch { /* ignore */ } }}><ListTree size={13} /></button>}<span>{parts.length}</span></div></div>
+                      <div className={'list-heading' + (multi.length > 1 ? ' multi' : '')}><h3>{multi.length > 1 ? `${multi.length} selected` : 'Part navigator'}</h3><div className="flex">{multi.length > 1 && <button type="button" className="mini" onClick={() => choosePart(null)}><X size={12} />Clear</button>}{suppressedIds.length > 0 && <button type="button" className={'mini' + (showHidden ? ' selected' : '')} title={showHidden ? 'Hide purchased and hidden parts' : 'Override: show purchased and hidden parts'} onClick={() => setShowHidden(!showHidden)}>{showHidden ? <Eye size={13} /> : <EyeOff size={13} />}{suppressedIds.length}</button>}{(rev?.weldments || []).length > 0 && <button type="button" className={'mini' + (weldView ? ' selected' : '')} title={weldView ? 'Stop grouping by weld assembly' : 'Group by weld assembly'} onClick={() => { const v = !weldView; setWeldView(v); try { localStorage.setItem('forge-nav-weld', v ? '1' : '0'); } catch { /* ignore */ } }}><Flame size={13} /></button>}{hasTree && <button type="button" className={'mini' + (treeView && !weldView ? ' selected' : '')} title={treeView ? 'Show a flat list' : 'Show the CAD assembly tree'} onClick={() => { const v = weldView ? true : !treeView; setWeldView(false); try { localStorage.setItem('forge-nav-weld', '0'); } catch { /* ignore */ } setTreeView(v); try { localStorage.setItem('forge-nav-tree', v ? 'tree' : 'list'); } catch { /* ignore */ } }}><ListTree size={13} /></button>}<span>{parts.length}</span></div></div>
                       <div className="search"><Search size={16} /><input aria-label="Search parts" placeholder="Find a part…" value={query} onChange={e => setQuery(e.target.value)} /></div>
                       <div className="nav-filter"><div className="nav-filter-select"><Select size="sm" aria-label="Filter part type" value={category} onChange={value => { setCategory(value); choosePart(null); }} options={[
                         { value: 'all', label: 'All part types', hint: String(parts.length) },
@@ -784,7 +812,7 @@ function App() {
                         <Layers size={18} /><span>Complete assembly<small>{rev.manifest.occurrences || 0} body instances</small></span>
                       </button>
                       <div className="part-scroll" ref={listRef}>
-                        {treeView && hasTree ? renderTree(tree, 0) : filtered.map(renderRow)}
+                        {weldView && (rev.weldments || []).length ? renderWeldGroups() : treeView && hasTree ? renderTree(tree, 0) : filtered.map(renderRow)}
                         {!filtered.length && <p className="muted padded">{job ? 'Analyzing components…' : 'No matching parts.'}</p>}
                       </div>
                       <div className="list-footer"><span title="Shift-click selects a range, Ctrl/Cmd-click toggles">{hiddenIds.length ? `${hiddenIds.length} hidden` : `${holes} named bores`} · ⇧ range</span><span title="Parts production ready (design review + drawing review + specification complete)">{readyCount}/{releaseParts.length} ready</span></div>
@@ -804,7 +832,7 @@ function App() {
                             pickMode={jointDraft && !addingParts ? pickMode : null}
                             jointPreview={weldDraftPreview}
                             welds={mode === '3d' ? savedWelds : []}
-                            onWeldClick={id => { const j = (rev.joints || []).find((x: Any) => x.id === id); if (!j || jointDraft) return; if (editable) editWeld(j); else setWeldListOpen(true); }}
+                            onWeldClick={id => { const j = (rev.joints || []).find((x: Any) => x.id === id); if (!j || jointDraft) return; editWeld(j); }}
                             seamCandidates={jointDraft ? seamView : []}
                             hoverSeam={hoverSeam}
                             onSeamHover={setHoverSeam}
@@ -943,15 +971,8 @@ function App() {
                           onSave={() => action(async () => {
                             const body = { kind: jointDraft.kind, parts: jointDraft.parts, faces: jointDraft.faces, weld: jointDraft.kind === 'weld' ? jointDraft.weld : {}, fasteners: jointDraft.fasteners || '', torque: jointDraft.torque || '', sequence: Number(jointDraft.sequence || 0), notes: jointDraft.notes || '', name: jointDraft.name || '' };
                             if (jointDraft.id) await api('/joints/' + jointDraft.id, 'PUT', body); else await api(`/revisions/${rev.id}/joints`, 'POST', body);
-                            endWeld(); setWeldListOpen(true); await refreshJoints(rev.id); notify('Weld saved — it now shows on the model.');
+                            endWeld(); await refreshJoints(rev.id); notify('Weld saved — it now shows on the model.');
                           })} />
-                      ) : weldListOpen ? (
-                        <ConfiguredWelds joints={rev.joints || []} parts={parts} editable={editable} onClose={() => setWeldListOpen(false)} onEdit={editWeld} onDelete={async j => {
-                          if (await ask({ title: `Remove ${j.data.name || 'weld ' + (j.data.sequence || '')}?`, message: 'Its production step is removed from new job orders too.', confirm: 'Remove weld', danger: true }) === null) return;
-                          // Remove it from the list at once; only the joints are re-read (not the whole revision).
-                          setRev((r: Any) => r && { ...r, joints: (r.joints || []).filter((x: Any) => x.id !== j.id) });
-                          api('/joints/' + j.id, 'DELETE').then(() => notify('Configured weld removed.')).catch(fail).finally(() => refreshJoints(rev.id).catch(fail));
-                        }} />
                       ) : multi.length > 1 ? (
                         <GroupPanel templates={templates.filter((t: Any) => t.kind === 'process')} onProcess={tid => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: multi, template_id: tid }); await loadRevision(rev.id); notify('Process template applied'); })}
                           onJoint={() => startWeld([...multi])} parts={parts.filter((p: Any) => multi.includes(p.id))} vendor={vendor} editable={editable} busy={busy}
@@ -996,6 +1017,10 @@ function App() {
                             </div>}
                           </header>
 
+                          {(() => { const wm = weldmentOf(part.id); if (!wm) return null; return (
+                            <div className="pi-card weld-asm"><Flame size={16} /><div><b>{wm.name}</b><p>Weld assembly · {wm.parts.length} part{wm.parts.length === 1 ? '' : 's'} · {(wm.welds || []).length} weld{(wm.welds || []).length === 1 ? '' : 's'}</p>
+                              <div className="flex"><button type="button" className="mini" onClick={() => openWeldment(wm)}><Flame size={13} />Weld configuration</button>
+                                {!vendor && (project?.permissions || []).includes('joborder.create') && <button type="button" className="mini" onClick={() => weldmentJobOrder(wm)}><ClipboardList size={13} />Job order</button>}</div></div></div>); })()}
                           {part.excluded ? (
                             <div className="pi-card muted-card"><Ban size={16} /><div><b>Not for production</b><p>{(part.exclusion_reason || 'Excluded from this revision').replace(/[.]?$/, '.')} Skipped in release checks, drawing packs and the vendor checklist.</p>{editable && <button type="button" className="mini" onClick={() => setFlags(part.id, { excluded: false })}><Undo2 size={13} />Restore</button>}</div></div>
                           ) : part.category === 'purchased' ? (
@@ -1137,22 +1162,26 @@ function App() {
                 {(tab === 'assembly' || tab === 'steps') && <div className="asm-wrap">
                   <div className="asm-switch v-segment" role="tablist">
                     <button type="button" className={asmView === 'steps' ? 'active' : ''} onClick={() => setAsmView('steps')}><ListOrdered size={14} />Build steps</button>
-                    <button type="button" className={asmView === 'welds' ? 'active' : ''} onClick={() => setAsmView('welds')}><Flame size={14} />Joints &amp; welding <small>{(rev.joints || []).length}</small></button>
+                    <button type="button" className={asmView === 'welds' ? 'active' : ''} onClick={() => setAsmView('welds')}><Flame size={14} />Weld assemblies <small>{(rev.weldments || []).length}</small></button>
                   </div>
                 {asmView === 'steps' ? <AssemblySteps page revision={rev.id} parts={parts} editable={editable} navStyle={prefs.navStyle} addParts={stepsAdd?.ids} addKey={stepsAdd?.n} close={() => setTab('parts')} /> : (
                   <section className="content-page">
                     <div className="page-title">
-                      <div><h2>Joints &amp; welding</h2><p>Joints and welds on the assembly from the STEP file; build order and fasteners are under Build steps.</p></div>
+                      <div><h2>Weld assemblies</h2><p>Each weld assembly is a set of parts welded into one unit. Open one to add or remove its welds; select a part in the model to see its assembly.</p></div>
                       <div className="flex">
                         <button onClick={() => doc(`/revisions/${rev.id}/assets/assembly.pdf`, 'assembly.pdf', 'Assembly & mating record')}><Eye size={16} />Assembly document</button>
                         <JobDocButton key={(rev.joints || []).map((j: Any) => j.id + j.updated).join()} revision={rev.id} kind="welding" label="Welding document" icon={<Flame size={16} />} notify={notify}
                           disabled={!(rev.joints || []).some((j: Any) => j.kind === 'weld')} open={path => doc(path, 'welding.pdf', 'Welding document')} />
-                        {editable && <button onClick={() => { setTab('parts'); startWeld(multi.length ? [...multi] : []); notify('Click the components to weld in the 3D view — Forge finds the seams where they touch.'); }}><Plus size={16} />Add joint / weld</button>}
+                        {editable && <button onClick={() => { if (!multi.length && !selected) { setTab('parts'); notify('Select the parts to weld in the model (Ctrl/⌘-click for several), then Weld.'); return; } startWeld(multi.length ? [...multi] : [selected!]); }}><Plus size={16} />New weld assembly</button>}
                       </div>
                     </div>
-                    <JointCards joints={rev.joints || []} parts={parts} editable={editable}
+                    <WeldAssemblies weldments={rev.weldments || []} parts={parts} editable={editable} canJobOrder={!vendor && (project?.permissions || []).includes('joborder.create')}
+                      onOpen={openWeldment} onJobOrder={weldmentJobOrder}
+                      onSelect={w => { setTab('parts'); setMulti(w.parts); setSelected(w.parts[0] || null); setIsolate(true); }}
+                      onDelete={async w => { if (await ask({ title: `Delete ${w.name}?`, message: `The weld assembly and its ${(w.welds || []).length} weld(s) are removed. The parts stay.`, confirm: 'Delete', danger: true }) === null) return; action(async () => { await api('/weldments/' + w.id, 'DELETE'); await refreshJoints(rev.id); notify('Weld assembly deleted'); }); }} />
+                    {(rev.joints || []).some((j: Any) => j.kind !== 'weld') && <JointCards joints={(rev.joints || []).filter((j: Any) => j.kind !== 'weld')} parts={parts} editable={editable}
                       onEdit={j => { setTab('parts'); editWeld(j); }}
-                      onDelete={async j => { if (await ask({ title: 'Delete this joint?', confirm: 'Delete', danger: true }) === null) return; setRev((r: Any) => r && { ...r, joints: (r.joints || []).filter((x: Any) => x.id !== j.id) }); api('/joints/' + j.id, 'DELETE').catch(fail).finally(() => refreshJoints(rev.id).catch(fail)); }} />
+                      onDelete={async j => { if (await ask({ title: 'Delete this joint?', confirm: 'Delete', danger: true }) === null) return; setRev((r: Any) => r && { ...r, joints: (r.joints || []).filter((x: Any) => x.id !== j.id) }); api('/joints/' + j.id, 'DELETE').catch(fail).finally(() => refreshJoints(rev.id).catch(fail)); }} />}
                   </section>
                 )}
                 </div>}
@@ -1232,12 +1261,14 @@ function App() {
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
       {bulkReady && rev && <BulkReady revision={rev.id} parts={parts} selection={multi.length > 1 ? multi : category === 'sheet_metal' || category === 'machining' ? parts.filter((p: Any) => p.category === category).map((p: Any) => p.id) : []}
         canDesign={can('design.review')} canDrawing={can('drawing.review')} close={() => setBulkReady(false)} done={() => loadRevision(rev.id)} />}
-      {joSelection && project && <JobOrderDialog projects={projects} projectId={project.id} selection={joSelection} ctx={{ busy, action, notify }} close={() => setJoSelection(null)} onCreated={jo => { setJoSelection(null); openJobOrder(jo.id); }} />}
+      {joSelection && project && <JobOrderDialog projects={projects} projectId={project.id} selection={joSelection} title={joTitle} ctx={{ busy, action, notify }} close={() => { setJoSelection(null); setJoTitle(''); }} onCreated={jo => { setJoSelection(null); setJoTitle(''); openJobOrder(jo.id); }} />}
       {bendSim && rev && parts.find((p: Any) => p.id === bendSim) && <PressBrake revision={rev.id} part={bendSim} name={parts.find((p: Any) => p.id === bendSim).name} navStyle={prefs.navStyle} canEdit={editable} close={() => setBendSim(null)} />}
       {holeCfg && rev && parts.find((p: Any) => p.id === holeCfg) && <HoleConfig part={parts.find((p: Any) => p.id === holeCfg)} revision={rev.id} editable={editable} navStyle={prefs.navStyle}
         close={changed => { setHoleCfg(null); if (changed) loadRevision(rev.id).catch(fail); }} />}
-      {weldCfg && rev && <WeldConfig revision={rev.id} partIds={weldCfg} parts={parts} joints={rev.joints || []} editable={editable} navStyle={prefs.navStyle}
-        close={changed => { setWeldCfg(null); if (changed) refreshJoints(rev.id).catch(fail); }} />}
+      {weldCfg && rev && <WeldConfig key={weldCfg.weldment?.id || weldCfg.parts.join()} revision={rev.id} partIds={weldCfg.parts} weldment={weldCfg.weldment} parts={parts} joints={rev.joints || []} editable={editable} navStyle={prefs.navStyle}
+        canJobOrder={!vendor && (project?.permissions || []).includes('joborder.create')}
+        onJobOrder={w => { setWeldCfg(null); refreshJoints(rev.id).catch(fail); weldmentJobOrder(w); }}
+        close={() => { setWeldCfg(null); refreshJoints(rev.id).catch(fail); }} />}
       {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}
       {excluding && <ExcludeDialog parts={excluding} busy={busy} close={() => setExcluding(null)} onConfirm={reason => action(async () => {
         if (excluding.length === 1) await api('/parts/' + excluding[0].id + '/flags', 'PATCH', { excluded: true, exclusion_reason: reason });
