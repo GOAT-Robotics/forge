@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  Info, Tag, ClipboardList,
   MoreHorizontal, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
   FileText, Layers, Link, LogOut, Settings, ShieldCheck, MessageSquare, ClipboardCheck, GitBranch, LoaderCircle, ExternalLink, X, Eye,
   Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files, Flame, Droplet, Keyboard,
@@ -12,7 +13,7 @@ import type { PartAppearance } from './Viewer';
 import { api, asset, download, vendorId, headers } from './api';
 import { Badge, Modal, DocumentPreview, FlatPattern, SpecEditor, Swatch, ProductionChecklist, GroupPanel, GroupSpecEditor, ExcludeDialog, ask, DialogHost } from './components';
 import { Sidebar, TopBar, PageHeader, initTheme, LogoMark, Progress, type Page } from './shell';
-import { Dashboard, JobOrdersPage, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, ConfiguredWelds, StatusBadge } from './pages';
+import { Dashboard, JobOrdersPage, JobOrderDialog, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, ConfiguredWelds, StatusBadge } from './pages';
 import { categories, categoryColors, date, fmt } from './constants';
 import type { Any } from './constants';
 import { Select } from './controls';
@@ -110,7 +111,11 @@ function App() {
   const [bendSim, setBendSim] = useState<string | null>(null);
   const [bulkReady, setBulkReady] = useState(false);
   const [stepsAdd, setStepsAdd] = useState<{ ids: string[]; n: number } | null>(null);
-  const addToSteps = (ids: string[]) => { setStepsAdd({ ids, n: Date.now() }); setTab('steps'); };
+  const [asmView, setAsmViewState] = useState<'steps' | 'welds'>(() => { try { return localStorage.getItem('forge-asm-view') === 'welds' ? 'welds' : 'steps'; } catch { return 'steps'; } });
+  const setAsmView = (v: 'steps' | 'welds') => { setAsmViewState(v); try { localStorage.setItem('forge-asm-view', v); } catch { /* ignore */ } };
+  // Assembly holds both the build steps and the joints / welds (one tab; old "steps" links land on the steps view)
+  useEffect(() => { if (tab === 'steps') { setAsmView('steps'); setTab('assembly'); } }, [tab]);
+  const addToSteps = (ids: string[]) => { setStepsAdd({ ids, n: Date.now() }); setAsmView('steps'); setTab('assembly'); };
   /** press-brake simulation: shown where it is shared; editors can preview it on any formed part */
   // the simulation develops the part itself (also rolled curves the import could not flatten); it reports why if it cannot
   const canBend = (p: Any) => p?.category === 'sheet_metal' && p.geometry?.bends?.length > 0;
@@ -141,6 +146,12 @@ function App() {
     setError(/^(load failed|failed to fetch|networkerror)/i.test(msg) ? 'Couldn’t reach the Forge server — check your connection and try again.' : msg);
   };
   const notify = (s: string) => { setToast(s); setTimeout(() => setToast(''), 5000); };
+  /** A short, easy name for a part, shown beside the CAD name and searchable (job orders and nesting use it too). */
+  const editAlias = async (p: Any) => {
+    const v = await ask({ title: 'Part alias', message: `${p.name} — a short name you and the shop can use. Leave empty to remove it.`, confirm: 'Save', input: { label: 'Alias', placeholder: 'e.g. BASE PLATE, SM-12', initial: p.alias || '' } });
+    if (v === null) return;
+    await action(async () => { await api(`/parts/${p.id}/alias`, 'PUT', { alias: v }); await loadRevision(rev.id); });
+  };
   const action = async (fn: () => Promise<void>) => { setBusy(true); try { await fn(); } catch (e) { fail(e); } finally { setBusy(false); } };
 
   const [projectsLoaded, setProjectsLoaded] = useState(false);
@@ -227,7 +238,7 @@ function App() {
 
   useEffect(() => {
     if (!rev) return;
-    const active = rev.status === 'processing' || rev.jobs?.some((j: Any) => ['queued', 'running'].includes(j.status));
+    const active = rev.status === 'processing' || rev.jobs?.some((j: Any) => ['queued', 'running', 'cancelling'].includes(j.status));
     if (!active) return;
     const t = setInterval(() => loadRevision(rev.id).catch(fail), 2500);
     return () => clearInterval(t);
@@ -260,9 +271,9 @@ function App() {
   const revPerms = useMemo(() => new Set<string>(rev?.permissions || []), [rev?.permissions?.join(',')]);
   const can = (p: string) => revPerms.has(p);
   const editable = !vendor && can('part.edit') && rev?.state === 'active' && rev?.status === 'ready';
-  const filtered = parts.filter((p: Any) => (category === 'all' ? (showHidden || !p.hidden) : category === 'hidden' ? p.hidden : category === 'excluded' ? p.excluded : p.category === category && (showHidden || !p.hidden)) && p.name.toLowerCase().includes(query.toLowerCase()));
+  const filtered = parts.filter((p: Any) => (category === 'all' ? (showHidden || !p.hidden) : category === 'hidden' ? p.hidden : category === 'excluded' ? p.excluded : p.category === category && (showHidden || !p.hidden)) && (p.name + ' ' + (p.alias || '')).toLowerCase().includes(query.toLowerCase()));
   const hasTree = parts.some((p: Any) => (p.assembly_path || []).length);
-  const tree = useMemo(() => buildTree(filtered), [filtered.map((p: Any) => p.id + (p.assembly_path || []).join('/')).join('|')]);
+  const tree = useMemo(() => buildTree(filtered), [filtered.map((p: Any) => p.id + (p.assembly_path || []).join('/') + (p.alias || '')).join('|')]);
   if (treeView && hasTree) { const order = new Map(flattenTree(tree).map((p: Any, i: number) => [p.id, i])); filtered.sort((a: Any, b: Any) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0)); }
   const hiddenIds = parts.filter((p: Any) => p.hidden).map((p: Any) => p.id);
   const purchasedIds = parts.filter((p: Any) => p.category === 'purchased').map((p: Any) => p.id);
@@ -350,7 +361,9 @@ function App() {
   const releaseParts = (rev?.parts || []).filter((p: Any) => !p.excluded && p.category !== 'purchased');
   const readyCount = releaseParts.filter(partReady).length;
   const blocking = findings.filter((f: Any) => f.severity === 'blocker' && !f.waiver).length;
-  const job = rev?.jobs?.find((j: Any) => ['queued', 'running'].includes(j.status) && !['instructions', 'welding'].includes(j.kind));
+  const [dismissedJob, setDismissedJob] = useState('');
+  const [joSelection, setJoSelection] = useState<{ id: string; name: string }[] | null>(null);
+  const job = rev?.jobs?.find((j: Any) => ['queued', 'running', 'cancelling'].includes(j.status) && !['instructions', 'welding'].includes(j.kind));
   const appearance = useMemo<Record<string, PartAppearance>>(() => {
     const out: Record<string, PartAppearance> = {};
     for (const p of parts) out[p.id] = { color: (colorBy === 'coating' && p.spec.coating_hex) || categoryColors[p.category] || categoryColors.other, category: p.category, name: p.name };
@@ -442,11 +455,13 @@ function App() {
     }
     choosePart(id);
   };
-  const renderRow = (p: Any) => (
+  const partById = useMemo(() => new Map<string, Any>(parts.map((x: Any) => [x.id, x])), [parts]);
+  // rows read the current part (the grouped tree is memoised on structure, not on every edit)
+  const renderRow = (p0: Any) => { const p = partById.get(p0.id) || p0; return (
                           <div key={p.id} data-part={p.id} className={'part-row ' + (p.id === selected ? 'chosen' : multi.includes(p.id) ? 'multi' : '') + (p.hidden ? ' is-hidden' : '') + (p.excluded ? ' is-excluded' : '')}>
                             <button type="button" className="row-main" onClick={ev => clickRow(p.id, ev)}>
                               <span className={'part-glyph ' + p.category} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers size={17} /> : <Box size={17} />}</span>
-                              <span><strong>{p.name}</strong><small>{p.excluded ? <b className="excluded-tag">Not for production</b> : categories[p.category]} <span>· Qty {p.quantity}</span>{p.spec.material && !p.excluded && <span> · {p.spec.material}</span>}</small></span>
+                              <span><strong title={p.alias ? `${p.alias} — ${p.name}` : p.name}>{p.alias && <span className="alias-chip">{p.alias}</span>}{p.name}</strong><small>{p.excluded ? <b className="excluded-tag">Not for production</b> : categories[p.category]} <span>· Qty {p.quantity}</span>{p.spec.material && !p.excluded && <span> · {p.spec.material}</span>}</small></span>
                               {jointDraft?.kind === 'weld' && (() => { const check = weldability(p); return <span className={'weld-candidate ' + check.level} title={`${check.label}: ${check.reason}`}><Flame size={12} /></span>; })()}
                               {p.excluded || p.category === 'purchased' ? <span className="ready-mark na" title={p.excluded ? 'Not for production' : 'Purchased — no release needed'} />
                                 : partReady(p) ? <CheckCircle2 size={15} className="green" aria-label="Production ready" />
@@ -454,7 +469,7 @@ function App() {
                             </button>
                             {!vendor && <button type="button" className="icon row-eye" title={p.hidden ? 'Show in viewer' : 'Hide in viewer'} onClick={() => setFlags(p.id, { hidden: !p.hidden })}>{p.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}
                           </div>
-                        );
+                        ); };
   /** STEP assembly tree: sub-assemblies first, then the parts directly in this level. */
   const renderTree = (node: Any, depth: number): React.ReactNode => (
     <React.Fragment key={'n:' + node.key}>
@@ -579,6 +594,7 @@ function App() {
         <button type="button" className={isolate ? 'selected' : ''} title={`Show only the selected parts (${binding('part.isolate') || 'no key'})`} onClick={() => { setIsolate(!isolate); setMode('3d'); }}><Target size={14} />Isolate</button>
         <button type="button" className={multi.every(x => transparentIds.includes(x)) ? 'selected' : ''} title={`See through the selected parts (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => multi.every(x => t.includes(x)) ? t.filter(x => !multi.includes(x)) : [...new Set([...t, ...multi])])}><Droplet size={14} />Transparent</button>
         {!vendor && editable && <button type="button" title="Add the selected parts as the next assembly step" onClick={() => addToSteps([...multi])}><ListPlus size={14} />Add step</button>}
+        {!vendor && (project?.permissions || []).includes('joborder.create') && <button type="button" title="New job order for just these parts (from the production-ready revision)" onClick={() => setJoSelection(parts.filter((p: Any) => multi.includes(p.id)).map((p: Any) => ({ id: p.id, name: p.name })))}><ClipboardList size={14} />Job order</button>}
         <button type="button" className="icon" title="Clear selection" onClick={() => choosePart(null)}><X size={14} /></button>
       </span></div>
   ) : part ? (
@@ -711,7 +727,7 @@ function App() {
                 })()}
               </div>
               {rev && <nav className="doc-tabs" aria-label="Revision views">
-                {[['parts', 'Model', Box], ['rules', 'Checks', ShieldCheck], ['assembly', 'Assembly', Layers], ['steps', 'Steps', ListOrdered], ...(vendor ? [['production', 'Drawings', Factory]] : [['joborders', 'Jobs', Factory]]), ['review', 'Review', MessageSquare], ['qc', 'Quality', ClipboardCheck], ...(!vendor ? [['audit', 'History', Clock]] : [])].map(([id, label, Icon]: Any) => (
+                {[['parts', 'Model', Box], ['rules', 'Checks', ShieldCheck], ['assembly', 'Assembly', Layers], ...(vendor ? [['production', 'Drawings', Factory]] : [['joborders', 'Jobs', Factory]]), ['review', 'Review', MessageSquare], ['qc', 'Quality', ClipboardCheck], ...(!vendor ? [['audit', 'History', Clock]] : [])].map(([id, label, Icon]: Any) => (
                   <button type="button" className={tab === id ? 'active' : ''} key={id} onClick={() => setTab(id)}><Icon size={15} />{label}{id === 'rules' && blocking > 0 && <b>{blocking}</b>}</button>
                 ))}
               </nav>}
@@ -741,7 +757,12 @@ function App() {
               <div className="empty-page"><Upload size={42} /><h2>Every part starts here.</h2><p>Upload STEP, IGES or BREP. Assemblies and multi-body parts stay connected.</p><button className="primary" onClick={() => setModal('upload')}>Upload CAD file</button></div>
             ) : (
               <>
-                {job && !importingRevision && <div className="job-pill" role="status" aria-live="polite"><LoaderCircle size={15} className="spin" /><span>{rev.message || 'Job queued'}</span><progress max="100" value={Math.min(rev.progress, 99)} /><b>{Math.min(rev.progress, 99)}%</b></div>}
+                {job && !importingRevision && <div className="job-pill" role="status" aria-live="polite"><LoaderCircle size={15} className="spin" /><span>{job.status === 'cancelling' ? 'Stopping…' : rev.message || 'Job queued'}</span><progress max="100" value={Math.min(rev.progress, 99)} /><b>{Math.min(rev.progress, 99)}%</b>
+                  {job.kind !== 'import' && can('drawing.edit') && job.status !== 'cancelling' && <button type="button" className="job-cancel" title="Stop this run — parts not reached yet keep their current drawings" onClick={async () => {
+                    if ((await ask({ title: 'Stop drawing generation?', message: 'Parts already being drawn by this run are marked for regeneration; the others keep their current drawings.', confirm: 'Stop', danger: true })) === null) return;
+                    try { await api(`/jobs/${job.id}/cancel`, 'POST'); await loadRevision(rev.id); } catch (e: unknown) { notify((e as Error).message); }
+                  }}><X size={13} />Stop</button>}</div>}
+                {!job && rev.jobs?.[0]?.status === 'cancelled' && dismissedJob !== rev.jobs[0].id && <div className="notice job-cancelled"><Info size={15} /><span>Generation stopped{rev.jobs[0].error ? ` (${rev.jobs[0].error.toLowerCase()})` : ''}. Parts it had started need Regenerate; the others kept their drawings.</span><button type="button" className="icon" aria-label="Dismiss" onClick={() => setDismissedJob(rev.jobs[0].id)}><X size={14} /></button></div>}
                 {!job && rev.jobs?.[0]?.status === 'failed' && rev.jobs[0].kind !== 'import' && <div className="error-banner">Document generation failed: {rev.jobs[0].error || 'Retry generation.'}</div>}
                 {rev.status === 'failed' && <div className="error-banner">Import failed: {rev.message}. The previous active revision is preserved.</div>}
                 {rev.state === 'archived' && <div className="notice"><Archive size={15} />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
@@ -953,6 +974,7 @@ function App() {
                             <div className="pi-title">
                               <span className={'pi-type ' + part.category}><span className={'part-glyph ' + part.category} style={part.spec.coating_hex ? { background: part.spec.coating_hex, color: '#fff' } : undefined}>{part.category === 'sheet_metal' ? <Layers size={14} /> : <Box size={14} />}</span>{categories[part.category]}{part.geometry.carried_from && <em title="Carried over from an earlier revision">rev {part.geometry.carried_from.revision}</em>}</span>
                               <h2 title={part.name}>{part.name}</h2>
+                              {(part.alias || (!vendor && can('part.edit'))) && <button type="button" className={'pi-alias' + (part.alias ? '' : ' empty')} disabled={vendor || !can('part.edit')} title={part.alias ? 'Alias — click to change' : 'Give this part a short, easy name'} onClick={() => editAlias(part)}><Tag size={12} />{part.alias || 'Add alias'}</button>}
                               <small>{part.id.slice(-10).toUpperCase()} · Qty {part.quantity}{part.geometry.mass_kg !== undefined ? ` · ${fmt(part.geometry.mass_kg)} kg` : ''}</small>
                             </div>
                             {!vendor && <div className="pi-menu">
@@ -1112,12 +1134,15 @@ function App() {
                     : <JobOrdersPage projects={projects} projectId={project.id} ctx={{ busy, action, notify }} perms={new Set(project.permissions || [])} openJobOrder={openJobOrder} />
                 )}
 
-                {tab === 'steps' && <AssemblySteps page revision={rev.id} parts={parts} editable={editable} navStyle={prefs.navStyle} addParts={stepsAdd?.ids} addKey={stepsAdd?.n} close={() => setTab('parts')} />}
-
-                {tab === 'assembly' && (
+                {(tab === 'assembly' || tab === 'steps') && <div className="asm-wrap">
+                  <div className="asm-switch v-segment" role="tablist">
+                    <button type="button" className={asmView === 'steps' ? 'active' : ''} onClick={() => setAsmView('steps')}><ListOrdered size={14} />Build steps</button>
+                    <button type="button" className={asmView === 'welds' ? 'active' : ''} onClick={() => setAsmView('welds')}><Flame size={14} />Joints &amp; welding <small>{(rev.joints || []).length}</small></button>
+                  </div>
+                {asmView === 'steps' ? <AssemblySteps page revision={rev.id} parts={parts} editable={editable} navStyle={prefs.navStyle} addParts={stepsAdd?.ids} addKey={stepsAdd?.n} close={() => setTab('parts')} /> : (
                   <section className="content-page">
                     <div className="page-title">
-                      <div><h2>Assembly & welding</h2><p>Joints and welds on the assembly from the STEP file. Build order and fasteners are in Steps.</p></div>
+                      <div><h2>Joints &amp; welding</h2><p>Joints and welds on the assembly from the STEP file; build order and fasteners are under Build steps.</p></div>
                       <div className="flex">
                         <button onClick={() => doc(`/revisions/${rev.id}/assets/assembly.pdf`, 'assembly.pdf', 'Assembly & mating record')}><Eye size={16} />Assembly document</button>
                         <JobDocButton key={(rev.joints || []).map((j: Any) => j.id + j.updated).join()} revision={rev.id} kind="welding" label="Welding document" icon={<Flame size={16} />} notify={notify}
@@ -1130,6 +1155,7 @@ function App() {
                       onDelete={async j => { if (await ask({ title: 'Delete this joint?', confirm: 'Delete', danger: true }) === null) return; setRev((r: Any) => r && { ...r, joints: (r.joints || []).filter((x: Any) => x.id !== j.id) }); api('/joints/' + j.id, 'DELETE').catch(fail).finally(() => refreshJoints(rev.id).catch(fail)); }} />
                   </section>
                 )}
+                </div>}
 
                 {tab === 'production' && (
                   <section className="content-page">
@@ -1206,6 +1232,7 @@ function App() {
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
       {bulkReady && rev && <BulkReady revision={rev.id} parts={parts} selection={multi.length > 1 ? multi : category === 'sheet_metal' || category === 'machining' ? parts.filter((p: Any) => p.category === category).map((p: Any) => p.id) : []}
         canDesign={can('design.review')} canDrawing={can('drawing.review')} close={() => setBulkReady(false)} done={() => loadRevision(rev.id)} />}
+      {joSelection && project && <JobOrderDialog projects={projects} projectId={project.id} selection={joSelection} ctx={{ busy, action, notify }} close={() => setJoSelection(null)} onCreated={jo => { setJoSelection(null); openJobOrder(jo.id); }} />}
       {bendSim && rev && parts.find((p: Any) => p.id === bendSim) && <PressBrake revision={rev.id} part={bendSim} name={parts.find((p: Any) => p.id === bendSim).name} navStyle={prefs.navStyle} canEdit={editable} close={() => setBendSim(null)} />}
       {holeCfg && rev && parts.find((p: Any) => p.id === holeCfg) && <HoleConfig part={parts.find((p: Any) => p.id === holeCfg)} revision={rev.id} editable={editable} navStyle={prefs.navStyle}
         close={changed => { setHoleCfg(null); if (changed) loadRevision(rev.id).catch(fail); }} />}

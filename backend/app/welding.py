@@ -367,7 +367,7 @@ def _file(rid):
 def welding_status(rid: str, request: Request):
     revision_access(request, rid)
     j = welding_job(rid)
-    if j and j['status'] in ('queued', 'running'):
+    if j and j['status'] in ('queued', 'running', 'cancelling'):
         r = db.row('SELECT progress,message FROM revisions WHERE id=?', (rid,))
         return {'state': 'generating', 'progress': r['progress'] if j['status'] == 'running' else 0, 'message': r['message'] if j['status'] == 'running' else 'Waiting for the worker'}
     if _file(rid).exists():
@@ -386,7 +386,7 @@ def welding_generate(rid: str, request: Request):
     if not db.row("SELECT id FROM joints WHERE revision_id=? AND kind='weld' LIMIT 1", (rid,)):
         raise HTTPException(422, 'No welds are configured for this revision')
     j = welding_job(rid)
-    if j and j['status'] in ('queued', 'running'):
+    if j and j['status'] in ('queued', 'running', 'cancelling'):
         return {'state': 'generating'}
     (db.revdir(rid) / 'welding.pdf').unlink(missing_ok=True)
     with db.connect() as c:
@@ -401,7 +401,7 @@ def welding(rid: str, request: Request):
     out = _file(rid)
     if not out.exists():
         j = welding_job(rid)
-        if j and j['status'] in ('queued', 'running'):
+        if j and j['status'] in ('queued', 'running', 'cancelling'):
             raise HTTPException(409, 'The welding document is being generated')
         raise HTTPException(404, 'Create the welding document first')
     return FileResponse(out, media_type='application/pdf', filename='welding.pdf')

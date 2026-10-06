@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Grid2x2,
   Plus, ArrowUp, ArrowDown, Trash2, Check, AlertTriangle, CheckCircle2, ChevronRight, ChevronDown, ClipboardList, Factory, Flame, Clock,
   Pause, Play, X, Users, Library, FileText, ShieldCheck, Layers, Box, MessageSquareWarning, Link2, Crosshair,
 } from 'lucide-react';
 import { api } from './api';
+import NestingDialog from './nesting';
 import { Badge, Modal, ask } from './components';
 import { Select } from './controls';
 import { categories, date, fmt } from './constants';
@@ -134,26 +136,45 @@ export function Dashboard({ openJobOrder, openProject, ctx }: { openJobOrder: (i
 }
 
 // ============================================================================ Job orders
-export function JobOrderDialog({ projects, projectId, close, onCreated, ctx }: { projects: Any[]; projectId?: string; close: () => void; onCreated: (jo: Any) => void; ctx: Ctx }) {
+type JoScope = 'all' | 'sheet_metal' | 'machining' | 'selected' | 'custom';
+export function JobOrderDialog({ projects, projectId, close, onCreated, ctx, selection }: { projects: Any[]; projectId?: string; close: () => void; onCreated: (jo: Any) => void; ctx: Ctx; selection?: { id: string; name: string }[] }) {
   const [pid, setPid] = useState(projectId || projects.find(p => p.active_status === 'released')?.id || projects[0]?.id || '');
   const [project, setProject] = useState<Any>(null);
   const [rev, setRev] = useState<Any>(null);
   const [form, setForm] = useState<Any>({ title: '', quantity: 1, due: '', priority: 'normal', customer: '', requirement: '', include_purchased: true });
-  const [scope, setScope] = useState<Record<string, number> | null>(null);
+  const [mode, setMode] = useState<JoScope>(selection?.length ? 'selected' : 'all');
+  const [qty, setQty] = useState<Record<string, number>>({});        // custom quantities (part id → count)
+  const [picked, setPicked] = useState<Set<string>>(new Set());       // custom scope: ticked parts
+  const [filter, setFilter] = useState('');
   useEffect(() => {
     if (!pid) return;
-    setRev(null); setScope(null);
+    setRev(null);
     api('/projects/' + pid).then(async p => {
       setProject(p);
       const released = p.revisions.find((r: Any) => r.status === 'released');
       if (released) setRev(await api('/revisions/' + released.id));
     }).catch(() => {});
   }, [pid]);
-  const make = (rev?.parts || []).filter((p: Any) => !p.excluded);
+  const make = (rev?.parts || []).filter((p: Any) => !p.excluded && p.category !== 'purchased');
+  // parts picked in the model may come from a newer revision: match them to the released one by id, then by name
+  const selectedIds = useMemo(() => {
+    if (!selection?.length || !rev) return new Set<string>();
+    const byName = new Map<string, string>(make.map((p: Any) => [p.name, p.id]));
+    return new Set<string>(selection.map(s => make.some((p: Any) => p.id === s.id) ? s.id : byName.get(s.name) || '').filter(Boolean));
+  }, [selection, rev]);
+  const inScope = (p: Any) => mode === 'all' ? true : mode === 'sheet_metal' || mode === 'machining' ? p.category === mode : mode === 'selected' ? selectedIds.has(p.id) : picked.has(p.id);
+  const scoped = make.filter(inScope);
+  const per = (p: Any) => qty[p.id] ?? p.quantity * Number(form.quantity || 1);
+  const missed = (selection?.length || 0) - selectedIds.size;
+  const count = (k: JoScope) => k === 'all' ? make.length : k === 'selected' ? selectedIds.size : k === 'custom' ? picked.size : make.filter((p: Any) => p.category === k).length;
+  const scopes: [JoScope, string][] = [['all', 'Everything'], ['sheet_metal', 'Sheet metal'], ['machining', 'Machining'], ...(selection?.length ? [['selected', 'Selected in model'] as [JoScope, string]] : []), ['custom', 'Choose parts']];
+  const list = mode === 'custom' ? make.filter((p: Any) => !filter || (p.name + ' ' + (p.alias || '')).toLowerCase().includes(filter.toLowerCase())) : scoped;
   return (
     <Modal title="New job order" subtitle="Creates the production and process checklists from the production-ready revision" wide close={close}>
       <form onSubmit={e => { e.preventDefault(); ctx.action(async () => {
-        const body = { ...form, quantity: Number(form.quantity), revision_id: rev.id, parts: scope ? Object.entries(scope).filter(([, q]) => q > 0).map(([part_id, quantity]) => ({ part_id, quantity })) : null };
+        const custom = mode !== 'all' || Object.keys(qty).length > 0;
+        const body = { ...form, quantity: Number(form.quantity), revision_id: rev.id, include_purchased: mode === 'all' ? form.include_purchased : false,
+          parts: custom ? scoped.map((p: Any) => ({ part_id: p.id, quantity: per(p) })).filter((x: Any) => x.quantity > 0) : null };
         const jo = await api(`/projects/${pid}/job-orders`, 'POST', body); onCreated(jo);
       }); }}>
         <div className="form-grid">
@@ -168,17 +189,23 @@ export function JobOrderDialog({ projects, projectId, close, onCreated, ctx }: {
         {!project ? <p className="muted">Loading project…</p> : !rev ? (
           <div className="notice"><ShieldCheck size={17} />{project.name} has no production-ready revision. Complete the design checks and drawing reviews, then release the revision.</div>
         ) : (
-          <>
-            <label className="check"><input type="checkbox" checked={form.include_purchased} onChange={e => setForm({ ...form, include_purchased: e.target.checked })} />Include procurement lines for purchased parts</label>
-            <details className="v-details" open={!!scope}>
-              <summary onClick={e => { e.preventDefault(); setScope(scope ? null : Object.fromEntries(make.map((p: Any) => [p.id, p.quantity * Number(form.quantity || 1)]))); }}>{scope ? 'Custom part quantities' : `All ${make.length} parts of revision ${rev.number} × ${form.quantity}`} <small>(change)</small></summary>
-              {scope && <div className="v-scope">{make.map((p: Any) => (
-                <label key={p.id} className="v-scope-row"><span><b>{p.name}</b><small>{categories[p.category]} · {p.quantity} per assembly</small></span><input type="number" min={0} value={scope[p.id] ?? 0} onChange={e => setScope({ ...scope, [p.id]: Number(e.target.value) })} /></label>
-              ))}</div>}
-            </details>
-          </>
+          <div className="jo-scope">
+            <div className="jo-scope-head"><b>What to make</b><small>Revision {rev.number}</small></div>
+            <div className="v-segment">{scopes.map(([k, l]) => <button type="button" key={k} className={mode === k ? 'active' : ''} onClick={() => setMode(k)}>{l} <small>{count(k)}</small></button>)}</div>
+            {mode === 'selected' && missed > 0 && <p className="muted">{missed} selected part{missed === 1 ? ' is' : 's are'} not in the released revision (or purchased / not for production) and left out.</p>}
+            {mode === 'all' && <label className="check"><input type="checkbox" checked={form.include_purchased} onChange={e => setForm({ ...form, include_purchased: e.target.checked })} />Include procurement lines for purchased parts, and assembly / welding lines</label>}
+            {mode === 'custom' && <input className="jo-scope-search" placeholder="Find a part or alias…" value={filter} onChange={e => setFilter(e.target.value)} />}
+            <div className="v-scope">{list.map((p: Any) => (
+              <label key={p.id} className="v-scope-row">
+                {mode === 'custom' && <input type="checkbox" checked={picked.has(p.id)} onChange={e => setPicked(x => { const y = new Set(x); if (e.target.checked) y.add(p.id); else y.delete(p.id); return y; })} />}
+                <span><b>{p.alias && <span className="alias-chip">{p.alias}</span>}{p.name}</b><small>{categories[p.category]} · {p.quantity} per assembly</small></span>
+                <input type="number" min={0} value={per(p)} disabled={mode === 'custom' && !picked.has(p.id)} onChange={e => setQty({ ...qty, [p.id]: Number(e.target.value) })} />
+              </label>
+            ))}{!list.length && <p className="muted padded">No parts in this scope.</p>}</div>
+            <small className="muted">{scoped.length} part{scoped.length === 1 ? '' : 's'} · {scoped.reduce((n: number, p: Any) => n + per(p), 0)} pieces{mode !== 'all' ? ' · assembly / welding lines only for welds inside these parts' : ''}</small>
+          </div>
         )}
-        <div className="modal-actions"><button type="button" onClick={close}>Cancel</button><button className="primary" disabled={ctx.busy || !rev}><Plus size={15} />Create job order</button></div>
+        <div className="modal-actions"><button type="button" onClick={close}>Cancel</button><button className="primary" disabled={ctx.busy || !rev || !scoped.length}><Plus size={15} />Create job order</button></div>
       </form>
     </Modal>
   );
@@ -228,6 +255,7 @@ export function JobOrderDetail({ id, ctx, back, openProject }: { id: string; ctx
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [record, setRecord] = useState<Any>(null);
   const [issue, setIssue] = useState<Any>(null);
+  const [nesting, setNesting] = useState(false);
   const [q, setQ] = useState('');
   const load = () => api('/job-orders/' + id).then(setJo).catch(() => {});
   useEffect(() => { load(); const t = setInterval(load, 20000); return () => clearInterval(t); }, [id]);
@@ -244,14 +272,16 @@ export function JobOrderDetail({ id, ctx, back, openProject }: { id: string; ctx
   const canManage = perms.has('joborder.create');
   const post = (item: Any, body: Any) => ctx.action(async () => { await api(`/job-orders/${id}/items/${item.id}`, 'POST', body); await load(); });
   const setStatus = (status: string, note = '') => ctx.action(async () => { await api('/job-orders/' + id, 'PATCH', { status, note }); await load(); });
-  const matches = (items: Any[]) => !q || items.some(i => (i.part_name + ' ' + i.step).toLowerCase().includes(q.toLowerCase()));
+  const matches = (items: Any[]) => !q || items.some(i => (i.part_name + ' ' + (i.alias || '') + ' ' + i.step).toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="v-page">
       <PageHeader
         breadcrumb={<><button className="link" onClick={back}>Job orders</button> <ChevronRight size={12} /> <button className="link" onClick={() => openProject(jo.project_id)}>{jo.project_name}</button> · Rev {jo.revision_number}</>}
         title={<>{joNumber(jo)} · {jo.title} <StatusBadge status={jo.status} /></>}
         description={<>{jo.quantity} assemblies{jo.due && <> · due {date(jo.due)} ({deadline(jo).label.toLowerCase()})</>}{jo.customer && <> · {jo.customer}</>} · created by {jo.created_by} {when(jo.created)}</>}
-        actions={canManage && <>
+        actions={<>
+          {jo.items.some((i: Any) => i.category === 'sheet_metal') && <button onClick={() => setNesting(true)}><Grid2x2 size={14} />Nesting</button>}
+          {canManage && <>
           {jo.status === 'on_hold' && <button onClick={() => setStatus('in_progress')}><Play size={14} />Resume</button>}
           {['open', 'in_progress'].includes(jo.status) && <button onClick={async () => {
             const why = await ask({ title: 'Put job order on hold', message: 'Counts cannot be recorded while it is on hold. The reason is logged in Activity.', confirm: 'Put on hold',
@@ -264,8 +294,10 @@ export function JobOrderDetail({ id, ctx, back, openProject }: { id: string; ctx
               input: { label: 'Reason (optional)', placeholder: 'Why is it cancelled?' } });
             if (why !== null) setStatus('cancelled', why);
           }}><X size={14} />Cancel</button>}
+          </>}
         </>}
       />
+      {nesting && <NestingDialog jo={jo} canRun={perms.has('joborder.create') || perms.has('joborder.update')} canDownload={perms.has('cad.download')} close={() => setNesting(false)} />}
       <div className="v-body">
         <div className="v-stats">
           <div><span>Progress</span><b>{Math.round(jo.progress)}%</b><Progress value={jo.progress} /></div>
@@ -298,7 +330,7 @@ export function JobOrderDetail({ id, ctx, back, openProject }: { id: string; ctx
               <button className="jo-group-head" onClick={() => setOpen({ ...open, [key]: !isOpen })}>
                 {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                 {key === 'assembly' ? <Flame size={15} /> : key === 'procurement' ? <Box size={15} /> : <Layers size={15} />}
-                <b className="grow">{title}</b>
+                <b className="grow">{items[0].alias && key !== 'assembly' && key !== 'procurement' && <span className="alias-chip">{items[0].alias}</span>}{title}</b>
                 {finished !== null && <small>{finished}/{items[0].required} finished</small>}
                 {jo.qc?.[key] && (() => { const qc = jo.qc[key]; return <span className="jo-qc" title={`Inspection: first article ${qc.fai}; ${qc.inspected} serial(s) inspected; ${qc.critical} critical characteristic(s)`}>
                   <Badge kind={qc.fai === 'passed' ? 'success' : qc.fai === 'nonconforming' ? 'danger' : qc.fai === 'incomplete' ? 'warning' : ''}>FAI {qc.fai}</Badge>

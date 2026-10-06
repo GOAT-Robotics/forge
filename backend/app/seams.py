@@ -537,7 +537,81 @@ def access_side(s):
     return d, ('outside' if float(np.dot(d, mid - c)) > 0 else 'inside')
 
 
+def _tangent(path, end):
+    p = np.asarray(path, float)
+    if len(p) < 2:
+        return None
+    d = (p[-1] - p[-2]) if end else (p[1] - p[0])
+    n = np.linalg.norm(d)
+    return d / n if n > 1e-9 else None
+
+
+def chain(seams):
+    """One seam per joint line: CAD splits a curved joint into several edges (each cylinder patch, each tangent
+    plane), so a weld along a curve came out as several pieces. Seams of the same two bodies, of the same kind,
+    on the same side (inside / outside), whose ends meet and continue smoothly, are joined into one."""
+    items = [dict(x) for x in seams]
+    for x in items:
+        x['_side'] = access_side(x)[1]
+        x['_members'] = [x.get('key') or str(x['index'])]
+        x['_tiny'] = x['length'] < max(3.0, 2.5 * min(x['body'].thickness or 1, x['other'].thickness or 1))
+        p = np.asarray(x['path'], float)
+        if len(p) >= 2:   # where the fillet legs were measured: a curved bead turns them along the seam from here
+            m = len(p) // 2
+            t = p[min(len(p) - 1, m + 1)] - p[max(0, m - 1)]
+            x['_ref'] = (p[m], t / (np.linalg.norm(t) or 1))
+    # ends this close are one joint line: round / relieved corners of a contour leave a few mm where neither
+    # edge lies on the other part, but the welder carries the bead round them
+    tol_of = lambda x: max(1.0, min(8.0, 6 * min(x['body'].thickness or 1, x['other'].thickness or 1)))
+    joined = True
+    while joined:
+        joined = False
+        for i in range(len(items)):
+            for j in range(len(items)):
+                if i == j:
+                    continue
+                a, b = items[i], items[j]
+                if a.get('_tiny') or b.get('_tiny'):
+                    continue   # steps across a thickness at a notch: kept apart, bridged over
+                if (a['body'] is not b['body'] or a['other'] is not b['other'] or a['joint'] != b['joint'] or a['_side'] != b['_side']):
+                    continue
+                pa, pb = np.asarray(a['path'], float), np.asarray(b['path'], float)
+                tol = tol_of(a)
+                for qa, qb in ((pa, pb), (pa, pb[::-1]), (pa[::-1], pb), (pa[::-1], pb[::-1])):
+                    gap = float(np.linalg.norm(qa[-1] - qb[0]))
+                    if gap > tol:
+                        continue
+                    ta, tb = _tangent(qa, True), _tangent(qb, False)
+                    # smooth continuation; across a small rounded corner any turn short of doubling back
+                    if ta is None or tb is None or float(np.dot(ta, tb)) < (.82 if gap < .2 else .5):
+                        continue
+                    path = np.vstack([qa, qb[1:]]) if gap < .05 else np.vstack([qa, qb])
+                    longer = a if a['length'] >= b['length'] else b
+                    merged = {**longer, 'path': path, 'length': a['length'] + b['length'] + (gap if gap >= .05 else 0), 'index': min(a['index'], b['index']) if a['index'] >= 0 and b['index'] >= 0 else -1,
+                              '_members': a['_members'] + b['_members']}
+                    if a['joint'] == 'gap':
+                        merged['gap'] = max(a.get('gap') or 0, b.get('gap') or 0)
+                    items[i] = merged
+                    items.pop(j)
+                    joined = True
+                    break
+                if joined:
+                    break
+            if joined:
+                break
+    import hashlib
+    for x in items:
+        if len(x['_members']) > 1:
+            x['key'] = 'c' + hashlib.sha1('+'.join(sorted(x['_members'])).encode()).hexdigest()[:14]
+            x['pieces'] = len(x['_members'])
+        x.pop('_members', None)
+        x.pop('_side', None)
+        x.pop('_tiny', None)
+    return items
+
+
 def describe(seams):
+    seams = chain(seams)
     out = []
     order = {'fillet': 0, 'gap': 1, 'butt': 2, 'corner': 3}
     seams.sort(key=lambda s: (order[s['joint']], -s['length']))
@@ -567,6 +641,13 @@ def describe(seams):
         }
         acc, side = access_side(s)
         item['access'] = [round(float(v), 4) for v in acc] if acc is not None else None
+        # the air side in the owner's coordinates: the dialog draws and picks the seam from that side only
+        item['access_local'] = [round(float(v), 5) for v in a.local_dir(acc)] if acc is not None else None
+        if s.get('pieces') and s.get('_ref') is not None:
+            item['legs_at'] = [[round(float(v), 4) for v in a.local(np.array([s['_ref'][0]]))[0]], [round(float(v), 5) for v in a.local_dir(s['_ref'][1])]]
+        item['thickness'] = round(float(min(a.thickness or 0, b.thickness or 0) or a.thickness or 0), 3)
+        if s.get('pieces'):
+            item['pieces'] = s['pieces']
         item['side'] = side
         out.append(item)
     return out

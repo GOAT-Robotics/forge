@@ -72,7 +72,7 @@ export const seamKey = (f: Any) => f.key ? `${f.part}|${f.occurrence || 0}|${f.k
 export const seamSelection = (s: Any) => ({
   part: s.part, occurrence: s.occurrence || 0, selection: 'edge', index: s.index, ...(s.key ? { key: s.key } : {}), type: s.type, start: s.start, end: s.end,
   length: s.length, boundaries: s.boundaries, joint: s.joint, legs: s.legs, normal: s.normal, other_part: s.other_part, other_occurrence: s.other_occurrence,
-  ...(s.side ? { side: s.side } : {}),
+  ...(s.side ? { side: s.side } : {}), ...(s.legs_at ? { legs_at: s.legs_at } : {}), ...(s.access_local ? { access_local: s.access_local } : {}),
 });
 
 const seamWeld = (draft: Any, s: Any) => {

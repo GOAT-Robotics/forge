@@ -920,14 +920,15 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const material = beadMaterial(w.process, draft);
     const world = (p: number[] | undefined, t: THREE.Matrix4) => new THREE.Vector3(...(p || [0, 0, 0])).applyMatrix4(t);
     const worldDir = (d: number[] | undefined, t: THREE.Matrix4) => d ? new THREE.Vector3(...d).transformDirection(t) : null;
-    const seams: { path: THREE.Vector3[]; legs: [THREE.Vector3, THREE.Vector3] | null; normal: THREE.Vector3 | null; joint?: string; range?: number[] }[] = [];
+    const seams: { path: THREE.Vector3[]; legs: [THREE.Vector3, THREE.Vector3] | null; normal: THREE.Vector3 | null; joint?: string; range?: number[]; legsAt?: [THREE.Vector3, THREE.Vector3] }[] = [];
     const faceBoundaries: THREE.Vector3[][][] = [];
     for (const item of shape.faces || []) {
       const t = occurrenceMatrix(e, item.part, item.occurrence); if (!t) continue;
       const boundaries = (item.boundaries || []).map(path => path.map(point => world(point, t)));
       if (item.selection === 'edge') {
         const legs = item.legs?.length === 2 ? [worldDir(item.legs[0], t)!, worldDir(item.legs[1], t)!] as [THREE.Vector3, THREE.Vector3] : null;
-        for (const path of boundaries) if (path.length >= 2) seams.push({ path, legs, normal: worldDir(item.normal, t), joint: item.joint, range: item.range });
+        const legsAt = (item as Any).legs_at?.length === 2 ? [world((item as Any).legs_at[0], t), worldDir((item as Any).legs_at[1], t)!] as [THREE.Vector3, THREE.Vector3] : undefined;
+        for (const path of boundaries) if (path.length >= 2) seams.push({ path, legs, normal: worldDir(item.normal, t), joint: item.joint, range: item.range, legsAt });
       } else faceBoundaries.push(boundaries);
       if (draft || weldType === 'patch') {
         if (item.preview_mesh?.vertices?.length && item.preview_mesh.triangles?.length) {
@@ -946,7 +947,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     }
     const addBead = (path: THREE.Vector3[], seam: typeof seams[number]) => {
       if (path.length < 2 || pathLength(path) < 0.01) return;
-      const mesh = new THREE.Mesh(beadGeometry(path, { joint: seam.joint, legs: seam.legs, normal: seam.normal, size, minVisible, ripple: !String(w.process || '').startsWith('Laser') }), material);
+      const mesh = new THREE.Mesh(beadGeometry(path, { joint: seam.joint, legs: seam.legs, legsAt: seam.legsAt, normal: seam.normal, size, minVisible, ripple: !String(w.process || '').startsWith('Laser') }), material);
       mesh.userData.weldId = shape.id; mesh.renderOrder = 6; group.add(mesh);
     };
     // a weld can cover part of its seam: range = [from, to] mm along the seam

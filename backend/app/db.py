@@ -49,7 +49,7 @@ def init():
   existing={r[1] for r in c.execute('PRAGMA table_info(parts)').fetchall()}
   for column,definition in [('excluded','INTEGER DEFAULT 0'),('exclusion_reason',"TEXT DEFAULT ''"),('hidden','INTEGER DEFAULT 0'),('excluded_by',"TEXT DEFAULT ''"),('excluded_at',"TEXT DEFAULT ''")]:
    if column not in existing:c.execute(f'ALTER TABLE parts ADD COLUMN {column} {definition}')
-  for table,cols in {'parts':[('process_template_id',"TEXT DEFAULT ''"),('drawing_options',"TEXT DEFAULT '{}'"),('doc_reviewed',"INTEGER DEFAULT 0"),('doc_reviewed_by',"TEXT DEFAULT ''"),('doc_reviewed_at',"TEXT DEFAULT ''"),('reviewed_by',"TEXT DEFAULT ''"),('reviewed_at',"TEXT DEFAULT ''")],
+  for table,cols in {'parts':[('process_template_id',"TEXT DEFAULT ''"),('drawing_options',"TEXT DEFAULT '{}'"),('doc_reviewed',"INTEGER DEFAULT 0"),('doc_reviewed_by',"TEXT DEFAULT ''"),('doc_reviewed_at',"TEXT DEFAULT ''"),('reviewed_by',"TEXT DEFAULT ''"),('reviewed_at',"TEXT DEFAULT ''"),('alias',"TEXT DEFAULT ''")],
                      'shares':[('allow_cad','INTEGER DEFAULT 0')],
                      'assembly_steps':[('grp',"TEXT DEFAULT ''")],
                      'users':[('provider',"TEXT DEFAULT 'local'"),('oid',"TEXT DEFAULT ''"),('active','INTEGER DEFAULT 1'),('last_login',"TEXT DEFAULT ''"),('prefs',"TEXT DEFAULT '{}'")],

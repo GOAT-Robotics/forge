@@ -558,3 +558,43 @@ def test_prefix_rules_tolerate_exporter_noise():
     assert classify_prefix('_ISOGT_FRONT_LIDAR_ROD / Body 1', s) is None
     assert classify_name('11END_CLAMP^cTERMINAL_BLOCK_Av1t1t1T2CC') == 'purchased'
     assert classify_prefix('ANY NAME', {**s, 'prefix_strict': False}) is None
+
+
+def test_alias_scoped_job_order_nesting_and_cancel(tmp_path, monkeypatch):
+    import time, io, zipfile
+    monkeypatch.setattr(db, 'ROOT', tmp_path)
+    with TestClient(app) as client:
+        login_as(client, 'admin@example.com', 'admin')
+        p, rev, part, tid, d = released_project(client, tmp_path)
+        # alias: a short name, unique within the revision, searchable label
+        assert client.put(f"/api/parts/{part['id']}/alias", headers=H, json={'alias': '  Base   plate '}).json()['alias'] == 'Base plate'
+        assert client.get('/api/revisions/' + rev['id']).json()['parts'][0]['alias'] == 'Base plate'
+        # cancelling: a queued documents job is dropped at once; the import cannot be stopped
+        job = client.post(f"/api/revisions/{rev['id']}/documents", headers=H, json={}).json()['job_id']
+        c = client.post(f'/api/jobs/{job}/cancel', headers=H)
+        assert c.status_code == 200 and c.json()['status'] == 'cancelled'
+        assert client.post(f'/api/jobs/{job}/cancel', headers=H).status_code == 409
+        imp = db.row("SELECT id FROM jobs WHERE kind='import'")['id']
+        assert client.post(f'/api/jobs/{imp}/cancel', headers=H).status_code == 409
+        make_production_ready(client, rev, part)
+        # a job order for sheet metal only
+        jo = client.post(f"/api/projects/{p['id']}/job-orders", headers=H, json={'title': 'Laser batch', 'quantity': 3, 'parts': [{'part_id': part['id'], 'quantity': 5}], 'include_purchased': False})
+        assert jo.status_code == 200, jo.text
+        jo = jo.json()
+        assert {i['required'] for i in jo['items']} == {5} and jo['items'][0]['alias'] == 'Base plate'
+        # nesting of its sheet-metal parts, in the background
+        st = client.post(f"/api/job-orders/{jo['id']}/nesting", headers=H, json={'sheet_w': 1000, 'sheet_h': 500, 'margin': 10})
+        assert st.status_code == 200, st.text
+        for _ in range(100):
+            st = client.get(f"/api/job-orders/{jo['id']}/nesting").json()
+            if st['state'] != 'running':
+                break
+            time.sleep(.2)
+        assert st['state'] == 'ready', st
+        g = st['result']['groups'][0]
+        assert g['placed'] == 5 and g['sheets'][0]['parts'] == {'Base plate': 5}
+        z = client.get(f"/api/job-orders/{jo['id']}/nesting.zip")
+        assert z.status_code == 200 and 'nesting-summary.pdf' in zipfile.ZipFile(io.BytesIO(z.content)).namelist()
+        viewer = TestClient(app)
+        login_as(viewer, 'viewer@example.com', 'viewer')
+        assert viewer.post(f"/api/job-orders/{jo['id']}/nesting", headers=H, json={}).status_code == 403

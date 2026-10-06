@@ -47,7 +47,7 @@ def editable_revision(rid):
     r = get_rev(rid)
     if r['state'] != 'active' or r['status'] != 'ready':
         raise HTTPException(409, 'Only an active, ready revision can be edited. Upload a new revision for released designs.')
-    if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")', (rid,)):
+    if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running","cancelling")', (rid,)):
         raise HTTPException(409, 'A CAD job is active; wait for completion')
     return r
 
@@ -724,6 +724,13 @@ def clean_joint(rid, a: JointIn):
             clean['legs'] = [[float(x) for x in v] for v in f['legs']]
         if f.get('side') in ('inside', 'outside'):
             clean['side'] = f['side']
+        # a curved seam joined from several CAD edges: where its legs were measured, and the air side
+        la = f.get('legs_at')
+        if isinstance(la, list) and len(la) == 2 and all(isinstance(v, list) and len(v) == 3 and all(isinstance(x, (int, float)) for x in v) for v in la):
+            clean['legs_at'] = [[float(x) for x in v] for v in la]
+        al = f.get('access_local')
+        if isinstance(al, list) and len(al) == 3 and all(isinstance(x, (int, float)) for x in al):
+            clean['access_local'] = [float(x) for x in al]
         if isinstance(f.get('key'), str) and len(f['key']) <= 60:
             clean['key'] = f['key']
         # part of the seam only (mm along the seam from its start): manual welds, single stitches and tacks
@@ -879,6 +886,26 @@ def bend_sim_build(rid, p, path):
     path.write_text(json.dumps(sim, separators=(',', ':')))
 
 
+class AliasIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    alias: str = Field(default='', max_length=40)
+
+
+@router.put('/api/parts/{pid}/alias')
+def set_alias(pid: str, a: AliasIn, request: Request):
+    """A short, easy name for a part ("BASE PLATE", "SM-12") shown beside the CAD name, searchable, and used on job
+    orders and nesting labels. Unique within the revision; it is a label only (drawings keep the CAD name)."""
+    p = get_part(pid)
+    u = revision_access(request, p['revision_id'], True, 'part.edit')
+    alias = re.sub(r'\s+', ' ', a.alias).strip()
+    if alias and db.row('SELECT id FROM parts WHERE revision_id=? AND id!=? AND lower(alias)=lower(?)', (p['revision_id'], pid, alias)):
+        raise HTTPException(409, f'"{alias}" is already the alias of another part in this revision')
+    with db.connect() as c:
+        c.execute('UPDATE parts SET alias=? WHERE id=?', (alias, pid))
+        db.audit(c, u['name'], 'part.alias', {'part': pid, 'alias': alias}, p['revision_id'])
+    return {'ok': True, 'alias': alias}
+
+
 class BendSimToggle(BaseModel):
     model_config = ConfigDict(extra='forbid')
     ids: list[str] = Field(min_length=1, max_length=2000)
@@ -954,7 +981,7 @@ def set_bend_order(rid: str, pid: str, a: BendOrder, request: Request):
         (db.revdir(rid) / 'manufacturing-pack.zip').unlink(missing_ok=True)
         with db.connect() as c:
             c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?", (pid,))
-            if not c.execute('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")', (rid,)).fetchone():
+            if not c.execute('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running","cancelling")', (rid,)).fetchone():
                 job = db.uid()
                 c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)', (job, rid, 'documents', 'queued', db.now(), '', json.dumps({'part_ids': [pid]})))
     try:
@@ -1074,8 +1101,8 @@ def job_order_items(jo_id, rid, quantity, selection, include_purchased):
         single_part_weld = j['kind'] == 'weld' and len(d['parts']) == 1
         if len(names) < (1 if single_part_weld else 2):
             continue
-        if single_part_weld and wanted is not None and d['parts'][0] not in wanted:
-            continue
+        if wanted is not None and any(x not in wanted for x in d['parts']):
+            continue   # a partial job order (sheet metal only, a selection) carries only welds among its own parts
         what = ('Weld ' + d['weld'].get('process', '') + ' ' + d['weld'].get('type', '') + (' a' + d['weld']['size'] if d['weld'].get('size') else '')) if j['kind'] == 'weld' else j['kind'].replace('_', ' ').title()
         required = (wanted[d['parts'][0]] if wanted is not None else parts[d['parts'][0]]['quantity'] * quantity) if single_part_weld else quantity
         rows.append((db.uid(), jo_id, 'joint:' + j['id'], ' + '.join(names)[:300], 'assembly', 1000 + d.get('sequence', 0), what.strip(), 'assembly', required))
@@ -1103,6 +1130,9 @@ def jo_payload(jo, full=False):
     except ValueError:
         jo['overdue'] = False
     if full:
+        aliases = {r['id']: r['alias'] for r in db.rows('SELECT id, alias FROM parts WHERE revision_id=?', (jo['revision_id'],)) if r.get('alias')}
+        for i in items:
+            i['alias'] = aliases.get(i['part_id'], '')
         jo['items'] = items
         jo['events'] = db.rows('SELECT * FROM jo_events WHERE job_order_id=? ORDER BY created DESC LIMIT 300', (jo['id'],))
         stations = {}
@@ -1298,6 +1328,127 @@ def record_progress(jid: str, iid: str, a: Progress, request: Request):
 class Issue(BaseModel):
     model_config = ConfigDict(extra='forbid')
     body: str = Field(min_length=3, max_length=3000)
+
+
+# ---------------------------------------------------------------------------- nesting
+class NestIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    sheet_w: float = Field(default=2500, ge=200, le=12000)
+    sheet_h: float = Field(default=1250, ge=200, le=6000)
+    gap: float = Field(default=0, ge=0, le=50)        # 0 = automatic (2 x thickness, at least 3 mm)
+    margin: float = Field(default=10, ge=0, le=200)
+    rotate: bool = True
+
+
+def nest_dir(jid):
+    return db.ROOT / 'job-orders' / jid / 'nesting'
+
+
+def _nest_status(jid):
+    import time as _t
+    f = nest_dir(jid) / 'status.json'
+    if not f.exists():
+        return {'state': 'missing'}
+    st = json.loads(f.read_text())
+    if st.get('state') == 'running' and _t.time() - f.stat().st_mtime > 600:
+        st = {**st, 'state': 'failed', 'error': 'Nesting stopped (server restarted); run it again'}   # progress writes keep a live run fresh
+    return st
+
+
+def _nest_parts(j):
+    """Sheet-metal parts of a job order with the count to cut and their developed blank."""
+    rid = j['revision_id']
+    need = {}
+    for i in db.rows("SELECT part_id, required FROM jo_items WHERE job_order_id=? AND category='sheet_metal' AND kind NOT IN ('procurement','assembly')", (j['id'],)):
+        need[i['part_id']] = max(need.get(i['part_id'], 0), i['required'])
+    parts, missing = [], []
+    for pid, qty in need.items():
+        p = db.row('SELECT * FROM parts WHERE id=?', (pid,))
+        if not p or qty <= 0:
+            continue
+        g, spec = json.loads(p['geometry']), json.loads(p['spec'])
+        label = p.get('alias') or p['name']
+        f = db.revdir(rid) / 'parts' / pid / 'flat.json'
+        if not f.exists():
+            storage.restore(rid, f'parts/{pid}/flat.json', f)
+        if not f.exists():
+            missing.append({'label': label, 'qty': qty, 'reason': 'no flat pattern (generate documents)'})
+            continue
+        parts.append({'key': pid, 'label': label, 'material': spec.get('material', ''), 'thickness': g.get('thickness') or 0, 'qty': qty, 'flat': json.loads(f.read_text())})
+    return parts, missing
+
+
+@router.get('/api/job-orders/{jid}/nesting')
+def nesting_status(jid: str, request: Request):
+    user(request)
+    get_jo(jid)
+    st = _nest_status(jid)
+    summary = nest_dir(jid) / 'summary.json'
+    if st.get('state') == 'ready' and summary.exists():
+        st['result'] = json.loads(summary.read_text())
+    return st
+
+
+@router.post('/api/job-orders/{jid}/nesting')
+def start_nesting(jid: str, a: NestIn, request: Request):
+    """Nest the sheet-metal parts of a job order onto stock sheets (per material and thickness), in the background."""
+    import threading
+    u = user(request)
+    j = get_jo(jid)
+    if not (can(u, 'joborder.create', j['project_id']) or can(u, 'joborder.update', j['project_id'])):
+        raise HTTPException(403, 'Job order permission required')
+    if _nest_status(jid).get('state') == 'running':
+        raise HTTPException(409, 'Nesting is already running for this job order')
+    parts, missing = _nest_parts(j)
+    if not parts:
+        raise HTTPException(422, 'No sheet-metal parts with a flat pattern in this job order' + (f' ({len(missing)} need their documents generated)' if missing else ''))
+    d = nest_dir(jid)
+    d.mkdir(parents=True, exist_ok=True)
+    opts = a.model_dump()
+    base = {'options': opts, 'started': db.now(), 'by': u['name'], 'missing': missing}
+
+    def write(st):
+        tmp = d / 'status.json.tmp'
+        tmp.write_text(json.dumps({**base, **st}))
+        tmp.replace(d / 'status.json')
+
+    write({'state': 'running', 'progress': 0})
+
+    def work():
+        from .nesting import run
+        try:
+            title = f"{j['project_code'] or j['project_name']} JO-{j['number']:03d} {j['title']}"
+            last = [0.0]
+
+            def progress(x):
+                if x - last[0] >= .03:
+                    last[0] = x
+                    write({'state': 'running', 'progress': round(100 * x)})
+            summary, data = run(parts, a.sheet_w, a.sheet_h, a.gap, a.margin, a.rotate, title, progress)
+            summary['missing'] = missing
+            (d / 'nesting.zip').write_bytes(data)
+            (d / 'summary.json').write_text(json.dumps(summary))
+            write({'state': 'ready', 'progress': 100, 'finished': db.now()})
+        except Exception as e:   # noqa: BLE001 - reported to the user
+            write({'state': 'failed', 'error': str(e)[:500]})
+    threading.Thread(target=work, daemon=True).start()
+    with db.connect() as c:
+        db.audit(c, u['name'], 'joborder.nesting', {'job_order': jid, **opts}, j['revision_id'])
+    return _nest_status(jid)
+
+
+@router.get('/api/job-orders/{jid}/nesting.zip')
+def nesting_zip(jid: str, request: Request):
+    u = user(request)
+    j = get_jo(jid)
+    require(u, 'cad.download', j['project_id'])
+    f = nest_dir(jid) / 'nesting.zip'
+    if not f.exists() or _nest_status(jid).get('state') != 'ready':
+        raise HTTPException(404, 'Run the nesting first')
+    with db.connect() as c:
+        db.audit(c, u['name'], 'cad.downloaded', {'nesting': jid}, j['revision_id'])
+    name = re.sub(r'[^A-Za-z0-9_-]+', '-', f"JO-{j['number']:03d}-nesting") + '.zip'
+    return Response(f.read_bytes(), media_type='application/zip', headers={'Content-Disposition': f'attachment; filename="{name}"', 'Cache-Control': 'no-store'})
 
 
 @router.post('/api/job-orders/{jid}/items/{iid}/issue')

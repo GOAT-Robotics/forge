@@ -56,12 +56,12 @@ def classifiable(rid):
  generate (the documents job re-checks categories when it finishes and marks changed parts for regeneration)."""
  r=get_rev(rid)
  if r['state']!='active' or r['status']!='ready':raise HTTPException(409,'Part types can be changed on the active revision before release. Upload a new revision to change a released design.')
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="import" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'The CAD import is still running; wait for it to finish')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="import" AND status IN ("queued","running","cancelling")',(rid,)):raise HTTPException(409,'The CAD import is still running; wait for it to finish')
  return r
 def mutable(rid):
  r=get_rev(rid)
  if r['state']!='active' or r['status']!='ready':raise HTTPException(409,'Only an active, ready revision can be edited. Upload a new revision for archived or released designs.')
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'A CAD job is active; wait for completion')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running","cancelling")',(rid,)):raise HTTPException(409,'A CAD job is active; wait for completion')
  return r
 def deserialize(p):
  p['geometry']=json.loads(p['geometry']);p['spec']=json.loads(p['spec']);return p
@@ -440,7 +440,7 @@ def drawing_state(p):
 @app.get('/api/parts/{pid}/drawing')
 def editable_drawing(pid:str,request:Request):
  p=get_part(pid);access=revision_access(request,p['revision_id']);r=get_rev(p['revision_id'])
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running")',(p['revision_id'],)):raise HTTPException(409,'Wait for drawing generation to complete')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running","cancelling")',(p['revision_id'],)):raise HTTPException(409,'Wait for drawing generation to complete')
  _,scene,edits,version=drawing_state(p)
  from . import pictorials
  from .drawings import attach_view_lines
@@ -708,12 +708,29 @@ def set_production(rid:str,pid:str,a:ProductionEdit,request:Request):
 async def documents(rid:str,request:Request):
  u=revision_access(request,rid,True,'drawing.edit');r=get_rev(rid)
  if r['status']!='ready':raise HTTPException(409,'Only draft revisions can regenerate documents; released artifacts are locked')
- if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Job already active')
+ if db.row('SELECT id FROM jobs WHERE revision_id=? AND kind NOT IN ("instructions","welding") AND status IN ("queued","running","cancelling")',(rid,)):raise HTTPException(409,'Job already active')
  body=await request.json()
  if set(body)-{'part_id'}:raise HTTPException(422,'Only part_id is accepted; use the release workflow for releases')
  if body.get('part_id') and get_part(body['part_id'])['revision_id']!=rid:raise HTTPException(422,'Part outside revision')
  with db.connect() as c:id=enqueue(c,rid,'documents',body);db.audit(c,u['name'],'documents.requested',body,rid)
  return {'job_id':id}
+@app.post('/api/jobs/{jid}/cancel')
+def cancel_job(jid:str,request:Request):
+ """Stop drawing generation (or any document job) part-way: a queued job is dropped, a running one is killed
+ within a second or two. Parts the run had not reached keep their drawings; parts it touched must be regenerated."""
+ j=db.row('SELECT * FROM jobs WHERE id=?',(jid,))
+ if not j:raise HTTPException(404,'Job not found')
+ u=revision_access(request,j['revision_id'],True,'drawing.edit')
+ if j['kind']=='import':raise HTTPException(409,'The CAD import cannot be stopped part-way')
+ with db.connect() as c:
+  c.execute('BEGIN IMMEDIATE');cur=c.execute('SELECT status FROM jobs WHERE id=?',(jid,)).fetchone()['status']
+  if cur=='queued':
+   c.execute('UPDATE jobs SET status="cancelled",error=? WHERE id=?',('Cancelled by '+u['name'],jid))
+   c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',('Cancelled',j['revision_id']))
+  elif cur=='running':c.execute('UPDATE jobs SET status="cancelling",error=? WHERE id=?',('Cancelled by '+u['name'],jid))
+  elif cur!='cancelling':raise HTTPException(409,'The job has already finished')
+  db.audit(c,u['name'],'job.cancelled',{'job':jid,'kind':j['kind']},j['revision_id'])
+ return {'ok':True,'status':'cancelled' if cur=='queued' else 'cancelling'}
 @app.get('/api/revisions/{rid}/release-check')
 def release_check(rid:str,request:Request):
  revision_access(request,rid);r=get_rev(rid);reasons=[];rules=json.loads(r['manifest']).get('rules_snapshot',db.DEFAULT_RULES)
@@ -841,7 +858,7 @@ def revision_asset(rid:str,filename:str,request:Request):
  if filename=='assembly.glb':raise HTTPException(403,'3D models are streamed to the Forge viewer only')
  if filename in ('manufacturing-pack.zip','assembly.dxf'):cad_download(access,rid)
  if filename in ('manufacturing-pack.zip','machining-drawings.pdf','sheet-metal-drawings.pdf') and (db.revdir(rid)/'.documents-stale').exists():raise HTTPException(409,'Drawing edits changed; regenerate the manufacturing pack')
- if filename.endswith(('.pdf','.dxf','.zip')) and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running")',(rid,)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
+ if filename.endswith(('.pdf','.dxf','.zip')) and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running","cancelling")',(rid,)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
  if filename not in ('assembly.glb','assembly.png','assembly.pdf','assembly.dxf','manufacturing-pack.zip','instances.json','machining-drawings.pdf','sheet-metal-drawings.pdf'):raise HTTPException(404,'Asset not found')
  p=db.revdir(rid)/filename
  if not p.exists():storage.restore(rid,filename,p)
@@ -852,7 +869,7 @@ def part_asset(pid:str,filename:str,request:Request):
  p=get_part(pid);access=revision_access(request,p['revision_id'])
  if filename in ('model.glb','flat.glb'):raise HTTPException(403,'3D models are streamed to the Forge viewer only')
  if filename in ('part.step','drawing.dxf','flat.dxf'):cad_download(access,p['revision_id'])
- if filename not in ('model.glb','thumb.png') and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running")',(p['revision_id'],)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
+ if filename not in ('model.glb','thumb.png') and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running","cancelling")',(p['revision_id'],)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
  if filename not in ('model.glb','thumb.png','drawing.pdf','drawing.dxf','review.pdf','flat.glb','flat.dxf','flat.json','projections.json','part.step'):raise HTTPException(404,'Asset not found')
  f=db.revdir(p['revision_id'])/'parts'/pid/filename
  if filename in ('drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','flat.glb') and (f.parent/'.drawing-invalid').exists():raise HTTPException(409,'Part specification changed; regenerate documents')

@@ -46,7 +46,7 @@ export function resample(path: THREE.Vector3[], step: number) {
  *  - other:  a round bead centred on the seam
  * `size` is the throat a (mm); `minVisible` keeps the bead readable at assembly zoom.
  */
-export function beadGeometry(path: THREE.Vector3[], opts: { joint?: string; legs?: [THREE.Vector3, THREE.Vector3] | null; normal?: THREE.Vector3 | null; size: number; minVisible: number; ripple?: boolean }) {
+export function beadGeometry(path: THREE.Vector3[], opts: { joint?: string; legs?: [THREE.Vector3, THREE.Vector3] | null; legsAt?: [THREE.Vector3, THREE.Vector3]; normal?: THREE.Vector3 | null; size: number; minVisible: number; ripple?: boolean }) {
   const a = Math.max(opts.size, opts.minVisible);
   const pts = resample(path, Math.max(a * 0.45, pathLength(path) / 500));
   const n = pts.length;
@@ -54,7 +54,20 @@ export function beadGeometry(path: THREE.Vector3[], opts: { joint?: string; legs
   if (opts.joint !== 'butt' && opts.legs) {
     const [u, v] = opts.legs;
     const z = a * Math.SQRT2; // leg length for throat a
-    profile = () => [new THREE.Vector3(), u.clone().multiplyScalar(z), u.clone().add(v).multiplyScalar(z * 0.58), v.clone().multiplyScalar(z)];
+    if (opts.legsAt) {
+      // a curved seam: the legs were measured at one point; turn them with the seam's tangent from there
+      const [at, t0] = opts.legsAt;
+      let k0 = 0, d0 = Infinity;
+      pts.forEach((p, i) => { const d = p.distanceToSquared(at); if (d < d0) { d0 = d; k0 = i; } });
+      const tk = pts[Math.min(n - 1, k0 + 1)].clone().sub(pts[Math.max(0, k0 - 1)]).normalize();
+      const sign = tk.dot(t0) < 0 ? -1 : 1;   // path stored in the other direction
+      const ref = t0.clone().normalize();
+      profile = (_i, t) => {
+        const q = new THREE.Quaternion().setFromUnitVectors(ref, t.clone().multiplyScalar(sign).normalize());
+        const uu = u.clone().applyQuaternion(q), vv = v.clone().applyQuaternion(q);
+        return [new THREE.Vector3(), uu.clone().multiplyScalar(z), uu.clone().add(vv).multiplyScalar(z * 0.58), vv.clone().multiplyScalar(z)];
+      };
+    } else profile = () => [new THREE.Vector3(), u.clone().multiplyScalar(z), u.clone().add(v).multiplyScalar(z * 0.58), v.clone().multiplyScalar(z)];
   } else if (opts.joint === 'butt' && opts.normal) {
     const nn = opts.normal.clone().normalize();
     const w = Math.max(a * 1.7, opts.minVisible * 1.5);

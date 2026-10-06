@@ -213,6 +213,7 @@ def process_import(rid):
     c.execute('INSERT INTO parts(id,revision_id,name,category,quantity,geometry,spec,reviewed,hidden,excluded,exclusion_reason,excluded_by,excluded_at,process_template_id,drawing_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,rid,name,p['category'],p['quantity'],json.dumps(g),json.dumps(spec),0,hidden,excluded,exclusion_reason,excluded_by,excluded_at,ptpl,dopt))
     # inspection plan (critical flags, specified limits, balloon positions) follows an unchanged part
     if old:pid_map[old['id']]=(pid,old['geometry'].get('fingerprint')==g['fingerprint'],len(leaf['instances']))
+    if old and old.get('alias'):c.execute('UPDATE parts SET alias=? WHERE id=?',(old['alias'],pid))   # the easy name follows the part
     if old and old['geometry'].get('fingerprint')==g['fingerprint']:
      c.execute('INSERT OR IGNORE INTO char_overrides(part_id,key,data,actor,updated) SELECT ?,key,data,actor,updated FROM char_overrides WHERE part_id=?',(pid,old['id']))
  if not parts:raise ValueError('No usable solid bodies found; export solids as STEP or BREP')
@@ -260,7 +261,9 @@ def drawing_options(p):
 def draw_part(p,rev,folder,rules,settings):
  """One part's drawing set (runs in a worker process). Returns the updated geometry record."""
  from .cad import read_brep
- pf=Path(folder)/'parts'/p['id'];export_flat(read_brep(pf/'shape.brep'),p['geometry'],p['spec'],pf,p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}'))
+ pf=Path(folder)/'parts'/p['id']
+ if os.getenv('FORGE_JOB_ID'):(pf/'.drawing-job').write_text(os.environ['FORGE_JOB_ID'])   # lets a cancel know what this run touched
+ export_flat(read_brep(pf/'shape.brep'),p['geometry'],p['spec'],pf,p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}'))
  make_part(p,rev,pf,rules,settings=settings)
  (pf/'.drawing-invalid').unlink(missing_ok=True)
  if not (pf/'thumb.png').exists():
@@ -397,32 +400,41 @@ def run_once():
    from .job_timeout import run_bounded
    timeout=float(os.getenv('FORGE_DOCUMENT_TIMEOUT_SECONDS','1800'))
    if not math.isfinite(timeout) or timeout<=0:raise ValueError('FORGE_DOCUMENT_TIMEOUT_SECONDS must be positive')
-   run_bounded([sys.executable,'-m','app.worker','--job',job['id']],timeout,env={**os.environ,'DATA_DIR':str(db.ROOT),'PYTHONPATH':str(Path(__file__).resolve().parent.parent)+os.pathsep+os.getenv('PYTHONPATH','')})
+   stop=lambda:(db.row('SELECT status FROM jobs WHERE id=?',(job['id'],)) or {}).get('status')=='cancelling'
+   run_bounded([sys.executable,'-m','app.worker','--job',job['id']],timeout,env={**os.environ,'DATA_DIR':str(db.ROOT),'PYTHONPATH':str(Path(__file__).resolve().parent.parent)+os.pathsep+os.getenv('PYTHONPATH','')},should_stop=stop)
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
    c.execute('UPDATE revisions SET progress=100,message=? WHERE id=?',({'import':'Analysis complete','instructions':'Assembly instructions ready','welding':'Welding document ready'}.get(job['kind'],'Documents generated'),job['revision_id']))
  except Exception as e:
-  traceback.print_exc()
+  from .job_timeout import JobCancelled
+  cancelled=isinstance(e,JobCancelled)
+  if not cancelled:traceback.print_exc()
   payload=json.loads(job['payload'])
   if job['kind']=='documents' and not payload.get('assembly_only'):
    ids=payload.get('part_ids') or ([payload['part_id']] if payload.get('part_id') else [p['id'] for p in db.rows('SELECT id FROM parts WHERE revision_id=?',(job['revision_id'],))])
    for pid in ids:
     part_folder=db.revdir(job['revision_id'])/'parts'/pid;part_folder.mkdir(parents=True,exist_ok=True)
-    (part_folder/'.drawing-invalid').write_text('Document generation failed; regenerate before review')
+    # a cancelled run only touched the parts it started; parts it never reached keep their drawings
+    if cancelled:
+     mark=part_folder/'.drawing-job'
+     if not mark.exists() or mark.read_text().strip()!=job['id']:continue
+    (part_folder/'.drawing-invalid').write_text('Document generation '+('cancelled' if cancelled else 'failed')+'; regenerate before review')
   if payload.get('release'):
    # Never leave partial outputs stamped RELEASED after a failed release.
    folder=db.revdir(job['revision_id'])
    for artifact in folder.rglob('*'):
     if artifact.suffix in ('.pdf','.dxf','.zip') or artifact.name in ('flat.json','flat.glb','projections.json','drawing-scene.json','characteristics.json'):artifact.unlink(missing_ok=True)
   with db.connect() as c:
-   c.execute('UPDATE jobs SET status="failed",error=? WHERE id=?',(str(e)[:1000],job['id']))
-   c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',('Job failed: '+str(e)[:900],job['revision_id']))
+   who=(db.row('SELECT error FROM jobs WHERE id=?',(job['id'],)) or {}).get('error') or ''
+   c.execute('UPDATE jobs SET status=?,error=? WHERE id=?',('cancelled' if cancelled else 'failed',(who or 'Cancelled') if cancelled else str(e)[:1000],job['id']))
+   c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',(('Cancelled' if cancelled else 'Job failed: '+str(e)[:900]),job['revision_id']))
    if json.loads(job['payload']).get('release'):c.execute('UPDATE revisions SET status="ready",release_by=NULL,release_at=NULL WHERE id=?',(job['revision_id'],))
    if job['kind']=='import':c.execute('UPDATE revisions SET status="failed" WHERE id=?',(job['revision_id'],))
  return True
 if __name__=='__main__':
  import sys
  if len(sys.argv)==3 and sys.argv[1]=='--job':
+  os.environ['FORGE_JOB_ID']=sys.argv[2]
   perform_job(db.row('SELECT * FROM jobs WHERE id=?',(sys.argv[2],)))
  else:
   db.init()
