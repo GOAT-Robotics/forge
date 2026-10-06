@@ -1,5 +1,26 @@
 import React from 'react';
 import type { Any } from './constants';
+import { api } from './api';
+
+/**
+ * All seams between the given parts. The server searches pair by pair within a time budget per call; a large
+ * selection (covers with hundreds of edges) takes several calls — keep calling with the finished pairs until
+ * none are left. `onProgress` gets the seams so far, so they appear while the rest is searched.
+ */
+export async function findAllSeams(revision: string, parts: string[], onProgress?: (r: Any) => void, alive: () => boolean = () => true) {
+  let done: string[] = [], seams: Any[] = [], r: Any = {}, notes: string[] = [];
+  for (let call = 0; call < 40 && alive(); call++) {
+    r = await api(`/revisions/${revision}/weld-seams`, 'POST', { parts, done });
+    const keys = new Set(seams.map(s => s.key));
+    seams = [...seams, ...(r.seams || []).filter((s: Any) => !keys.has(s.key))];
+    if (r.message && r.partial) notes.push(r.message);
+    if (!r.partial) break;
+    done = r.done || [];
+    onProgress?.({ ...r, seams, searched: (r.total || 0) - (r.pending || 0) });
+  }
+  const message = [...new Set([...notes, r.message].filter(Boolean))].join(' ');
+  return { ...r, seams, partial: false, message: seams.length || message ? message : r.message };
+}
 
 export type Weldability = { level: 'good' | 'review' | 'blocked'; label: string; reason: string };
 

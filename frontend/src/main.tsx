@@ -17,7 +17,7 @@ import { Dashboard, JobOrdersPage, JobOrderDialog, JobOrderDetail, TemplatesPage
 import { categories, categoryColors, date, fmt } from './constants';
 import type { Any } from './constants';
 import { Select } from './controls';
-import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams } from './welding';
+import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams, findAllSeams } from './welding';
 import { ReadinessWizard } from './readiness';
 import BulkReady from './bulkReady';
 import { JobDocButton } from './docJob';
@@ -317,7 +317,7 @@ function App() {
     const request = ++detectRequest.current;
     setDetecting(true); setDetectMessage('');
     try {
-      const r = await api(`/revisions/${rev.id}/weld-seams`, 'POST', { parts: ids });
+      const r = await findAllSeams(rev.id, ids, p => { if (request === detectRequest.current) { setSeamCandidates(p.seams); setDetectMessage(`Searching seams… ${p.searched} of ${p.total} component pairs`); } }, () => request === detectRequest.current);
       if (request !== detectRequest.current) return;
       setSeamCandidates(r.seams || []); setDetectMessage(r.message || '');
       const open = (r.seams || []).filter((s: Any) => !s.minor && !weldedSeams.has(seamKey(s)));

@@ -614,11 +614,13 @@ def edge_at(pid: str, a: FaceAt, request: Request):
 
 class SeamQuery(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    parts: list[str] = Field(min_length=1, max_length=12)
+    parts: list[str] = Field(min_length=1, max_length=60)  # searched pair by pair across calls
     # optional: restrict a part to one occurrence (the one the engineer picked in 3D)
     occurrences: dict[str, int] = Field(default_factory=dict)
     # optional: two picked faces [{part, occurrence, index}] that should be joined even though they do not touch
     faces: list[dict] = Field(default_factory=list, max_length=2)
+    # body pairs already searched by an earlier call of a search that ran out of time (continue from there)
+    done: list[str] = Field(default_factory=list, max_length=400)
 
 
 @router.post('/api/revisions/{rid}/weld-seams')
@@ -671,14 +673,20 @@ def weld_seams(rid: str, a: SeamQuery, request: Request):
     if single and not bodies:
         bodies = load_bodies(folder, parts, instances, [(ids[0], a.occurrences.get(ids[0], 0))], keep_all=True)
     # one component: also the gaps it closes on itself (corners of a bent box)
-    seams = find_seams(bodies, self_mode=single) if bodies else []
-    partial = bool(bodies) and not getattr(find_seams, 'complete', True)
+    stats: dict = {}
+    seams = find_seams(bodies, self_mode=single, budget=20.0, done=a.done, stats=stats) if bodies else []
     for s in seams:
         s['part_name'], s['other_name'] = names.get(s['part'], ''), names.get(s['other_part'], '')
-    if partial:
-        return {'seams': seams, 'bodies': len(bodies), 'partial': True,
-                'message': f'Stopped after 25 s with {len(seams)} seam(s) found — select fewer components (or pick the faces) for a complete search.'}
-    return {'seams': seams, 'bodies': len(bodies),
+    body_names = {f'{b.pid}:{b.occurrence}': names.get(b.pid, b.pid) for b in bodies}
+    slow = [' + '.join(body_names.get(x, x) for x in k.split('|')) for k in stats.get('skipped', [])]
+    note = (f'Too complex to search automatically: {"; ".join(slow[:4])}{"…" if len(slow) > 4 else ""} — pick the two faces to join there.' if slow else '')
+    if stats.get('pending'):
+        # the client calls again with `done` and adds what the next call finds
+        return {'seams': seams, 'bodies': len(bodies), 'partial': True, 'done': stats['done'],
+                'pending': stats['pending'], 'total': stats['total'], 'message': note}
+    if note:
+        return {'seams': seams, 'bodies': len(bodies), 'pending': 0, 'total': stats.get('total', 0), 'message': note}
+    return {'seams': seams, 'bodies': len(bodies), 'pending': 0, 'total': stats.get('total', 0),
             'message': '' if seams else ('No open seams on this component. Add the component(s) it is welded to, or pick the two faces to join.' if single else 'These components do not touch in the CAD assembly and no gap small enough to weld (≤ 1.5 × plate thickness) was found. Pick the two faces to join to bridge a larger gap.')}
 
 

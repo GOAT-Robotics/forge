@@ -20,8 +20,8 @@ import numpy as np
 from .cad import explore, read_brep, sample_edge, xyz, TopAbs_EDGE, TopAbs_FACE
 
 TOL = 0.2          # mm: assembly contact tolerance
-MAX_PAIRS = 80     # occurrence pairs examined per request
-MAX_SEAMS = 400
+MAX_PAIRS = 400    # occurrence pairs examined per search (spread over several calls)
+MAX_SEAMS = 400    # per call
 
 
 def _trsf(T):
@@ -50,6 +50,39 @@ def _dist(a, b):
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     d = BRepExtrema_DistShapeShape(a, b)
     return d.Value() if d.IsDone() else math.inf
+
+
+def _edge_dist(edge, target, limit, body=None, cand=()):
+    """Distance from an edge to `target`, or inf when it is certainly more than `limit`.
+
+    BRepExtrema on an edge far from a big curved face can take 100+ ms; sampled points settle that: the
+    distance changes by at most the arc length between two samples, so when every point sampled `step`
+    apart is further than limit + step / 2, the whole edge is. A point is first checked against the
+    bounding boxes of the candidate faces (`body.face_boxes[cand]`, numpy), then exactly."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_AbscissaPoint, GCPnts_UniformAbscissa
+    from OCP.TopoDS import TopoDS
+    try:
+        c = BRepAdaptor_Curve(TopoDS.Edge(edge) if hasattr(TopoDS, 'Edge') else TopoDS.Edge_s(edge))
+        length = GCPnts_AbscissaPoint.Length_s(c)
+        n = max(2, min(40, int(math.ceil(length / 6.0)) + 1))
+        u = GCPnts_UniformAbscissa(c, n)
+        if not (u.IsDone() and u.NbPoints() >= 2):
+            return _dist(edge, target)
+        pts = np.array([[q.X(), q.Y(), q.Z()] for q in (c.Value(u.Parameter(i)) for i in range(1, u.NbPoints() + 1))])
+    except Exception:
+        return _dist(edge, target)
+    reach = limit + length / (len(pts) - 1) / 2 + 1e-6
+    if body is not None and len(cand):
+        lo, hi = body.box_array[0][list(cand)], body.box_array[1][list(cand)]
+        gap = np.maximum(lo[None] - pts[:, None], 0) + np.maximum(pts[:, None] - hi[None], 0)
+        close = np.linalg.norm(gap, axis=2).min(1) <= reach + TOL
+        pts = pts[close]
+    order = sorted(range(len(pts)), key=lambda i: abs(i - (len(pts) - 1) / 2))   # middle first
+    for i in order:
+        if _dist(_vertex(pts[i]), target) <= reach:
+            return _dist(edge, target)
+    return math.inf
 
 
 def _vertex(p):
@@ -97,6 +130,11 @@ class Body:
             self.edges.append((i, e))
         self.faces = list(explore(self.shape, TopAbs_FACE))
         self.face_boxes = [_box(f, TOL) for f in self.faces]
+        # the same boxes as two (n, 3) arrays (min corners, max corners) for vectorised tests
+        lo = [fb.CornerMin() if not fb.IsVoid() else None for fb in self.face_boxes]
+        hi = [fb.CornerMax() if not fb.IsVoid() else None for fb in self.face_boxes]
+        self.box_array = (np.array([(p.X(), p.Y(), p.Z()) if p else (-1e9,) * 3 for p in lo], float).reshape(-1, 3),
+                          np.array([(p.X(), p.Y(), p.Z()) if p else (1e9,) * 3 for p in hi], float).reshape(-1, 3))
         self.face_edges = [list(explore(f, TopAbs_EDGE)) for f in self.faces]
         self._edge_faces = {}
         for i, edges in enumerate(self.face_edges):
@@ -191,7 +229,7 @@ def _seams_on(a: Body, b: Body, deadline=None):
         if not cand:
             continue
         target = _compound([b.faces[i] for i in cand])
-        if _dist(edge, target) > TOL:
+        if _edge_dist(edge, target, TOL, b, cand) > TOL:
             continue
         pts = sample_edge(edge, .1)
         if len(pts) == 2:  # straight edge: sample along it
@@ -298,7 +336,7 @@ def _gap_seams(a: Body, b: Body, max_gap: float, edges=None, target=None, self_m
         if not cand:
             continue
         faces = [_compound([b.faces[i] for i in cand])]
-        if _dist(edge, faces[0]) > max_gap + 1e-3:
+        if _edge_dist(edge, faces[0], max_gap + 1e-3, b, cand) > max_gap + 1e-3:
             continue
         pts = sample_edge(edge, .1)
         if len(pts) == 2:
@@ -372,10 +410,18 @@ def suggested_size(t1, t2):
     return max(a, 3.0) if t >= 6 else max(a, 1.0)
 
 
-def find_seams(bodies: list[Body], self_mode=False, budget=25.0):
+def pair_key(a: Body, b: Body) -> str:
+    return f'{a.pid}:{a.occurrence}|{b.pid}:{b.occurrence}'
+
+
+def find_seams(bodies: list[Body], self_mode=False, budget=25.0, done=(), stats=None):
     """Seams between every pair of overlapping bodies: contact seams (edges lying on the other body) and
     gap seams (edges alongside the other body across a small gap). With `self_mode` also the gaps inside
-    each body (a bent part closing on itself)."""
+    each body (a bent part closing on itself).
+
+    Searched one pair at a time (contact, then gap seams) within `budget` seconds. Pairs listed in `done`
+    were searched by an earlier call and are skipped; `stats` (a dict) receives `done` (every finished pair),
+    `pending` (pairs left) and `skipped` (pairs too slow to search), so a caller continues where the budget stopped."""
     pairs = []
     for i, a in enumerate(bodies):
         for b in bodies[i + 1:]:
@@ -391,20 +437,32 @@ def find_seams(bodies: list[Body], self_mode=False, budget=25.0):
             if len(seams) < MAX_SEAMS and not any(_same(s, t) for t in seams):
                 seams.append(s)
     import time
-    deadline = time.monotonic() + budget if budget else None
-    complete = True
-    try:
-        for a, b, g in pairs:
-            add(_seams_on(a, b, deadline) + _seams_on(b, a, deadline))
-        for a, b, g in pairs:
-            add(_gap_seams(a, b, g, deadline=deadline) + _gap_seams(b, a, g, deadline=deadline))
-        if self_mode:
-            for a in bodies[:4]:
-                add(_gap_seams(a, a, auto_gap(a.thickness), self_mode=True, deadline=deadline))
-    except Budget:
-        complete = False
+    start = time.monotonic()
+    finished = set(done)
+    todo = [(pair_key(a, b), lambda a=a, b=b, g=g: _seams_on(a, b, dl[0]) + _seams_on(b, a, dl[0]) + _gap_seams(a, b, g, deadline=dl[0]) + _gap_seams(b, a, g, deadline=dl[0]))
+            for a, b, g in pairs]
+    if self_mode:
+        todo += [(f'self:{a.pid}:{a.occurrence}', lambda a=a: _gap_seams(a, a, auto_gap(a.thickness), self_mode=True, deadline=dl[0])) for a in bodies[:4]]
+    dl = [None]
+    skipped, first = [], True
+    for key, search in todo:
+        if key in finished or f'skip:{key}' in finished:
+            continue
+        if budget and not first and time.monotonic() > start + budget:
+            break
+        # every call finishes at least one pair; a single pair gets up to 45 s (proxies cut requests near 100 s), then it is skipped
+        dl[0] = (time.monotonic() + (max(45.0, 2 * budget) if first else max(0.5, start + budget - time.monotonic()))) if budget else None
+        try:
+            add(search()); finished.add(key)
+        except Budget:
+            if not first:
+                break
+            finished.add(f'skip:{key}'); skipped.append(key)
+        first = False
     out = describe(seams)
-    find_seams.complete = complete
+    pending = sum(k not in finished and f'skip:{k}' not in finished for k, _ in todo)
+    if stats is not None:
+        stats.update(done=sorted(finished), pending=pending, total=len(todo), skipped=sorted(k[5:] for k in finished if k.startswith('skip:')))
     return out
 
 

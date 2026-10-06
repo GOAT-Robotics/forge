@@ -58,3 +58,25 @@ def test_curved_weld_seam_pieces_join_into_one():
     out = S.chain(pieces)
     long = max(out, key=lambda s: s['length'])
     assert len(out) == 3 and long['pieces'] == 3 and abs(long['length'] - 300) < 6 and long['key'].startswith('c')
+
+
+def test_seam_search_continues_pair_by_pair():
+    """A search that runs out of time reports the finished pairs; calling again with them finds the rest,
+    and together the calls find exactly what one unlimited search finds."""
+    import numpy as np
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from app.seams import Body, find_seams
+    base = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 300, 200, 3).Shape()
+    ribs = [BRepPrimAPI_MakeBox(gp_Pnt(20 + 60 * i, 20, 3), 3, 150, 60).Shape() for i in range(4)]
+    bodies = [Body('base', 0, base, np.eye(4), 3)] + [Body(f'rib{i}', 0, r, np.eye(4), 3) for i, r in enumerate(ribs)]
+    full = find_seams(bodies, budget=0)
+    done, got, calls = [], [], 0
+    while True:
+        st = {}
+        got += find_seams(bodies, budget=1e-6, done=done, stats=st); calls += 1
+        done = st['done']
+        if not st['pending']:
+            break
+    assert calls >= 4 and not st['skipped']
+    assert sorted(round(s['length'], 1) for s in got) == sorted(round(s['length'], 1) for s in full) and len(full) >= 8
