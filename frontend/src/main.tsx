@@ -1113,7 +1113,7 @@ function App() {
                         const fileBtn = 'h-auto w-full justify-start gap-2.5 rounded-none border-b px-3 py-2 text-left font-normal whitespace-normal last:border-b-0';
                         const ext = 'grid h-[22px] w-[34px] shrink-0 place-items-center rounded bg-muted text-[9.5px] font-medium uppercase text-muted-foreground';
                         return (
-                        <div className="flex h-full min-h-0 flex-col">
+                        <div className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain">
                           <header className="flex items-start gap-2 px-4 pt-3.5 pb-2.5">
                             <div className="grid min-w-0 flex-1 gap-0.5">
                               <span className={cn('inline-flex items-center gap-1.5', eyebrow)}><span className={cn('grid size-5 place-items-center rounded-md', glyphTone[part.category] || glyphTone.other)} style={part.spec.coating_hex ? { background: part.spec.coating_hex, color: '#fff' } : undefined}>{part.category === 'sheet_metal' ? <Layers className="size-3.5" /> : <Box className="size-3.5" />}</span>{categories[part.category]}{part.geometry.carried_from && <span className="rounded-full bg-muted px-1.5 py-px font-normal normal-case tracking-normal" title="Carried over from an earlier revision">rev {part.geometry.carried_from.revision}</span>}</span>
@@ -1176,11 +1176,11 @@ function App() {
                           </div>}
                           {!vendor && <CadSourceRow part={part} editable={editable} busy={busy || !!job} onReplace={() => setReplacing(part)} onHistory={() => setVersionsOf(part)} />}
 
-                          <Tabs value={detail} onValueChange={setDetail} className="mx-4 gap-0">
+                          <Tabs value={detail} onValueChange={setDetail} className="sticky top-0 z-10 gap-0 bg-card px-4 pt-1 pb-0.5">
                             <TabsList className="w-full">{[['details', 'Details'], ['features', `Features${part.geometry.holes.length + part.geometry.bends.length ? ' ' + (part.geometry.holes.length + part.geometry.bends.length) : ''}`], ['documents', 'Documents'], ...(canCost && !part.excluded && part.category !== 'purchased' ? [['cost', 'Cost']] : [])].map(([t, l]) => <TabsTrigger key={t} value={t} className="text-xs">{l}</TabsTrigger>)}</TabsList>
                           </Tabs>
 
-                          <div className="grid min-h-0 flex-1 content-start gap-3.5 overflow-auto px-4 pt-3 pb-5">
+                          <div className="grid flex-none content-start gap-3.5 px-4 pt-3 pb-5">
                             {detail === 'details' ? (
                               <>
                                 <div className="grid grid-cols-3 gap-1.5">{['X', 'Y', 'Z'].map((a, i) => <div key={a} className="flex items-baseline gap-1.5 rounded-md border px-2 py-1.5"><span className="text-2xs font-medium text-muted-foreground">{a}</span><span className="text-sm tabular-nums">{fmt(part.geometry.dimensions[i])}<small className="text-2xs text-muted-foreground"> mm</small></span></div>)}</div>

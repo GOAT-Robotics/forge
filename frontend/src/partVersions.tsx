@@ -144,37 +144,42 @@ export function CadSourceRow({ part, editable, busy, onReplace, onHistory }: { p
   );
 }
 
-/** Why the flat pattern was not developed: numbered issues that match the markers in the 3D view. */
+/** Why the flat pattern was not developed: numbered issues that match the markers in the 3D view.
+ *  Compact by default (one line + toggle) so the part panel below stays reachable; the list scrolls on its own. */
 export function FlatIssuesCard({ part, issues, active, onActive, onPin, pinned, editable, busy, onRecheck, onReplace }: {
   part: Any; issues: FlatIssue[]; active: number | null; onActive: (i: number | null) => void; pinned: number | null; onPin: (i: number | null) => void;
   editable: boolean; busy: boolean; onRecheck: () => void; onReplace: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setOpen(false); }, [part.id]);
   const fallback = flatReason(part.geometry.flat_message || (part.geometry.bends?.length ? '' : 'No bends detected'));
+  const kinds = [...new Set(issues.map(i => i.title.replace(/\s*\d+.*$/, '').replace(/ at corner$/, '')))];
   return (
-    <div className="mx-4 mb-3 overflow-hidden rounded-lg border border-warning/40">
-      <div className="flex items-start gap-2.5 bg-warning-soft px-3 py-2.5 text-warning">
-        <AlertTriangle className="mt-px size-4 shrink-0" />
-        <div className="min-w-0 flex-1"><div className="text-sm font-medium">Flat pattern not generated</div>
-          <p className="mt-0.5 text-xs leading-relaxed text-foreground/80">{issues.length ? `${issues.length} problem${issues.length === 1 ? '' : 's'} on this part — marked in the 3D view. Hover one to find it.` : fallback?.reason}</p></div>
-      </div>
-      {issues.length > 0 ? <ol className="divide-y" onMouseLeave={() => onActive(null)}>{issues.map((it, i) => {
+    <div className="mx-4 mb-3 shrink-0 overflow-hidden rounded-lg border border-warning/40">
+      <button type="button" className="flex w-full items-start gap-2.5 bg-warning-soft px-3 py-2 text-left text-warning" onClick={() => setOpen(o => !o)} aria-expanded={open}>
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+        <span className="min-w-0 flex-1"><span className="block text-sm font-medium">Flat pattern not generated</span>
+          <span className="block truncate text-xs text-foreground/75">{issues.length ? `${issues.length} problem${issues.length === 1 ? '' : 's'} · ${kinds.slice(0, 2).join(', ')}` : fallback?.reason}</span></span>
+        <span className="mt-0.5 shrink-0 text-xs font-medium">{open ? 'Hide' : issues.length ? 'Show' : 'Why'}</span>
+      </button>
+      {open && (issues.length > 0 ? <ol className="max-h-[240px] divide-y overflow-y-auto overscroll-contain" onMouseLeave={() => onActive(null)}>{issues.map((it, i) => {
         const on = active === i || pinned === i;
         return (
-          <li key={i} className={cn('cursor-pointer px-3 py-2.5 transition-colors', on ? 'bg-danger-soft/60' : 'hover:bg-accent')} onMouseEnter={() => onActive(i)} onClick={() => onPin(pinned === i ? null : i)}>
+          <li key={i} className={cn('cursor-pointer px-3 py-2 transition-colors', on ? 'bg-danger-soft/60' : 'hover:bg-accent')} onMouseEnter={() => onActive(i)} onClick={() => onPin(pinned === i ? null : i)}>
             <div className="flex items-start gap-2.5">
-              <span className={cn('grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white tabular-nums', on ? 'bg-destructive' : 'bg-warning')}>{i + 1}</span>
+              <span className={cn('mt-px grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white tabular-nums', on ? 'bg-destructive' : 'bg-warning')}>{i + 1}</span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 text-sm font-medium">{it.title}{pinned === i && <Crosshair className="size-3.5 text-destructive" />}</div>
-                <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{it.detail}</p>
-                {on && <p className="mt-1.5 rounded-md bg-card px-2 py-1.5 text-xs leading-relaxed text-foreground"><b className="font-medium">Fix:</b> {it.fix}</p>}
+                {on ? <><p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{it.detail}</p><p className="mt-1 text-xs leading-relaxed text-foreground"><b className="font-medium">Fix:</b> {it.fix}</p></>
+                  : <p className="truncate text-xs text-muted-foreground">{it.detail}</p>}
               </div>
             </div>
           </li>);
-      })}</ol> : fallback && <p className="px-3 py-2.5 text-xs leading-relaxed"><b className="font-medium">Fix:</b> {fallback.fix} <span className="mt-1 block font-mono text-2xs text-muted-foreground">{fallback.raw}</span></p>}
-      <div className="flex flex-wrap items-center gap-1.5 border-t bg-subtle px-3 py-2">
+      })}</ol> : fallback && <p className="px-3 py-2 text-xs leading-relaxed"><b className="font-medium">Fix:</b> {fallback.fix} <span className="mt-1 block font-mono text-2xs text-muted-foreground">{fallback.raw}</span></p>)}
+      {open && <div className="flex flex-wrap items-center gap-1.5 border-t bg-subtle px-3 py-1.5">
         {editable && <Button type="button" size="xs" onClick={onReplace} disabled={busy}><Upload />Replace with corrected STEP</Button>}
-        {!issues.length && <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onRecheck} title="Run the unfolder again to locate the problems on the part"><RefreshCw />Locate problems</Button>}
-      </div>
+        <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onRecheck} title="Run the unfolder again"><RefreshCw />Re-check</Button>
+      </div>}
     </div>
   );
 }
