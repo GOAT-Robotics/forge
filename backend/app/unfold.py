@@ -36,6 +36,47 @@ def issue(kind,title,detail,fix,faces,point=None):
  return {'kind':kind,'title':title,'detail':detail,'fix':fix,'point':point if point is not None else (_face_point(faces[0]) if faces else None),
          'outlines':[l for f in faces[:6] for l in _outline(f)]}
 
+def _face_polygon(f,r,t):
+ """A flat face's outline (with holes) mapped into the flat by (r,t). Sampled outlines of faces with many short spline
+ edges can come out self-crossing depending on how the edges are chained, so this tries, in order: the wire's own
+ edge order, proximity chaining, and an order-free area build from all edge lines. A last-resort repair is accepted
+ only when it changes the area by less than 0.2 %. Returns None for a face without an outer wire."""
+ from OCP.BRepTools import BRepTools
+ from .cad import sample_edge
+ outer=BRepTools.OuterWire_s(f)
+ if outer.IsNull():return None
+ face_area=props(f)[0]
+ def by_wires(ordered):
+  shell=None;rings=[]
+  for w in explore(f,TopAbs_WIRE):
+   pts=wire_points(TopoDS.Wire(w),ordered);coords=(pts@r.T+t)[:,:2]
+   if len(coords)<3:continue
+   if w.IsSame(outer):shell=coords
+   else:rings.append(coords)
+  return Polygon(shell,rings) if shell is not None else None
+ def close(p):return p is not None and not p.is_empty and abs(p.area-face_area)<=max(.5,.002*face_area)
+ first=None
+ for ordered in (True,False):
+  try:p=by_wires(ordered)
+  except Exception:p=None
+  if first is None:first=p
+  if p is not None and p.is_valid and close(p):return p
+ try:
+  import shapely
+  from shapely.geometry import LineString
+  lines=[LineString((sample_edge(e)@r.T+t)[:,:2]) for e in explore(f,TopAbs_EDGE)]
+  p=shapely.build_area(shapely.GeometryCollection([l for l in lines if l.length>0]))
+  if p.geom_type=='Polygon' and p.is_valid and close(p):return p
+ except Exception:pass
+ if first is not None:
+  try:
+   from shapely.validation import make_valid
+   p=make_valid(first)
+   if p.geom_type=='MultiPolygon':p=max(p.geoms,key=lambda q:q.area)
+   if p.geom_type=='Polygon' and p.is_valid and close(p):return p
+  except Exception:pass
+ return first
+
 def unfold(s,g,k=.4):
  try:return _unfold(s,g,k)
  except ValueError as e:
@@ -45,18 +86,25 @@ def unfold(s,g,k=.4):
 def _unfold(s,g,k=.4):
  faces,planes,cyl,cones=face_features(s);by_index={p['index']:p for p in planes};th=g['thickness']
  if not planes or th<=0:raise ValueError('Constant thickness could not be established')
- # Every partial cylinder longer than the sheet is thick is a bend (or a roll); one that was not paired into a bend
- # would silently vanish from the flat. Short ones are cut-profile radii and slot ends through the thickness.
- in_bend={ci for b in g['bends'] for ci in b['faces']}
- loose=[c for c in cyl if c['index'] not in in_bend and c['angle']<2*math.pi-.03 and c['end']-c['start']>1.5*th]
- if loose:
-  raise UnfoldError(f'{len(loose)} curved face{"s" if len(loose)!=1 else ""} not recognised as a bend',[issue('unpaired_bend','Bend not recognised',
-   f"Curved face R{c['radius']:.2f}, {math.degrees(c['angle']):.0f}deg, {c['end']-c['start']:.1f} mm long has no matching face on the other side of the sheet.",
-   'Check that this bend has a constant thickness and inside radius; re-model it as a sheet-metal bend.',[faces[c['index']]]) for c in loose[:8]])
- freeform=[i for i in range(len(faces)) if i not in by_index and i not in {c['index'] for c in cyl}]
- if cones or freeform:
-  raise UnfoldError('Conical or freeform faces cannot be developed',[issue('freeform','Conical face' if i in cones else 'Freeform face',
-   'Only flat faces, straight bends and rolled cylinders can be unfolded.','Re-model this area as a straight bend, or supply the flat pattern from CAD.',[faces[i]]) for i in (list(cones)+freeform)[:8]])
+ # Hints only (never a reason to refuse): curved faces that could be missed bends and freeform / conical faces.
+ # Through-thickness walls of cut-outs (slot ends, hole halves, profile radii, countersinks, spline edges) are
+ # normal in a laser-cut blank, so these are attached to an error the unfolder raises for its own reasons.
+ def _hints():
+  root_n=np.asarray(max(planes,key=lambda p:p['area'])['normal'],float)
+  in_bend={ci for b in g['bends'] for ci in b['faces']};cyl_ix={c['index'] for c in cyl}
+  out=[]
+  for c in cyl:
+   # a bend's axis lies in the sheet; walls of cut-outs run through it (axis along the sheet normal)
+   if c['index'] in in_bend or c['angle']>=2*math.pi-.03 or abs(np.dot(c['axis'],root_n))>.2 or c['end']-c['start']<=3*th:continue
+   out.append(issue('unpaired_bend','Curved face not recognised as a bend',f"R{c['radius']:.2f}, {math.degrees(c['angle']):.0f}deg, {c['end']-c['start']:.1f} mm long: no matching face on the other side of the sheet.",
+    'Check this bend has a constant thickness and inside radius.',[faces[c['index']]]))
+  for i in range(len(faces)):
+   if i in by_index or i in cyl_ix or i in cones:continue
+   fpts=np.vstack([sample_edge(e) for e in explore(faces[i],TopAbs_EDGE)])
+   if np.ptp(fpts@root_n)<=1.5*th:continue   # an edge wall through the thickness
+   out.append(issue('freeform','Freeform (double-curved) face','Only flat faces, straight bends and rolled cylinders can be unfolded.','Re-model this area as a straight bend, or supply the flat pattern from CAD.',[faces[i]]))
+  return out[:8]
+ from .cad import sample_edge
  root=max(planes,key=lambda p:p['area']);n=root['normal'];x=root['x'];y=root['y'];R=np.vstack([x,y,n]);origin=root['origin'];maps={root['index']:(R,-R@origin)}
  from .cad import sample_edge as _se
  # Skin graph: planes and bend (cylinder) faces. A bend face touches the planes it is tangent to (their normal is
@@ -185,26 +233,21 @@ def _unfold(s,g,k=.4):
  polys=[];poly_src=[]
  from OCP.BRepTools import BRepTools
  for pi,(r,t) in maps.items():
-  f=by_index[pi]['face'];outer=BRepTools.OuterWire_s(f);rings=[];shell=None
-  for w in explore(f,TopAbs_WIRE):
-   pts=wire_points(TopoDS.Wire(w));coords=(pts@r.T+t)[:,:2]
-   if len(coords)<3:continue
-   if w.IsSame(outer):shell=coords
-   else:rings.append(coords)
-  if shell is not None:
-   poly=Polygon(shell,rings)
+  f=by_index[pi]['face']
+  poly=_face_polygon(f,r,t)
+  if poly is not None:
    if not poly.is_valid:
     raise UnfoldError('Projected flange contour is invalid',[issue('invalid_face','Face folds over itself when flattened','This flat face self-intersects after development.','Check this face for slivers or a sharp internal corner without relief.',[f])])
    polys.append(poly);poly_src.append(pi)
- if not polys:raise ValueError('No developable faces')
+ if not polys:raise UnfoldError('No developable faces',_hints())
  if not g['bends']:
   # Require an extruded constant-thickness plate, not an arbitrary solid's largest face.
   predicted=polys[0].area*th
-  if abs(predicted-g['volume'])/max(g['volume'],1)>.04:raise ValueError('Flat projection does not match constant-thickness volume')
+  if abs(predicted-g['volume'])/max(g['volume'],1)>.04:raise UnfoldError('Flat projection does not match constant-thickness volume',_hints())
  else:
   projected_area=sum(p.area for p in polys)
   approx_skin_area=(g['area']-sum(2*math.radians(b['angle'])*(b['radius']+th/2)*b['length'] for b in g['bends']))/2
-  if projected_area<approx_skin_area*.60:raise ValueError('Unfold coverage incomplete')
+  if projected_area<approx_skin_area*.60:raise UnfoldError('Unfold coverage incomplete',_hints())
  # Snap only sub-micron round-off at shared flange/bend edges.
  merged=union_all(polys+rectangles,grid_size=0.00001)
  items=[('face',pi,polys[i]) for i,pi in enumerate(poly_src)]+[('bend',src,rectangles[i]) for i,src in enumerate(rect_src)]

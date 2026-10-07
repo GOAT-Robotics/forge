@@ -40,7 +40,25 @@ def sample_edge(e,deflection=.025):
  d=GCPnts_QuasiUniformDeflection(c,deflection,a,b)
  if d.IsDone():return np.array([xyz(d.Value(i)) for i in range(1,d.NbPoints()+1)])
  return np.array([xyz(c.Value(a+(b-a)*i/64)) for i in range(65)])
-def wire_points(w):
+def _wire_ordered(w,tol=1e-3):
+ """Edges in the wire's own order and direction (BRepTools_WireExplorer). None when the ordered edges do not join
+ up, e.g. a badly stitched STEP wire - the caller then chains by proximity."""
+ from OCP.BRepTools import BRepTools_WireExplorer
+ try:
+  ex=BRepTools_WireExplorer(TopoDS.Wire(w));out=[]
+  while ex.More():
+   e=ex.Current();pts=sample_edge(e)
+   if e.Orientation()==TopAbs_REVERSED:pts=pts[::-1]
+   if out and np.linalg.norm(np.asarray(out[-1])-pts[0])>tol:return None
+   out.extend((pts if not out else pts[1:]).tolist());ex.Next()
+  if len(out)<3 or np.linalg.norm(np.asarray(out[0])-np.asarray(out[-1]))>tol:return None
+  return np.array(out)
+ except Exception:return None
+def wire_points(w,ordered=True):
+ # Wire order first; tiny spline edges make proximity chaining pick the wrong neighbour (self-crossing outlines).
+ pts=_wire_ordered(w) if ordered else None
+ if pts is not None:
+  pts[-1]=pts[0];return pts
  # Chain unoriented sampled edges geometrically; STEP edge direction can differ from wire traversal.
  seg=[sample_edge(e) for e in explore(w,TopAbs_EDGE)]
  if not seg:return np.empty((0,3))

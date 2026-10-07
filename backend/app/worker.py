@@ -70,8 +70,10 @@ def hardware_holes(poly,g,spec):
  if not changes:return poly,[]
  out=Polygon(list(poly.exterior.coords),rings)
  return (out if out.is_valid else poly),(changes if out.is_valid else [])
+FLAT_ENGINE=4   # bump when the unfolder changes: failed flats from an older engine are re-run once by the idle worker
 def export_flat(shape,g,spec,folder,opts=None):
  if g['category']!='sheet_metal':return
+ g['flat_engine']=FLAT_ENGINE
  try:
   poly,bends=unfold(shape,g,spec.get('k_factor',.4));poly,hw_holes=hardware_holes(poly,g,spec);flat={'outline':list(poly.exterior.coords),'holes':[list(r.coords) for r in poly.interiors],'bends':bends,'k_factor':spec.get('k_factor',.4),'status':'provisional' if not spec.get('k_factor_approved') else 'approved_k','hardware_holes':hw_holes}
   (folder/'flat.json').write_text(json.dumps(flat));d=ezdxf.new('R2013');d.units=4;m=d.modelspace();d.layers.new('CUT');d.layers.new('BEND',dxfattribs={'color':3});d.layers.new('LABELS',dxfattribs={'color':2})
@@ -393,12 +395,16 @@ def process_welding(rid):
 # Messages written only by the over-strict pre-checks shipped briefly on 2026-10-07 (removed again): parts whose saved
 # flat result came from them are regenerated once so they show the unfolder's real result.
 _BAD_FLAT=('not recognised as a bend','Conical or freeform faces cannot be developed')
+_HEAL_TRIED=set()
 def heal_flat_results():
  for rev in db.rows("SELECT id FROM revisions WHERE state='active' AND status='ready'"):
-  ids=[p['id'] for p in db.rows("SELECT id,geometry FROM parts WHERE revision_id=? AND category='sheet_metal'",(rev['id'],))
-       if any(m in (json.loads(p['geometry']).get('flat_message') or '') for m in _BAD_FLAT)]
+  ids=[]
+  for p in db.rows("SELECT id,geometry FROM parts WHERE revision_id=? AND category='sheet_metal' AND COALESCE(excluded,0)=0",(rev['id'],)):
+   g=json.loads(p['geometry'])
+   if p['id'] not in _HEAL_TRIED and g.get('flat_status')!='supported' and (g.get('flat_engine')!=FLAT_ENGINE or any(m in (g.get('flat_message') or '') for m in _BAD_FLAT)):ids.append(p['id'])
   # wait only for a documents run that would cover them anyway (other jobs, e.g. instructions, do not matter)
   if not ids or db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running","cancelling")',(rev['id'],)):continue
+  _HEAL_TRIED.update(ids)   # once per worker start, even if that run fails
   with db.connect() as c:
    c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(db.uid(),rev['id'],'documents','queued',db.now(),'',json.dumps({'part_ids':ids})))
    db.audit(c,'worker','documents.requested',{'part_ids':ids,'reason':'re-check flat patterns'},rev['id'])
