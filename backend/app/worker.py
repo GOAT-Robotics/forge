@@ -266,14 +266,16 @@ def draw_part(p,rev,folder,rules,settings):
  pf=Path(folder)/'parts'/p['id']
  if os.getenv('FORGE_JOB_ID'):(pf/'.drawing-job').write_text(os.environ['FORGE_JOB_ID'])   # lets a cancel know what this run touched
  shape=read_brep(pf/'shape.brep')
- if p['category']=='sheet_metal':
-  # parts analysed before mitred-corner bends were recognised: pick up the bends that were missed
+ opts=p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}')
+ export_flat(shape,p['geometry'],p['spec'],pf,opts)
+ if p['category']=='sheet_metal' and p['geometry'].get('flat_status')!='supported':
+  # only when the flat failed: parts analysed before mitred-corner bends were recognised may miss bends
   try:
    fresh=analyze(shape,p['name'])
    if len(fresh.get('bends') or [])>len(p['geometry'].get('bends') or []):
     p['geometry']['bends']=fresh['bends'];p['geometry'].setdefault('recognition_notes',[]).append(f"Bend recognition updated: {len(fresh['bends'])} bends (closed / mitred corners).")
+    export_flat(shape,p['geometry'],p['spec'],pf,opts)
   except Exception:traceback.print_exc()
- export_flat(shape,p['geometry'],p['spec'],pf,p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}'))
  make_part(p,rev,pf,rules,settings=settings)
  (pf/'.drawing-invalid').unlink(missing_ok=True)
  if not (pf/'thumb.png').exists():
@@ -316,10 +318,29 @@ def process_documents(rid,payload):
  if workers>1:
   import multiprocessing as mp
   from concurrent.futures import ProcessPoolExecutor,as_completed
-  with ProcessPoolExecutor(workers,mp_context=mp.get_context('fork')) as pool:
-   futures={pool.submit(draw_part,p,rev,str(folder),rules,settings):p for p in selected}
-   for f in as_completed(futures):
-    futures[f]['geometry']=f.result();done+=1;progress(rid,int(80*done/len(selected)),f"Drawings {done}/{len(selected)}")
+  from concurrent.futures.process import BrokenProcessPool
+  finished=set()
+  try:
+   with ProcessPoolExecutor(workers,mp_context=mp.get_context('fork')) as pool:
+    futures={pool.submit(draw_part,p,rev,str(folder),rules,settings):p for p in selected}
+    for f in as_completed(futures):
+     futures[f]['geometry']=f.result();finished.add(futures[f]['id']);done+=1;progress(rid,int(80*done/len(selected)),f"Drawings {done}/{len(selected)}")
+  except BrokenProcessPool:
+   # a drawing process died (out of memory, or a CAD kernel crash on one part): finish the rest one part per
+   # process so a single bad part cannot fail the whole run; a part that crashes again is marked for review
+   for p in [x for x in selected if x['id'] not in finished]:
+    progress(rid,int(80*done/len(selected)),f"Drawing {done+1}/{len(selected)} (one at a time): {p['name'][:50]}")
+    try:
+     # a fresh interpreter (spawn): a fork of a process that already ran the CAD kernel's thread pools can deadlock
+     with ProcessPoolExecutor(1,mp_context=mp.get_context('spawn')) as one:p['geometry']=one.submit(draw_part,p,rev,str(folder),rules,settings).result()
+    except BrokenProcessPool:
+     pf=folder/'parts'/p['id'];pf.mkdir(parents=True,exist_ok=True)
+     (pf/'.drawing-invalid').write_text('The drawing process stopped on this part (memory or CAD kernel); regenerate it on its own')
+     if p['category']=='sheet_metal' and p['geometry'].get('flat_status')!='supported':
+      p['geometry']['flat_message']='The unfolder stopped on this part (memory or CAD kernel crash); regenerate this part on its own'
+      p['geometry']['flat_engine']=FLAT_ENGINE
+     with db.connect() as c:db.audit(c,'worker','documents.part_crashed',{'part':p['id'],'name':p['name']},rid)
+    done+=1
  else:
   for p in selected:
    progress(rid,int(80*done/max(len(selected),1)),f"Drawing {done+1}/{len(selected)}: {p['name'][:60]}")
