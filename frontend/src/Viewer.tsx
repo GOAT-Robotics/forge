@@ -201,12 +201,17 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   // any prop / state change may have changed the scene: draw for a moment
   useEffect(() => { if (engine.current) engine.current.activeUntil = performance.now() + 700; });
   // Tool palette: labels while they fit the canvas, icons only (tooltips keep the names) when they would spill over.
+  // The bottom bar is a 3-column grid: layout controls left, tools centred, the orientation triad's corner right.
+  // Nothing in it changes position with the canvas width; only the tool labels collapse to icons.
   const palette = useRef<HTMLDivElement>(null);
+  const cornerRef = useRef<HTMLDivElement>(null);
   const fitPalette = () => {
     const p = palette.current; const host = p?.parentElement; if (!p || !host) return;
+    const side = Math.max(cornerRef.current?.offsetWidth || 0, 72) + 12;
+    const room = host.clientWidth - 2 * side;
     p.classList.remove('compact', 'tight');
-    if (p.scrollWidth > host.clientWidth - 24) p.classList.add('compact');
-    if (p.scrollWidth > host.clientWidth - 24) p.classList.add('tight');
+    if (p.scrollWidth > room) p.classList.add('compact');
+    if (p.scrollWidth > room) p.classList.add('tight');
   };
   useLayoutEffect(fitPalette);
   useEffect(() => {
@@ -1275,7 +1280,11 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       </div>
       {loading && <div className="absolute inset-0 flex items-center justify-center gap-2.5 bg-viewer/85 text-base text-muted-foreground"><Loader2 className="size-4 animate-spin text-primary" />Preparing lightweight 3D geometry…</div>}
       {error && <div className="absolute inset-0 flex items-center justify-center gap-2.5 bg-viewer/85 text-base text-muted-foreground">{error}</div>}
-      <div className="group/palette glass absolute bottom-3.5 left-1/2 z-[7] flex max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-0.5 rounded-xl p-1 [&.tight]:gap-0" ref={palette} role="toolbar" aria-label="Tools">
+      <div className="pointer-events-none absolute inset-x-3 bottom-3.5 z-[7] grid grid-cols-[minmax(max-content,1fr)_auto_minmax(0,1fr)] items-end gap-3">
+      <div className="min-w-0 justify-self-start">
+        {corner && <div ref={cornerRef} className="glass pointer-events-auto flex h-10 items-center gap-0.5 rounded-xl p-1" role="toolbar" aria-label="Layout">{corner}</div>}
+      </div>
+      <div className="group/palette glass pointer-events-auto flex h-10 min-w-0 items-center gap-0.5 rounded-xl p-1 [&.tight]:gap-0" ref={palette} role="toolbar" aria-label="Tools">
         {toolbarStart}
         {toolbarStart ? <Separator orientation="vertical" className={paletteSep} /> : null}
         <Button variant="ghost" className={cn(paletteButton, measure && paletteOn)} title="Measure two surface points" onClick={() => { setMeasure(!measure); setDistance(null); }}><Ruler /><span className="group-[.compact]/palette:hidden">Measure</span></Button>
@@ -1300,8 +1309,9 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         {toolbarEnd ? <Separator orientation="vertical" className={paletteSep} /> : null}
         {toolbarEnd}
       </div>
-      {corner && <div className="glass absolute bottom-3.5 left-3 z-[7] flex gap-0.5 rounded-xl p-1 @max-[900px]/viewer:bottom-16" role="toolbar" aria-label="Layout">{corner}</div>}
-      <div className={cn('pointer-events-none absolute bottom-[18px] z-[5] flex max-w-[22%] flex-col gap-0.5 text-2xs text-faint @max-[1100px]/viewer:hidden', corner ? 'left-[136px]' : 'left-3.5')}>{hoverName ? <span className="truncate text-xs font-medium text-foreground">{hoverName}</span> : null}<span>{loading ? 'Preparing geometry…' : flat ? 'Developed sheet' : `${count >= 1e6 ? (count / 1e6).toFixed(1) + 'M' : count >= 1e4 ? Math.round(count / 1000) + 'k' : count.toLocaleString()} triangles`}</span></div>
+      <div />
+      </div>
+      <div className={cn('pointer-events-none absolute bottom-[68px] z-[5] flex max-w-[22%] flex-col gap-0.5 text-2xs text-faint @max-[1100px]/viewer:hidden', 'left-4')}>{hoverName ? <span className="truncate text-xs font-medium text-foreground">{hoverName}</span> : null}<span>{loading ? 'Preparing geometry…' : flat ? 'Developed sheet' : `${count >= 1e6 ? (count / 1e6).toFixed(1) + 'M' : count >= 1e4 ? Math.round(count / 1000) + 'k' : count.toLocaleString()} triangles`}</span></div>
       {measure && (
         <div className="absolute bottom-[72px] left-4 flex flex-col gap-1 rounded-lg border bg-card px-3 py-2.5 text-sm font-medium shadow-pop">
           {distance === null ? 'Pick two visible surface points' : `${distance.toFixed(3)} mm · mesh measurement`}

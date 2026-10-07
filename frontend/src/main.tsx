@@ -704,9 +704,9 @@ function App() {
     null
   );
   const canvasToolsStart = !rev ? null : <>
-    {!vendor && editable && <Button type="button" variant="ghost" size="sm" className={cn(jointDraft && onTone)} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame /><span>Weld</span></Button>}
-    {part && part.geometry.holes.length > 0 && part.category !== 'purchased' && multi.length < 2 && <Button type="button" variant="ghost" size="sm" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot /><span>Holes</span></Button>}
-    {part && multi.length < 2 && showBend(part) && <Button type="button" variant="ghost" size="sm" title={part.bend_sim ? 'Forming simulation (press brake and rolling)' : 'Forming simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical /><span>Bending</span></Button>}
+    {!vendor && editable && <Button type="button" variant="ghost" size="sm" className={cn(jointDraft && onTone)} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame /><span className="group-[.compact]/palette:hidden">Weld</span></Button>}
+    {part && part.geometry.holes.length > 0 && part.category !== 'purchased' && multi.length < 2 && <Button type="button" variant="ghost" size="sm" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot /><span className="group-[.compact]/palette:hidden">Holes</span></Button>}
+    {part && multi.length < 2 && showBend(part) && <Button type="button" variant="ghost" size="sm" title={part.bend_sim ? 'Forming simulation (press brake and rolling)' : 'Forming simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical /><span className="group-[.compact]/palette:hidden">Bending</span></Button>}
   </>;
   const canvasToolsEnd = !rev || !transparentIds.length ? null : <>
     <Button type="button" variant="ghost" size="sm" title={`${transparentIds.length} transparent part(s) — make all opaque`} onClick={() => setTransparentIds([])}><Droplet /><span>{transparentIds.length}</span></Button>
@@ -715,9 +715,9 @@ function App() {
   const leftOpen = layout.left && !layout.focus;
   const cornerBtn = (on: boolean) => cn('text-muted-foreground', on && 'text-foreground');
   const canvasCorner = !rev ? null : <>
-    <Button type="button" variant="ghost" size="icon-sm" className={cornerBtn(leftOpen)} title={leftOpen ? 'Hide the part navigator' : 'Show the part navigator'} aria-label="Part navigator" onClick={() => setLayout({ left: !leftOpen, focus: false })}>{leftOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</Button>
-    <Button type="button" variant="ghost" size="icon-sm" className={cornerBtn(!!rightOpen)} title={rightOpen ? 'Hide the side panel' : 'Show the side panel (revision overview when nothing is selected)'} aria-label="Side panel" onClick={() => { if (rightOpen) { setLayout({ right: false }); return; } if (!part && multi.length < 2 && !jointDraft) setOverview(true); setLayout({ right: true, focus: false }); }}>{rightOpen ? <PanelRightClose /> : <PanelRightOpen />}</Button>
-    <Button type="button" variant="ghost" size="icon-sm" className={cornerBtn(layout.focus)} title={layout.focus ? 'Exit full canvas (Esc)' : `Full canvas (${binding('layout.focus')})`} aria-label="Full canvas" onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 /> : <Maximize2 />}</Button>
+    <Button type="button" variant="ghost" size="icon" className={cornerBtn(leftOpen)} title={leftOpen ? 'Hide the part navigator' : 'Show the part navigator'} aria-label="Part navigator" onClick={() => setLayout({ left: !leftOpen, focus: false })}>{leftOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</Button>
+    <Button type="button" variant="ghost" size="icon" className={cornerBtn(!!rightOpen)} title={rightOpen ? 'Hide the side panel' : 'Show the side panel (revision overview when nothing is selected)'} aria-label="Side panel" onClick={() => { if (rightOpen) { setLayout({ right: false }); return; } if (!part && multi.length < 2 && !jointDraft) setOverview(true); setLayout({ right: true, focus: false }); }}>{rightOpen ? <PanelRightClose /> : <PanelRightOpen />}</Button>
+    <Button type="button" variant="ghost" size="icon" className={cornerBtn(layout.focus)} title={layout.focus ? 'Exit full canvas (Esc)' : `Full canvas (${binding('layout.focus')})`} aria-label="Full canvas" onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 /> : <Maximize2 />}</Button>
   </>;
   const workspaceTab = (page === 'project' || !!vendor) && tab === 'parts' && !!rev && rev.status !== 'processing';
   if (rev && tab === 'parts' && rev.status !== 'processing') modelSeen.current = rev.id;
