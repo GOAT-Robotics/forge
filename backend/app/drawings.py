@@ -415,7 +415,7 @@ def part_sheets(c,p,rev,folder,rules,vs,views=True):
    y=wrap(c,29,y,ch['detail']+((' | Disposition: '+ch['waiver']) if ch['waiver'] else ''),370,7)-2
   if not checks:txt(c,25,y,'No findings displayed here; see the full release checks in the workspace.',9)
   c.showPage()
- if g.get('flat_status')=='supported':
+ if p.get('category')=='sheet_metal' and g.get('flat_status')=='supported' and (folder/'flat.json').exists():
   flat=json.loads((folder/'flat.json').read_text());frame(c,p,rev,sheet);txt(c,25,254,'DEVELOPED SHEET & FORMED ISOMETRIC',11)
   fv={'visible':[flat['outline']]+flat['holes'],'hidden':[]};view(c,fv,(25,64,238,177),'FLAT PATTERN - '+('APPROVED K' if spec.get('k_factor_approved') else 'PROVISIONAL K'))
   view(c,vs['iso'],(268,113,134,120),'FORMED ISOMETRIC',dims=False)

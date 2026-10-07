@@ -224,17 +224,25 @@ def _safe(v):
     return "'" + v if isinstance(v, str) and v.startswith(('=', '+', '-', '@', '\t', '\r')) else v
 
 
+def characteristics_csv_text(p):
+    """The inspection plan of one part as CSV text ('' when the drawing has no characteristics yet)."""
+    chars = load_chars(p, required=False)
+    if not chars:
+        return ''
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(['no', 'zone', 'sheet', 'characteristic', 'drawing text', 'nominal', 'lower', 'upper', 'unit', 'quantity', 'critical', 'tolerance basis', 'method', 'note'])
+    for q in inspection.flat_list(chars):
+        w.writerow([_safe(x) for x in [q['no'], q['zone'], q['page'] + 1, q['label'], q['text'], q['nominal'], q['lower'], q['upper'], q['unit'], q.get('qty', 1),
+                                       'KC' if q.get('critical') else '', q.get('basis', ''), q.get('method', ''), q.get('note', '')]])
+    return out.getvalue()
+
+
 @router.get('/api/parts/{pid}/characteristics.csv')
 def characteristics_csv(pid: str, request: Request):
     p = _part(pid)
     revision_access(request, p['revision_id'])
-    out = io.StringIO()
-    w = csv.writer(out)
-    w.writerow(['no', 'zone', 'sheet', 'characteristic', 'drawing text', 'nominal', 'lower', 'upper', 'unit', 'quantity', 'critical', 'tolerance basis', 'method', 'note'])
-    for q in inspection.flat_list(load_chars(p)):
-        w.writerow([_safe(x) for x in [q['no'], q['zone'], q['page'] + 1, q['label'], q['text'], q['nominal'], q['lower'], q['upper'], q['unit'], q.get('qty', 1),
-                                       'KC' if q.get('critical') else '', q.get('basis', ''), q.get('method', ''), q.get('note', '')]])
-    return Response(out.getvalue(), media_type='text/csv', headers={'Content-Disposition': f'attachment; filename="characteristics-{pid}.csv"'})
+    return Response(characteristics_csv_text(p), media_type='text/csv', headers={'Content-Disposition': f'attachment; filename="characteristics-{pid}.csv"'})
 
 
 # ------------------------------------------------------------------------------------------- recording

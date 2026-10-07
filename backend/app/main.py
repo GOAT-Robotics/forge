@@ -316,7 +316,9 @@ def revision(rid:str,request:Request):
  rules=r['manifest'].get('rules_snapshot',db.DEFAULT_RULES)
  for p in db.rows('SELECT * FROM parts WHERE revision_id=? ORDER BY name',(rid,)):
   p=deserialize(p);g=p['geometry'];p['findings']=evaluate(g,p['spec'],rules);p['assets']=[x.name for x in (db.revdir(rid)/'parts'/p['id']).glob('*') if x.suffix in ('.pdf','.dxf','.glb','.json','.step','.png')];r['parts'].append(p)
- for p in r['parts']:p['drawing_options']=json.loads(p.get('drawing_options') or '{}');p['assets']=[a for a in p['assets'] if a not in ('model.glb','flat.glb','shape.brep')]
+ for p in r['parts']:
+  p['drawing_options']=json.loads(p.get('drawing_options') or '{}');p['assets']=[a for a in p['assets'] if a not in ('model.glb','flat.glb','shape.brep')]
+  inv=db.revdir(rid)/'parts'/p['id']/'.drawing-invalid';p['drawing_problem']=inv.read_text().strip()[:300] if inv.exists() else ''
  vinfo={}
  for v in db.rows('SELECT part_id,number,active,status,filename,created,author FROM part_versions WHERE revision_id=? ORDER BY number',(rid,)):
   e=vinfo.setdefault(v['part_id'],{'count':0,'active':1,'processing':False,'failed':''})
@@ -770,25 +772,9 @@ def _flat_info(p):
  return {'flat_status':g.get('flat_status'),'flat_message':g.get('flat_message') or ('' if g.get('bends') else 'No bends detected')}
 @app.get('/api/revisions/{rid}/release-check')
 def release_check(rid:str,request:Request):
- revision_access(request,rid);r=get_rev(rid);reasons=[];rules=json.loads(r['manifest']).get('rules_snapshot',db.DEFAULT_RULES)
- if r['status'] not in ('ready','released'):reasons.append('Revision is not ready')
- if r['state']!='active':reasons.append('Revision is not active')
- for p in db.rows('SELECT * FROM parts WHERE revision_id=?',(rid,)):
-  p=deserialize(p)
-  if p['category'] in ('purchased','other') or p.get('excluded'):continue
-  if not p['reviewed']:reasons.append(p['name']+': design review not complete')
-  if not p.get('doc_reviewed'):reasons.append(p['name']+': drawing not reviewed')
-  for f in evaluate(p['geometry'],p['spec'],rules):
-   if f['severity']=='blocker' and (not f['waiver'] or f['code']=='GEO001'):reasons.append(p['name']+': '+f['title'])
- # Mating records are no longer generated on import (placements come from the STEP assembly); records left from
- # earlier imports have no review screen, so they are reported, not blocking.
- warnings=[]
- for p in db.rows("SELECT name,geometry,spec FROM parts WHERE revision_id=? AND category='sheet_metal' AND COALESCE(excluded,0)=0",(rid,)):
-  g=json.loads(p['geometry']);sp=json.loads(p['spec'])
-  if g.get('flat_status')!='supported' and not (sp.get('rule_waivers') or {}).get('FLAT001'):warnings.append(f"{p['name']}: flat pattern not generated - cut from a CAD flat")
- n=db.row('SELECT COUNT(*) AS n FROM fits WHERE revision_id=? AND approved=0',(rid,))['n']
- if n:warnings.append(f'{n} unapproved mating record{"s" if n!=1 else ""} from an earlier import will appear in the assembly record as not approved')
- return {'can_release':not reasons,'reasons':reasons,'warnings':warnings}
+ revision_access(request,rid);get_rev(rid)
+ from .release import release_blockers
+ return release_blockers(rid)
 @app.post('/api/revisions/{rid}/release')
 def release(rid:str,request:Request):
  u=revision_access(request,rid,True,'revision.release');mutable(rid);check=release_check(rid,request)
@@ -916,7 +902,7 @@ def part_asset(pid:str,filename:str,request:Request):
  if filename not in ('model.glb','thumb.png') and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind IN ("documents","replace") AND status IN ("queued","running","cancelling")',(p['revision_id'],)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
  if filename not in ('model.glb','thumb.png','drawing.pdf','drawing.dxf','review.pdf','flat.glb','flat.dxf','flat.json','projections.json','part.step'):raise HTTPException(404,'Asset not found')
  f=db.revdir(p['revision_id'])/'parts'/pid/filename
- if filename in ('drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','flat.glb') and (f.parent/'.drawing-invalid').exists():raise HTTPException(409,'Part specification changed; regenerate documents')
+ if filename in ('drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','flat.glb') and (f.parent/'.drawing-invalid').exists():raise HTTPException(409,((f.parent/'.drawing-invalid').read_text().strip() or 'Part specification changed; regenerate documents')[:300])
  if not f.exists():storage.restore(p['revision_id'],f'parts/{pid}/{filename}',f)
  if filename=='thumb.png' and not f.exists() and (f.parent/'model.glb').exists():
   # Revisions imported before thumbnails existed: render once on demand from the lightweight mesh.

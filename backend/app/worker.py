@@ -72,7 +72,12 @@ def hardware_holes(poly,g,spec):
  return (out if out.is_valid else poly),(changes if out.is_valid else [])
 FLAT_ENGINE=4   # bump when the unfolder changes: failed flats from an older engine are re-run once by the idle worker
 def export_flat(shape,g,spec,folder,opts=None):
- if g['category']!='sheet_metal':return
+ if g['category']!='sheet_metal':
+  # not (or no longer) sheet metal: no flat, and no stale 'supported' status pointing at files that are gone
+  if g.get('flat_status') not in (None,'not_applicable'):
+   g['flat_status']='not_applicable';g.pop('flat_issues',None)
+   for name in ['flat.json','flat.dxf','flat.glb']:(Path(folder)/name).unlink(missing_ok=True)
+  return
  g['flat_engine']=FLAT_ENGINE
  try:
   poly,bends=unfold(shape,g,spec.get('k_factor',.4));poly,hw_holes=hardware_holes(poly,g,spec);flat={'outline':list(poly.exterior.coords),'holes':[list(r.coords) for r in poly.interiors],'bends':bends,'k_factor':spec.get('k_factor',.4),'status':'provisional' if not spec.get('k_factor_approved') else 'approved_k','hardware_holes':hw_holes}
@@ -267,6 +272,7 @@ def draw_part(p,rev,folder,rules,settings):
  if os.getenv('FORGE_JOB_ID'):(pf/'.drawing-job').write_text(os.environ['FORGE_JOB_ID'])   # lets a cancel know what this run touched
  shape=read_brep(pf/'shape.brep')
  opts=p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}')
+ p['geometry']['category']=p['category']   # the part's current type decides whether a flat is developed
  export_flat(shape,p['geometry'],p['spec'],pf,opts)
  if p['category']=='sheet_metal' and p['geometry'].get('flat_status')!='supported':
   # only when the flat failed: parts analysed before mitred-corner bends were recognised may miss bends
@@ -283,6 +289,64 @@ def draw_part(p,rev,folder,rules,settings):
   except Exception:pass
  return p['geometry']
 
+class ReleaseRefused(Exception):
+ """The release run finished but the revision cannot be marked released; the message names what is missing."""
+
+def _draw_one(p,rev,folder,rules,settings):
+ """draw_part for a pool worker: never raises. Returns ('ok',geometry) or ('error',short message)."""
+ try:return ('ok',draw_part(p,rev,folder,rules,settings))
+ except Exception as e:
+  traceback.print_exc()
+  msg=f"{type(e).__name__}: {str(e)[:300]}" if str(e) else type(e).__name__
+  return ('error',msg)
+
+def _mark_failed(folder,p,message,rid,crashed=False):
+ pf=Path(folder)/'parts'/p['id'];pf.mkdir(parents=True,exist_ok=True)
+ (pf/'.drawing-invalid').write_text(('The drawing process stopped on this part (memory or CAD kernel crash); ' if crashed else 'Drawing failed: ')+message+'. Regenerate this part on its own.')
+ if crashed and p['category']=='sheet_metal' and p['geometry'].get('flat_status')!='supported':
+  p['geometry']['flat_message']='The unfolder stopped on this part (memory or CAD kernel crash); regenerate this part on its own';p['geometry']['flat_engine']=FLAT_ENGINE
+ with db.connect() as c:db.audit(c,'worker','documents.part_crashed' if crashed else 'documents.part_failed',{'part':p['id'],'name':p['name'],'error':message[:300]},rid)
+
+def draw_all(rid,rev,folder,rules,settings,selected):
+ """Draw every selected part, in parallel, each isolated: an exception or a crash on one part is recorded against
+ that part and the others still get their drawings. Returns (ok_parts, failures[(id,name,message)])."""
+ import multiprocessing as mp
+ from concurrent.futures import ProcessPoolExecutor,as_completed
+ from concurrent.futures.process import BrokenProcessPool
+ workers=max(1,min(int(os.getenv('FORGE_DRAWING_WORKERS',str(min(4,os.cpu_count() or 1)))),len(selected)))
+ results={};done=0;total=max(len(selected),1)
+ def record(p,res):
+  nonlocal done
+  done+=1;results[p['id']]=res
+  if res[0]=='ok':p['geometry']=res[1]
+  else:_mark_failed(folder,p,res[1],rid)
+  progress(rid,int(80*done/total),f"Drawings {done}/{total}"+(f" · {sum(1 for r in results.values() if r[0]!='ok')} failed" if any(r[0]!='ok' for r in results.values()) else ''))
+ pending=list(selected)
+ if workers>1 and len(pending)>1:
+  try:
+   with ProcessPoolExecutor(workers,mp_context=mp.get_context('fork')) as pool:
+    futures={pool.submit(_draw_one,p,rev,str(folder),rules,settings):p for p in pending}
+    for f in as_completed(futures):record(futures[f],f.result())
+   pending=[]
+  except BrokenProcessPool:
+   # a drawing process died (out of memory, or the CAD kernel crashed on one part): the rest are drawn one per
+   # fresh process below, so a single bad part cannot take the others down with it
+   pending=[p for p in pending if p['id'] not in results]
+   progress(rid,int(80*done/total),f"A drawing process stopped; drawing the remaining {len(pending)} one at a time")
+ for p in pending:
+  progress(rid,int(80*done/total),f"Drawing {done+1}/{total}: {p['name'][:60]}")
+  try:
+   if workers>1:
+    # a fresh interpreter (spawn): forking a process that already ran the CAD kernel can deadlock
+    with ProcessPoolExecutor(1,mp_context=mp.get_context('spawn')) as one:res=one.submit(_draw_one,p,rev,str(folder),rules,settings).result()
+   else:res=_draw_one(p,rev,str(folder),rules,settings)
+   record(p,res)
+  except BrokenProcessPool:
+   done+=1;results[p['id']]=('error','process crashed');_mark_failed(folder,p,'process crashed',rid,crashed=True)
+ ok=[p for p in selected if results.get(p['id'],('error',))[0]=='ok']
+ failures=[(p['id'],p['name'],results[p['id']][1]) for p in selected if results.get(p['id'],('error','not drawn'))[0]!='ok']
+ return ok,failures
+
 def process_documents(rid,payload):
  rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));folder=db.revdir(rid);
  if payload.get('assembly_only'):
@@ -290,119 +354,104 @@ def process_documents(rid,payload):
   for f in fits:f['data']=json.loads(f['data'])
   assembly_pdf(rev,parts_for(rid),fits,folder,detailed=False);progress(rid,100,'Assembly drawing updated');return
  project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));
- if payload.get('release'):rev['status']='released'
+ release=bool(payload.get('release'))
+ if release:
+  # the same rules the release button checked, re-run on the current data: edits made while the release was queued
+  from .release import release_blockers
+  check=release_blockers(rid,rules)
+  if not check['can_release']:raise ReleaseRefused('Release refused - the design checks changed while it was queued: '+'; '.join(check['reasons'][:6])+(' …' if len(check['reasons'])>6 else ''))
+  rev['status']='released';rev['project_name']=project['name'];rev['project_code']=project.get('code')
+  release_warnings=check['warnings']
+ else:release_warnings=[]
  parts=parts_for(rid);full=not payload.get('part_id') and not payload.get('part_ids');settings=db.project_settings(rev['project_id'])
  pick=set(payload.get('part_ids') or [payload.get('part_id')])
  selected=[p for p in parts if p['id'] in pick] if not full else [p for p in parts if p['category']!='purchased' and not p.get('excluded')]
- from .cad import read_brep
- # Whole-pack runs also produce one PDF per discipline: every machining sheet in one file, every sheet-metal sheet in another.
- combined={}
- if full:
-  groups={'machining':[p for p in selected if p['category']!='sheet_metal'],'sheet_metal':[p for p in selected if p['category']=='sheet_metal']}
-  for key,group in groups.items():
-   name='machining-drawings.pdf' if key=='machining' else 'sheet-metal-drawings.pdf'
-   (folder/name).unlink(missing_ok=True)
-   if group:combined[key]=combined_canvas(folder/name,'Machining drawings' if key=='machining' else 'Sheet metal drawings',rev,group,settings)
- if payload.get('release'):
-  from .rules import evaluate
-  for p in selected:
-   if p['category'] in ('purchased','other'):continue   # same scope as the release check: other parts need no checks
-   failures=[f for f in evaluate(p['geometry'],p['spec'],rules) if f['severity']=='blocker' and (not f['waiver'] or f['code']=='GEO001')]
-   if failures:raise ValueError('Release checks changed during regeneration: '+p['name']+' '+str([f['code'] for f in failures]))
  for p in selected:
   saved=db.row('SELECT * FROM drawing_edits WHERE part_id=?',(p['id'],))
   if saved and saved['source_hash']==rev['sha256']:p['drawing_edits']=json.loads(saved['data'])
   conv=settings.get('conventions') or {};p['drawing_options']={'size':conv.get('sheet_size','auto'),'hole_table':conv.get('hole_table','auto'),**drawing_options(p)}
- # Parts are independent: draw them in parallel worker processes, then assemble the discipline PDFs in order.
- workers=max(1,min(int(os.getenv('FORGE_DRAWING_WORKERS',str(min(4,os.cpu_count() or 1)))),len(selected)))
- done=0
- if workers>1:
-  import multiprocessing as mp
-  from concurrent.futures import ProcessPoolExecutor,as_completed
-  from concurrent.futures.process import BrokenProcessPool
-  finished=set()
-  try:
-   with ProcessPoolExecutor(workers,mp_context=mp.get_context('fork')) as pool:
-    futures={pool.submit(draw_part,p,rev,str(folder),rules,settings):p for p in selected}
-    for f in as_completed(futures):
-     futures[f]['geometry']=f.result();finished.add(futures[f]['id']);done+=1;progress(rid,int(80*done/len(selected)),f"Drawings {done}/{len(selected)}")
-  except BrokenProcessPool:
-   # a drawing process died (out of memory, or a CAD kernel crash on one part): finish the rest one part per
-   # process so a single bad part cannot fail the whole run; a part that crashes again is marked for review
-   for p in [x for x in selected if x['id'] not in finished]:
-    progress(rid,int(80*done/len(selected)),f"Drawing {done+1}/{len(selected)} (one at a time): {p['name'][:50]}")
-    try:
-     # a fresh interpreter (spawn): a fork of a process that already ran the CAD kernel's thread pools can deadlock
-     with ProcessPoolExecutor(1,mp_context=mp.get_context('spawn')) as one:p['geometry']=one.submit(draw_part,p,rev,str(folder),rules,settings).result()
-    except BrokenProcessPool:
-     pf=folder/'parts'/p['id'];pf.mkdir(parents=True,exist_ok=True)
-     (pf/'.drawing-invalid').write_text('The drawing process stopped on this part (memory or CAD kernel); regenerate it on its own')
-     if p['category']=='sheet_metal' and p['geometry'].get('flat_status')!='supported':
-      p['geometry']['flat_message']='The unfolder stopped on this part (memory or CAD kernel crash); regenerate this part on its own'
-      p['geometry']['flat_engine']=FLAT_ENGINE
-     with db.connect() as c:db.audit(c,'worker','documents.part_crashed',{'part':p['id'],'name':p['name']},rid)
-    done+=1
- else:
-  for p in selected:
-   progress(rid,int(80*done/max(len(selected),1)),f"Drawing {done+1}/{len(selected)}: {p['name'][:60]}")
-   p['geometry']=draw_part(p,rev,str(folder),rules,settings);done+=1
- from .drawing_scene import render_scene
- from .drawings import attach_view_lines
- for p in selected:
-  pf=folder/'parts'/p['id']
+ # ---- 1. part drawings, each part isolated
+ ok,failures=draw_all(rid,rev,folder,rules,settings,selected)
+ from .drawing_scene import render_scene,unique_group_ids
+ from .drawings import attach_view_lines,full_scene
+ for p in ok:
   with db.connect() as c:
    c.execute('UPDATE parts SET geometry=? WHERE id=?',(json.dumps(p['geometry']),p['id']))
    # regenerated sheets must be looked at again (a release keeps the reviews it was checked against)
-   if not payload.get('release'):c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?",(p['id'],))
-  target=combined.get('sheet_metal' if p['category']=='sheet_metal' else 'machining')
-  if target is not None and (pf/'drawing-scene.json').exists():
-   from .drawing_scene import unique_group_ids
-   scene=unique_group_ids(json.loads((pf/'drawing-scene.json').read_text()))
-   from .drawings import full_scene
-   ed=attach_view_lines(p,pf,scene,p.get('drawing_edits') or {})
-   render_scene(full_scene(p,rev,settings,scene,ed),ed,c=target)
- for c in combined.values():c.save()
+   if not release and not payload.get('keep_reviews'):c.execute("UPDATE parts SET doc_reviewed=0,doc_reviewed_by='',doc_reviewed_at='' WHERE id=?",(p['id'],))
+ # ---- 2. one PDF per discipline: every machining sheet in one file, every sheet-metal sheet in another
+ missing=[]
+ if full:
+  groups={'machining':[p for p in ok if p['category']!='sheet_metal'],'sheet_metal':[p for p in ok if p['category']=='sheet_metal']}
+  for key,group in groups.items():
+   name='machining-drawings.pdf' if key=='machining' else 'sheet-metal-drawings.pdf'
+   (folder/name).unlink(missing_ok=True)
+   if not group:continue
+   try:
+    with stage(rid,82,f"Combining {len(group)} {'machining' if key=='machining' else 'sheet-metal'} drawings"):
+     target=combined_canvas(folder/name,'Machining drawings' if key=='machining' else 'Sheet metal drawings',rev,group,settings)
+     for p in group:
+      pf=folder/'parts'/p['id']
+      if not (pf/'drawing-scene.json').exists():continue
+      scene=unique_group_ids(json.loads((pf/'drawing-scene.json').read_text()))
+      ed=attach_view_lines(p,pf,scene,p.get('drawing_edits') or {})
+      render_scene(full_scene(p,rev,settings,scene,ed),ed,c=target)
+     target.save()
+   except Exception as e:
+    traceback.print_exc();(folder/name).unlink(missing_ok=True);missing.append((name,f"{type(e).__name__}: {str(e)[:200]}"))
+ # ---- 3. assembly record (essential), then the supplementary documents
  fits=db.rows('SELECT * FROM fits WHERE revision_id=?',(rid,))
  for f in fits:f['data']=json.loads(f['data'])
- with stage(rid,88,'Generating assembly and mating drawings'):
-  if full or not (folder/'assembly.pdf').exists():assembly_pdf(rev,parts,fits,folder,detailed=full)
- if full and db.row('SELECT id FROM assembly_steps WHERE revision_id=? LIMIT 1',(rid,)):
-  with stage(rid,92,'Rendering assembly work instructions'):
-   from .assembly import instructions_pdf
-   instructions_pdf(rid)
- if full and db.row("SELECT id FROM joints WHERE revision_id=? AND kind='weld' LIMIT 1",(rid,)):
-  with stage(rid,94,'Drawing the welding document'):
-   from .welding import welding_pdf
-   welding_pdf(rid)
+ try:
+  with stage(rid,88,'Generating assembly and mating drawings'):
+   if full or not (folder/'assembly.pdf').exists():assembly_pdf(rev,parts,fits,folder,detailed=full)
+ except Exception as e:
+  traceback.print_exc();missing.append(('assembly.pdf',f"{type(e).__name__}: {str(e)[:200]}"))
  if full:
-  with stage(rid,97,'Packaging manufacturing documents'),zipfile.ZipFile(folder/'manufacturing-pack.zip','w',zipfile.ZIP_DEFLATED) as z:
-   z.write(folder/'assembly.pdf','assembly.pdf');
-   for extra in ['assembly.dxf','machining-drawings.pdf','sheet-metal-drawings.pdf','assembly-instructions.pdf','welding.pdf']:
-    if (folder/extra).exists():z.write(folder/extra,extra)
-   z.writestr('parts.json',json.dumps(parts,indent=2));z.writestr('fits.json',json.dumps(fits,indent=2));z.writestr('revision.json',json.dumps(rev,indent=2))
-   for p in selected:
-    try:
-     # ballooned inspection copy of every drawing (characteristics, limits, critical flags)
-     from .quality import inspection_pdf
-     inspection_pdf(p,rev,settings,str(folder/'parts'/p['id']/'inspection.pdf'))
-    except Exception:traceback.print_exc()
-    for fn in ['drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','part.step','drawing-scene.json','characteristics.json','inspection.pdf']:
-     f=folder/'parts'/p['id']/fn
-     if f.exists():z.write(f,f"parts/{p['id']}/{fn}")
+  if db.row('SELECT id FROM assembly_steps WHERE revision_id=? LIMIT 1',(rid,)):
+   try:
+    with stage(rid,91,'Rendering assembly work instructions'):
+     from .assembly import instructions_pdf
+     instructions_pdf(rid)
+   except Exception as e:traceback.print_exc();missing.append(('assembly-instructions.pdf',f"{type(e).__name__}: {str(e)[:200]}"))
+  if db.row("SELECT id FROM joints WHERE revision_id=? AND kind='weld' LIMIT 1",(rid,)):
+   try:
+    with stage(rid,93,'Drawing the welding document'):
+     from .welding import welding_pdf
+     welding_pdf(rid)
+   except Exception as e:traceback.print_exc();missing.append(('welding.pdf',f"{type(e).__name__}: {str(e)[:200]}"))
+  from .quality import inspection_pdf
+  n_insp=0
+  for p in ok:
+   try:inspection_pdf(p,rev,settings,str(folder/'parts'/p['id']/'inspection.pdf'))
+   except Exception as e:traceback.print_exc();n_insp+=1;missing.append((f"inspection.pdf ({p['name']})",f"{type(e).__name__}: {str(e)[:200]}"))
+ # ---- 4. the pack: everything that exists, and a list of what does not
+ if full:
+  from .release import build_pack
+  with stage(rid,97,'Packaging manufacturing documents'):
+   build_pack(rid,rev,parts,ok,fits,folder,failures=failures,missing=missing,warnings=release_warnings)
  # parts re-typed (or excluded) while this job ran were drawn with their old category: regenerate them later
- changed=False
+ changed=[]
  now={r['id']:r for r in db.rows('SELECT id,category,excluded FROM parts WHERE revision_id=?',(rid,))}
  for p in parts:
   cur=now.get(p['id'])
   if cur and (cur['category']!=p['category'] or int(cur['excluded'] or 0)!=int(p.get('excluded') or 0)):
    d=folder/'parts'/p['id'];d.mkdir(parents=True,exist_ok=True)
-   (d/'.drawing-invalid').write_text('Part type changed while documents were generated; regenerate')
-   full=False;changed=True
- if payload.get('release') and changed:raise RuntimeError('Part types changed while the release pack was generated; regenerate documents and release again')
- if payload.get('release'):
-  with db.connect() as c:c.execute('UPDATE revisions SET status="released" WHERE id=?',(rid,));db.audit(c,'worker','revision.released',{},rid)
- if full:(folder/'.documents-stale').unlink(missing_ok=True)
- progress(rid,100,'Documents generated')
+   (d/'.drawing-invalid').write_text('Part type changed while documents were generated; regenerate');changed.append(p['name'])
+ # ---- 5. outcome
+ essential_missing=[(n,m) for n,m in missing if n in ('assembly.pdf','machining-drawings.pdf','sheet-metal-drawings.pdf')]
+ summary=[]
+ if failures:summary.append(f"{len(failures)} part{'s' if len(failures)!=1 else ''} could not be drawn: "+', '.join(f"{n} ({m})" for _,n,m in failures[:5])+(' …' if len(failures)>5 else ''))
+ if missing:summary.append('not generated: '+', '.join(f"{n} ({m})" for n,m in missing[:4])+(' …' if len(missing)>4 else ''))
+ if changed:summary.append(f"{len(changed)} part{'s' if len(changed)!=1 else ''} changed type during the run and need regenerating")
+ with db.connect() as c:db.audit(c,'worker','documents.generated',{'release':release,'parts':len(ok),'failed':[(n,m) for _,n,m in failures],'missing':missing,'retyped':changed},rid)
+ if release:
+  if failures or essential_missing or changed:
+   raise ReleaseRefused('Release refused - '+'; '.join(summary or ['the revision changed during the run'])+'. Fix or exclude these, regenerate, then release again.')
+  with db.connect() as c:c.execute('UPDATE revisions SET status="released" WHERE id=?',(rid,));db.audit(c,'worker','revision.released',{'warnings':release_warnings,'supplementary_missing':missing},rid)
+ if full and not changed:(folder/'.documents-stale').unlink(missing_ok=True)
+ progress(rid,100,('Released' if release else 'Documents generated')+(' · '+'; '.join(summary) if summary else ''))
+ return summary
 
 def process_instructions(rid):
  """Assembly work instructions: one rendered page per step (can take minutes on a large assembly)."""
@@ -432,7 +481,10 @@ def heal_flat_results():
    db.audit(c,'worker','documents.requested',{'part_ids':ids,'reason':'re-check flat patterns'},rev['id'])
 
 def perform_job(job):
- (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else __import__('app.replace',fromlist=['x']).process_replace(job['revision_id'],json.loads(job['payload'])) if job['kind']=='replace' else process_documents(job['revision_id'],json.loads(job['payload'])))
+ out=(process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else __import__('app.replace',fromlist=['x']).process_replace(job['revision_id'],json.loads(job['payload'])) if job['kind']=='replace' else process_documents(job['revision_id'],json.loads(job['payload'])))
+ if isinstance(out,list) and out:
+  # finished, but not everything could be generated: keep the summary on the job so the workspace can show it
+  with db.connect() as c:c.execute('UPDATE jobs SET error=? WHERE id=?',('; '.join(out)[:1000],job['id']))
  progress(job['revision_id'],99,'Uploading generated artifacts')
  storage.sync_revision(job['revision_id'],db.revdir(job['revision_id']))
 
@@ -453,30 +505,40 @@ def run_once():
    run_bounded([sys.executable,'-m','app.worker','--job',job['id']],timeout,env={**os.environ,'DATA_DIR':str(db.ROOT),'PYTHONPATH':str(Path(__file__).resolve().parent.parent)+os.pathsep+os.getenv('PYTHONPATH','')},should_stop=stop)
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
-   c.execute('UPDATE revisions SET progress=100,message=? WHERE id=?',({'import':'Analysis complete','instructions':'Assembly instructions ready','welding':'Welding document ready','replace':'Part geometry updated'}.get(job['kind'],'Documents generated'),job['revision_id']))
+   summary=(c.execute('SELECT error FROM jobs WHERE id=?',(job['id'],)).fetchone() or [''])[0] or ''
+   base={'import':'Analysis complete','instructions':'Assembly instructions ready','welding':'Welding document ready','replace':'Part geometry updated'}.get(job['kind'],'Released' if json.loads(job['payload']).get('release') else 'Documents generated')
+   c.execute('UPDATE revisions SET progress=100,message=? WHERE id=?',((base+(' · '+summary if summary else ''))[:900],job['revision_id']))
  except Exception as e:
   from .job_timeout import JobCancelled
   cancelled=isinstance(e,JobCancelled)
   if not cancelled:traceback.print_exc()
-  payload=json.loads(job['payload'])
+  payload=json.loads(job['payload']);folder=db.revdir(job['revision_id'])
+  stored=(db.row('SELECT error FROM jobs WHERE id=?',(job['id'],)) or {}).get('error') or ''
+  touched=[]   # parts this run drew or started (their drawings may carry a stamp that no longer applies)
   if job['kind']=='documents' and not payload.get('assembly_only'):
-   ids=payload.get('part_ids') or ([payload['part_id']] if payload.get('part_id') else [p['id'] for p in db.rows('SELECT id FROM parts WHERE revision_id=?',(job['revision_id'],))])
-   for pid in ids:
-    part_folder=db.revdir(job['revision_id'])/'parts'/pid;part_folder.mkdir(parents=True,exist_ok=True)
-    # a cancelled run only touched the parts it started; parts it never reached keep their drawings
-    if cancelled:
-     mark=part_folder/'.drawing-job'
-     if not mark.exists() or mark.read_text().strip()!=job['id']:continue
-    (part_folder/'.drawing-invalid').write_text('Document generation '+('cancelled' if cancelled else 'failed')+'; regenerate before review')
+   for d in (folder/'parts').glob('*'):
+    mark=d/'.drawing-job'
+    if mark.exists() and mark.read_text().strip()==job['id']:touched.append(d.name)
+   if not cancelled and not touched:
+    touched=payload.get('part_ids') or ([payload['part_id']] if payload.get('part_id') else [])
+   for pid in touched:
+    d=folder/'parts'/pid;d.mkdir(parents=True,exist_ok=True)
+    (d/'.drawing-invalid').write_text('Document generation '+('cancelled' if cancelled else 'did not complete')+('; the release was not completed' if payload.get('release') else '')+' - regenerate before review')
   if payload.get('release'):
-   # Never leave partial outputs stamped RELEASED after a failed release.
-   folder=db.revdir(job['revision_id'])
-   for artifact in folder.rglob('*'):
-    if artifact.suffix in ('.pdf','.dxf','.zip') or artifact.name in ('flat.json','flat.glb','projections.json','drawing-scene.json','characteristics.json'):artifact.unlink(missing_ok=True)
+   # a release that did not complete: nothing that says RELEASED may be downloaded. Part drawings are blocked by the
+   # marker above; the revision-level documents are removed. Flat patterns and analysis data are kept - they carry
+   # no stamp and the next run needs them.
+   for name in ['manufacturing-pack.zip','machining-drawings.pdf','sheet-metal-drawings.pdf','assembly.pdf','assembly-instructions.pdf','welding.pdf','BOM.pdf','BOM.csv','cut-list.csv']:(folder/name).unlink(missing_ok=True)
+   (folder/'.documents-stale').write_text('The release did not complete; regenerate the manufacturing pack')
+   if touched and not cancelled and not isinstance(e,TimeoutError):
+    # bring the drawings back to draft automatically (same parts, without the release stamp)
+    with db.connect() as c:
+     c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(db.uid(),job['revision_id'],'documents','queued',db.now(),'',json.dumps({'part_ids':touched,'after_release':job['id'],'keep_reviews':True})))   # same content as reviewed, only the stamp changes
   with db.connect() as c:
    who=(db.row('SELECT error FROM jobs WHERE id=?',(job['id'],)) or {}).get('error') or ''
-   c.execute('UPDATE jobs SET status=?,error=? WHERE id=?',('cancelled' if cancelled else 'failed',(who or 'Cancelled') if cancelled else str(e)[:1000],job['id']))
-   c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',(('Cancelled' if cancelled else 'Job failed: '+str(e)[:900]),job['revision_id']))
+   msg=(who or 'Cancelled') if cancelled else (stored or str(e))[:1000]
+   c.execute('UPDATE jobs SET status=?,error=? WHERE id=?',('cancelled' if cancelled else 'failed',msg,job['id']))
+   c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',(('Cancelled' if cancelled else msg[:900]),job['revision_id']))
    if json.loads(job['payload']).get('release'):c.execute('UPDATE revisions SET status="ready",release_by=NULL,release_at=NULL WHERE id=?',(job['revision_id'],))
    if job['kind']=='import':c.execute('UPDATE revisions SET status="failed" WHERE id=?',(job['revision_id'],))
    if job['kind']=='replace' and payload.get('version_id'):c.execute('UPDATE part_versions SET status="failed",message=? WHERE id=? AND status="processing"',(('Cancelled' if cancelled else str(e)[:1000]),payload['version_id']))
@@ -485,7 +547,13 @@ if __name__=='__main__':
  import sys
  if len(sys.argv)==3 and sys.argv[1]=='--job':
   os.environ['FORGE_JOB_ID']=sys.argv[2]
-  perform_job(db.row('SELECT * FROM jobs WHERE id=?',(sys.argv[2],)))
+  try:perform_job(db.row('SELECT * FROM jobs WHERE id=?',(sys.argv[2],)))
+  except Exception as e:
+   traceback.print_exc()
+   # a plain sentence for the workspace; the traceback stays in the container log
+   msg=str(e) if isinstance(e,(ReleaseRefused,ValueError,RuntimeError)) and str(e) else f"{type(e).__name__}: {str(e)[:300]}"
+   with db.connect() as c:c.execute('UPDATE jobs SET error=? WHERE id=?',(msg[:1000],sys.argv[2]))
+   sys.exit(1)
  else:
   db.init()
   # An interrupted job must not silently restart indefinitely after container restarts.
