@@ -306,6 +306,7 @@ def process_documents(rid,payload):
  if payload.get('release'):
   from .rules import evaluate
   for p in selected:
+   if p['category'] in ('purchased','other'):continue   # same scope as the release check: other parts need no checks
    failures=[f for f in evaluate(p['geometry'],p['spec'],rules) if f['severity']=='blocker' and (not f['waiver'] or f['code']=='GEO001')]
    if failures:raise ValueError('Release checks changed during regeneration: '+p['name']+' '+str([f['code'] for f in failures]))
  for p in selected:
