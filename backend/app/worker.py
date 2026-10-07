@@ -390,6 +390,18 @@ def process_welding(rid):
  from .welding import welding_pdf
  progress(rid,20,'Drawing the welding document');welding_pdf(rid);progress(rid,100,'Welding document ready')
 
+# Messages written only by the over-strict pre-checks shipped briefly on 2026-10-07 (removed again): parts whose saved
+# flat result came from them are regenerated once so they show the unfolder's real result.
+_BAD_FLAT=('not recognised as a bend','Conical or freeform faces cannot be developed')
+def heal_flat_results():
+ for rev in db.rows("SELECT id FROM revisions WHERE state='active' AND status='ready'"):
+  ids=[p['id'] for p in db.rows("SELECT id,geometry FROM parts WHERE revision_id=? AND category='sheet_metal'",(rev['id'],))
+       if any(m in (json.loads(p['geometry']).get('flat_message') or '') for m in _BAD_FLAT)]
+  if not ids or db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running","cancelling")',(rev['id'],)):continue
+  with db.connect() as c:
+   c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(db.uid(),rev['id'],'documents','queued',db.now(),'',json.dumps({'part_ids':ids})))
+   db.audit(c,'worker','documents.requested',{'part_ids':ids,'reason':'re-check flat patterns'},rev['id'])
+
 def perform_job(job):
  (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else __import__('app.replace',fromlist=['x']).process_replace(job['revision_id'],json.loads(job['payload'])) if job['kind']=='replace' else process_documents(job['revision_id'],json.loads(job['payload'])))
  progress(job['revision_id'],99,'Uploading generated artifacts')
@@ -451,5 +463,7 @@ if __name__=='__main__':
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="failed",error="Worker restarted before job completed; retry generation" WHERE status="running" AND kind!="import"')
    c.execute('UPDATE jobs SET status="queued" WHERE status="running" AND kind="import"')
+  try:heal_flat_results()
+  except Exception:traceback.print_exc()
   while True:
    if not run_once():time.sleep(1)

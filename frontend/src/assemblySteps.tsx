@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
-  X, Plus, Trash2, Loader2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play, Pause, RotateCcw, FileDown, Pencil, Eye, Crosshair, Search, Wrench, ListOrdered, Check, Boxes, Package, Camera, RefreshCw,
+  X, Plus, Trash2, Loader2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play, Pause, RotateCcw, FileDown, Pencil, Eye, Crosshair, Search, Wrench, ListOrdered, Check, Boxes, Package, Camera, RefreshCw, FileImage,
 } from 'lucide-react';
 import PartScene, { type SceneApi, type SceneBody } from './partScene';
 import { cn } from '@/lib/utils';
@@ -20,7 +20,7 @@ type Occ = { part: string; occurrences: number[] };
 type HoleRef = { part: string; occurrence: number; hole: string };
 type Fastener = { kind: string; standard?: string; size?: string; length?: number; item?: string; name?: string; pn?: string; qty: number; torque?: string; threadlock?: string; note?: string; holes: HoleRef[]; designation?: string; _qtyManual?: boolean };
 /** A saved camera angle of a step (assembly mm); the instructions PDF draws the step from every shot, in order. */
-type Shot = { id: string; name: string; position: number[]; target: number[]; up: number[]; fov: number; aspect: number };
+type Shot = { id: string; name: string; position: number[]; target: number[]; up: number[]; fov: number; aspect: number; page?: 'auto' | 'own' };
 export type Step = { id: string; seq: number; group: string; subs: string[]; title: string; parts: Occ[]; method: string; fasteners: Fastener[]; welds: string[]; notes: string; tools: string; check: string; approach: string; shots?: Shot[] };
 type Group = { id: string; name: string; seq: number; notes?: string };
 type State = Map<string, 'new' | 'done'>;
@@ -299,7 +299,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     const sh = currentShot(list.length ? `View ${list.length + 1}` : 'Main view'); if (!sh) return;
     change({ shots: [...list, sh] }, true); setShotAt(list.length);
   };
-  const updateShot = (i: number) => { if (!step) return; const list = step.shots || []; const sh = currentShot(list[i].name, list[i].id); if (sh) change({ shots: list.map((x, k) => k === i ? sh : x) }, true); };
+  const updateShot = (i: number) => { if (!step) return; const list = step.shots || []; const sh = currentShot(list[i].name, list[i].id); if (sh) change({ shots: list.map((x, k) => k === i ? { ...sh, page: x.page } : x) }, true); };
   const moveShot = (i: number, d: number) => { if (!step) return; const list = [...(step.shots || [])]; const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; change({ shots: list }, true); setShotAt(j); };
 
   // frame what is built so far (this step included), keeping the reader's viewing direction
@@ -630,6 +630,8 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
                   <div key={sh.id} className={cn(COMP_ROW, shotAt === i && 'border-primary/40 bg-selection/50')}>
                     <span className="grid size-5 shrink-0 place-items-center rounded-full bg-muted text-2xs font-medium tabular-nums">{i + 1}</span>
                     <Input className="h-7 min-w-0 flex-1 px-2 text-sm" value={sh.name} maxLength={60} aria-label={`Shot ${i + 1} name`} onFocus={() => { applyShot(sh); setShotAt(i); }} onChange={e => change({ shots: list.map((x, k) => k === i ? { ...x, name: e.target.value } : x) })} />
+                    {i === 0 ? <span className="shrink-0 rounded bg-muted px-1.5 text-2xs text-muted-foreground" title="The first shot is printed next to the step's instructions">Main</span>
+                      : <Button type="button" variant="ghost" size="xs" className={cn('h-6 shrink-0 px-1.5 text-2xs font-normal', sh.page === 'own' ? 'bg-selection text-selection-foreground hover:bg-selection' : 'text-muted-foreground')} title={sh.page === 'own' ? 'Printed on a page of its own — click to share a page' : 'Shares a page with the next view — click to give it a page of its own'} onClick={() => change({ shots: list.map((x, k) => k === i ? { ...x, page: x.page === 'own' ? 'auto' : 'own' } : x) }, true)}><FileImage className="size-3" />{sh.page === 'own' ? 'Own page' : '½ page'}</Button>}
                     <Button type="button" variant="ghost" size="icon-xs" title="Show this shot" onClick={() => { applyShot(sh); setShotAt(i); }}><Eye /></Button>
                     <Button type="button" variant="ghost" size="icon-xs" title="Replace with the current view" onClick={() => updateShot(i)}><RefreshCw /></Button>
                     <Button type="button" variant="ghost" size="icon-xs" title="Earlier in the PDF" disabled={i === 0} onClick={() => moveShot(i, -1)}><ChevronUp /></Button>
@@ -637,7 +639,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
                     <Button type="button" variant="ghost" size="icon-xs" className={DANGER} title="Delete shot" onClick={() => { change({ shots: list.filter((_, k) => k !== i) }, true); setShotAt(null); }}><Trash2 /></Button>
                   </div>))}
                 <Button type="button" variant="outline" size="sm" className="self-start" disabled={!scene.current || (step.shots || []).length >= 12} onClick={saveShot}><Camera />Save current view{(step.shots || []).length ? ' as another shot' : ''}</Button>
-                {(step.shots || []).length > 0 && <small className="text-xs text-muted-foreground">The PDF shows {(step.shots || []).length === 1 ? 'this shot' : `all ${(step.shots || []).length} shots, in this order`} (up to 4 per page).</small>}
+                {(step.shots || []).length > 0 && <small className="text-xs leading-relaxed text-muted-foreground">{(step.shots || []).length === 1 ? 'Printed large next to the instructions.' : 'Main shot next to the instructions; the others follow two per page, in this order — or on a page of their own.'}</small>}
               </div>
             </>}
           </aside>}

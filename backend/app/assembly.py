@@ -208,7 +208,7 @@ def clean_shots(shots):
             raise HTTPException(422, f'Camera shot {i + 1} has no viewing direction')
         out.append({'id': str(sh.get('id') or uuid.uuid4().hex[:8])[:16], 'name': str(sh.get('name') or f'View {i + 1}').strip()[:60],
                     'position': [round(x, 4) for x in pos], 'target': [round(x, 4) for x in tgt], 'up': [round(x, 6) for x in up],
-                    'fov': min(max(fov, 5.0), 120.0), 'aspect': min(max(aspect, .2), 5.0)})
+                    'fov': min(max(fov, 5.0), 120.0), 'aspect': min(max(aspect, .2), 5.0), 'page': 'own' if sh.get('page') == 'own' else 'auto'})
     return out
 
 
@@ -520,6 +520,94 @@ def instructions_pdf(rid, progress=None):
         return out
     states = build_states(steps)
     gname = {g['id']: g['name'] for g in groups_of(rid)}
+
+    def view_pages(vs, shots):
+        """Pages for a step's views after its main one: a view marked 'own page' fills a page; the others go two to a
+        page - stacked when both are wide, side by side otherwise - so every picture stays large."""
+        pages, pend = [], []
+        def flush():
+            while pend:
+                a = pend.pop(0)
+                if pend:
+                    b = pend.pop(0)
+                    wide = all(sh.get('aspect', 1.5) >= 1.15 for sh in (a[1], b[1]))
+                    pages.append(('stack' if wide else 'side', [a[0], b[0]]))
+                else:
+                    pages.append(('full', [a[0]]))
+        for v_, sh in zip(vs, shots):
+            if sh.get('page') == 'own':
+                flush(); pages.append(('full', [v_]))
+            else:
+                pend.append((v_, sh))
+        flush()
+        return pages
+
+    def extra_count(step):
+        shots = step.get('shots') or []
+        n, pend = 0, 0
+        for sh in shots[1:]:
+            if sh.get('page') == 'own':
+                n += (pend + 1) // 2 + 1; pend = 0
+            else:
+                pend += 1
+        return n + (pend + 1) // 2
+
+    total_pages = 1 + sum(1 + extra_count(st) for st in steps)
+    page_no = [0]
+
+    # ---- cover: the complete assembly, the build order and where each step starts
+    header('Cover')
+    everything = []
+    for pid, lst in inst.items():
+        prow = parts.get(pid)
+        if not prow:
+            continue
+        md0 = part_mesh(rid, pid)
+        if md0 is None:
+            continue
+        for o in range(len(lst)):
+            everything.append(placed(md0, matrix(pid, o), DONE))
+    c.setFillColorRGB(.06, .09, .16)
+    c.setFont('Helvetica-Bold', 22)
+    c.drawString(12 * mm, H - 26 * mm, (rev['project_name'] or 'Assembly')[:48])
+    c.setFont('Helvetica', 11)
+    c.setFillColorRGB(.35, .4, .47)
+    c.drawString(12 * mm, H - 33 * mm, f"{(rev['project_code'] or '').strip()}  ·  Revision {rev['number']}  ·  {len(steps)} steps  ·  {len(parts)} part types")
+    if everything:
+        mdc = merge(everything)
+        cover_n = VIEW_N
+        r_, u_ = frame(cover_n)
+        P2 = np.c_[mdc['v'] @ r_, mdc['v'] @ u_]
+        lo_, hi_ = P2.min(0), P2.max(0)
+        pad = (hi_ - lo_) * .03 + 1
+        lo_, hi_ = lo_ - pad, hi_ + pad
+        img = view_image(mdc, cover_n, r_, lo_, hi_, px_per_mm=2000 / max(hi_ - lo_), max_px=2000)
+        bx0, by0, bx1, by1 = 12 * mm, 16 * mm, 196 * mm, H - 40 * mm
+        sc = min((bx1 - bx0) / (hi_ - lo_)[0], (by1 - by0) / (hi_ - lo_)[1])
+        iw, ih = (hi_ - lo_)[0] * sc, (hi_ - lo_)[1] * sc
+        c.drawImage(ImageReader(io.BytesIO(img)), bx0 + (bx1 - bx0 - iw) / 2, by0 + (by1 - by0 - ih) / 2, iw, ih)
+    # contents
+    tx, ty = 206 * mm, H - 26 * mm
+    c.setFillColorRGB(.4, .45, .52); c.setFont('Helvetica-Bold', 7.5)
+    c.drawString(tx, ty, 'BUILD ORDER'); ty -= 6 * mm
+    pno = 2
+    for k2, st in enumerate(steps):
+        if ty < 20 * mm:
+            c.setFont('Helvetica', 8.5); c.drawString(tx, ty, f'… {len(steps) - k2} more steps'); break
+        c.setFillColorRGB(.06, .09, .16); c.setFont('Helvetica', 8.5)
+        title = st.get('title') or METHODS.get(st.get('method'), 'Step')
+        sub = (gname.get(st.get('group'), '') + ': ') if st.get('group') else ''
+        line = f"{k2 + 1}. {sub}{title}"
+        c.drawString(tx, ty, line[:46] + ('…' if len(line) > 46 else ''))
+        c.setFillColorRGB(.45, .5, .56); c.drawRightString(W - 12 * mm, ty, str(pno))
+        pno += 1 + extra_count(st)
+        ty -= 4.8 * mm
+    c.setFont('Helvetica', 7); c.setFillColorRGB(.45, .5, .56)
+    c.drawString(12 * mm, 8 * mm, 'Complete assembly as built at the end of these instructions')
+    page_no[0] += 1
+    c.drawRightString(W - 12 * mm, 8 * mm, f'Page {page_no[0]} of {total_pages}')
+    c.showPage()
+
     for k, s in enumerate(steps):
         if progress:
             progress(k + 1, len(steps))
@@ -600,24 +688,10 @@ def instructions_pdf(rid, progress=None):
                 c.setFont('Helvetica-Bold', 7)
                 c.drawString(x + 2.6 * mm, y_ + 1.6 * mm, chr(65 + fi % 26))
 
-        def grid(n, box):
-            """Picture boxes for n views inside box: 1 = whole, 2 = side by side (stacked if tall), 3-4 = 2 x 2."""
-            x0_, y0_, x1_, y1_ = box; g_ = 3 * mm
-            if n == 1:
-                return [box]
-            if n == 2:
-                if (x1_ - x0_) >= (y1_ - y0_):
-                    w_ = (x1_ - x0_ - g_) / 2
-                    return [(x0_, y0_, x0_ + w_, y1_), (x0_ + w_ + g_, y0_, x1_, y1_)]
-                h_ = (y1_ - y0_ - g_) / 2
-                return [(x0_, y0_ + h_ + g_, x1_, y1_), (x0_, y0_, x1_, y0_ + h_)]
-            w_, h_ = (x1_ - x0_ - g_) / 2, (y1_ - y0_ - g_) / 2
-            return [(x0_, y0_ + h_ + g_, x0_ + w_, y1_), (x0_ + w_ + g_, y0_ + h_ + g_, x1_, y1_), (x0_, y0_, x0_ + w_, y0_ + h_), (x0_ + w_ + g_, y0_, x1_, y0_ + h_)][:n]
-
         views = views_of(s) if md is not None else []
-        first, rest = views[:4], views[4:]
-        for v_, b_ in zip(first, grid(len(first), (12 * mm, 16 * mm, 182 * mm, H - 34 * mm)) if first else []):
-            draw_view(v_, b_)
+        if views:
+            draw_view(views[0], (12 * mm, 16 * mm, 182 * mm, H - 22 * mm))
+        extra_pages = view_pages(views[1:], (s.get('shots') or [])[1:])
         # right column
         x0, y = 192 * mm, H - 24 * mm
         colw = W - x0 - 12 * mm
@@ -686,16 +760,30 @@ def instructions_pdf(rid, progress=None):
         c.setFont('Helvetica', 7)
         c.setFillColorRGB(.45, .5, .56)
         c.drawString(12 * mm, 8 * mm, 'Blue: fitted in this step · grey: already assembled · red letters: fastener positions')
-        c.drawRightString(W - 12 * mm, 8 * mm, f'Step {k + 1}/{len(steps)}')
+        page_no[0] += 1
+        c.drawRightString(W - 12 * mm, 8 * mm, f'Page {page_no[0]} of {total_pages}')
         c.showPage()
-        for chunk in range(0, len(rest), 4):
-            header(f"Step {k + 1} of {len(steps)} · more views")
-            part_views = rest[chunk:chunk + 4]
-            for v_, b_ in zip(part_views, grid(len(part_views), (12 * mm, 16 * mm, W - 12 * mm, H - 24 * mm))):
+        n_views = len(views)
+        shown = 1
+        for kind, pv in extra_pages:
+            first_no, last_no = shown + 1, shown + len(pv)
+            shown = last_no
+            header(f"Step {k + 1} of {len(steps)} · view {first_no}{'' if first_no == last_no else '–' + str(last_no)} of {n_views}")
+            area = (12 * mm, 16 * mm, W - 12 * mm, H - 18 * mm)
+            if kind == 'stack':
+                mid = (area[1] + area[3]) / 2
+                cells = [(area[0], mid + 2 * mm, area[2], area[3]), (area[0], area[1], area[2], mid - 2 * mm)]
+            elif kind == 'side':
+                mid = (area[0] + area[2]) / 2
+                cells = [(area[0], area[1], mid - 2.5 * mm, area[3]), (mid + 2.5 * mm, area[1], area[2], area[3])]
+            else:
+                cells = [area]
+            for v_, b_ in zip(pv, cells):
                 draw_view(v_, b_)
             c.setFont('Helvetica', 7); c.setFillColorRGB(.45, .5, .56)
             c.drawString(12 * mm, 8 * mm, f"{k + 1}. {s.get('title') or METHODS.get(s.get('method'), 'Step')} — continued")
-            c.drawRightString(W - 12 * mm, 8 * mm, f'Step {k + 1}/{len(steps)}')
+            page_no[0] += 1
+            c.drawRightString(W - 12 * mm, 8 * mm, f'Page {page_no[0]} of {total_pages}')
             c.showPage()
     c.save()
     return out
