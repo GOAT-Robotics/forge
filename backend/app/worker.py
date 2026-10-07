@@ -397,7 +397,8 @@ def heal_flat_results():
  for rev in db.rows("SELECT id FROM revisions WHERE state='active' AND status='ready'"):
   ids=[p['id'] for p in db.rows("SELECT id,geometry FROM parts WHERE revision_id=? AND category='sheet_metal'",(rev['id'],))
        if any(m in (json.loads(p['geometry']).get('flat_message') or '') for m in _BAD_FLAT)]
-  if not ids or db.row('SELECT id FROM jobs WHERE revision_id=? AND status IN ("queued","running","cancelling")',(rev['id'],)):continue
+  # wait only for a documents run that would cover them anyway (other jobs, e.g. instructions, do not matter)
+  if not ids or db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running","cancelling")',(rev['id'],)):continue
   with db.connect() as c:
    c.execute('INSERT INTO jobs(id,revision_id,kind,status,created,error,payload) VALUES(?,?,?,?,?,?,?)',(db.uid(),rev['id'],'documents','queued',db.now(),'',json.dumps({'part_ids':ids})))
    db.audit(c,'worker','documents.requested',{'part_ids':ids,'reason':'re-check flat patterns'},rev['id'])
@@ -463,7 +464,11 @@ if __name__=='__main__':
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="failed",error="Worker restarted before job completed; retry generation" WHERE status="running" AND kind!="import"')
    c.execute('UPDATE jobs SET status="queued" WHERE status="running" AND kind="import"')
-  try:heal_flat_results()
-  except Exception:traceback.print_exc()
+  healed=0.0
   while True:
-   if not run_once():time.sleep(1)
+   if run_once():continue
+   if time.time()-healed>60:
+    healed=time.time()
+    try:heal_flat_results()
+    except Exception:traceback.print_exc()
+   time.sleep(1)
