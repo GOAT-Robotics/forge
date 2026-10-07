@@ -1,9 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Pause, Play, RotateCcw, X, Maximize, Wrench, ListOrdered, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
+import { Pause, Play, RotateCcw, X, Maximize, Wrench, ListOrdered, ArrowUp, ArrowDown, AlertTriangle, Loader2 } from 'lucide-react';
 import { CadControls, type NavStyle } from './cadControls';
 import { api, loadSecureModel } from './api';
 import { rollCentres } from './rollGeometry';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Select } from './controls';
+import { SceneState } from './partScene';
+
+// scene tool buttons (top-left glass group)
+const tool = 'text-muted-foreground hover:text-foreground';
+const toolOn = 'bg-selection text-primary hover:bg-selection hover:text-primary';
 
 /** Server data (backend/app/bendsim.py): developed blank split into flanges and curling bend strips. */
 type SimBend = { id: string; L: number[]; u: number[]; v: number[]; n: number[]; w: number; angle: number; radius: number; s: number; length: number; twin: number | null; stroke?: { center: number; span: number; ids: string[] } };
@@ -382,44 +391,42 @@ export default function PressBrake({ revision, part, name, navStyle = 'forge', c
   };
 
   return (
-    <div className="overlay top cfg-overlay" role="dialog" aria-label="Press brake simulation" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
-      <div className="cfg-dialog pb-dialog">
-        <header className="cfg-head">
-          <div className="cfg-title"><b>{nRoll ? 'Forming simulation' : 'Press brake simulation'}</b><small>{name}{sim?.part?.material ? ' · ' + sim.part.material : ''}{sim ? ` · t ${sim.thickness} mm · ${nRoll ? `${nRoll} rolled curve${nRoll === 1 ? '' : 's'}${seq.length - nRoll ? ', ' : ''}` : ''}${seq.length - nRoll || !nRoll ? `${seq.length - nRoll} bend${seq.length - nRoll === 1 ? '' : 's'}` : ''}${sim.bends.length > seq.length ? ` (${sim.bends.length} bend lines, collinear ones in one stroke)` : ''}` : ''}</small></div>
-          <button type="button" className="icon cfg-close" aria-label="Close" title="Close (Esc)" onClick={close}><X size={18} /></button>
+    <div data-forge-config="" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-[2vw] py-[2.5vh] backdrop-blur-[3px]" role="dialog" aria-label="Press brake simulation" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
+      <div data-slot="dialog-content" className="flex h-[min(860px,92vh)] w-[min(1280px,94vw)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-pop">
+        <header className="flex min-h-14 items-center gap-4 border-b py-2.5 pr-3 pl-4">
+          <div className="mr-auto flex min-w-0 flex-col"><span className="truncate text-lg font-semibold">{nRoll ? 'Forming simulation' : 'Press brake simulation'}</span><small className="truncate text-xs text-muted-foreground">{name}{sim?.part?.material ? ' · ' + sim.part.material : ''}{sim ? ` · t ${sim.thickness} mm · ${nRoll ? `${nRoll} rolled curve${nRoll === 1 ? '' : 's'}${seq.length - nRoll ? ', ' : ''}` : ''}${seq.length - nRoll || !nRoll ? `${seq.length - nRoll} bend${seq.length - nRoll === 1 ? '' : 's'}` : ''}${sim.bends.length > seq.length ? ` (${sim.bends.length} bend lines, collinear ones in one stroke)` : ''}` : ''}</small></div>
+          <Button type="button" variant="ghost" size="icon" aria-label="Close" title="Close (Esc)" onClick={close}><X /></Button>
         </header>
-        <div className="pb-stage">
-          <div ref={host} className="pscene-gl" />
-          <div className="pscene-tools">
-            <button type="button" title="Reset view" onClick={() => state.current.fit()}><Maximize size={15} /></button>
-            <button type="button" title={tooling ? 'Hide tooling' : 'Show tooling'} className={tooling ? 'on' : ''} onClick={() => setTooling(v => !v)}><Wrench size={15} /></button>
-            <button type="button" title="Bending sequence" className={seqOpen ? 'on' : ''} disabled={!sim} onClick={() => setSeqOpen(v => !v)}><ListOrdered size={15} /></button>
+        <div className="relative min-h-0 flex-1 bg-white">
+          <div ref={host} className="absolute inset-0 [&_canvas]:block [&_canvas]:touch-none" />
+          <div className="glass absolute top-3 left-3 z-[2] flex gap-0.5 rounded-xl p-1">
+            <Button type="button" variant="ghost" size="icon-sm" className={tool} title="Reset view" onClick={() => state.current.fit()}><Maximize /></Button>
+            <Button type="button" variant="ghost" size="icon-sm" className={cn(tool, tooling && toolOn)} title={tooling ? 'Hide tooling' : 'Show tooling'} onClick={() => setTooling(v => !v)}><Wrench /></Button>
+            <Button type="button" variant="ghost" size="icon-sm" className={cn(tool, seqOpen && toolOn)} title="Bending sequence" disabled={!sim} onClick={() => setSeqOpen(v => !v)}><ListOrdered /></Button>
           </div>
           {sim && seqOpen && <Sequence sim={sim} current={step} canEdit={canEdit} notice={notice} go={i => { const st = sim.plan[i]; seek(tl.starts[i] + (st.process === 'roll' ? ROLL_MOVE + 0.5 * ROLL_PASS : PER_BEND * PHASES.press)); setPlaying(false); }} save={saveOrder} close={() => setSeqOpen(false)} />}
-          {!sim && !error && <div className="pscene-state"><span className="spinner" />Preparing simulation…</div>}
-          {error && <div className="pscene-state">{error}</div>}
-          {cur && <div className="pb-info">
-            <b>{curStep?.process === 'roll' ? `Rolling ${Math.min(step + 1, seq.length)} of ${seq.length} · pass ${rollPass} of ${curStep.roll?.passes || 2}` : `Bend ${Math.min(step + 1, seq.length)} of ${seq.length}`}</b>
-            <span>{cur.stroke ? cur.stroke.ids.join(' + ') + ' (one stroke)' : cur.id} · {cur.angle.toFixed(cur.angle % 1 ? 1 : 0)}° {cur.s > 0 ? 'up' : 'down'} · R{cur.radius.toFixed(2)}</span>
-            {curStep && <span className="pb-tool">{toolLabel(curStep, sim!.tooling)}</span>}
-            {curStep && Object.keys(curStep.clash || {}).length > 0 && <span className="pb-clash"><AlertTriangle size={13} />Hits the {Object.keys(curStep.clash).map(k => CLASH[k] || k).join(' and ')} — needs special tooling or another sequence</span>}
+          {!sim && !error && <SceneState><Loader2 className="size-4 animate-spin text-primary" />Preparing simulation…</SceneState>}
+          {error && <SceneState>{error}</SceneState>}
+          {cur && <div className="glass pointer-events-none absolute top-3 right-3 flex max-w-[340px] flex-col gap-0.5 rounded-xl px-3 py-2 text-xs">
+            <span className="text-sm font-medium">{curStep?.process === 'roll' ? `Rolling ${Math.min(step + 1, seq.length)} of ${seq.length} · pass ${rollPass} of ${curStep.roll?.passes || 2}` : `Bend ${Math.min(step + 1, seq.length)} of ${seq.length}`}</span>
+            <span className="text-muted-foreground">{cur.stroke ? cur.stroke.ids.join(' + ') + ' (one stroke)' : cur.id} · {cur.angle.toFixed(cur.angle % 1 ? 1 : 0)}° {cur.s > 0 ? 'up' : 'down'} · R{cur.radius.toFixed(2)}</span>
+            {curStep && <span className="text-muted-foreground">{toolLabel(curStep, sim!.tooling)}</span>}
+            {curStep && Object.keys(curStep.clash || {}).length > 0 && <span className="mt-1 inline-flex items-start gap-1.5 leading-snug font-medium text-destructive"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />Hits the {Object.keys(curStep.clash).map(k => CLASH[k] || k).join(' and ')} — needs special tooling or another sequence</span>}
           </div>}
-          {sim && !seqOpen && <div className={'pb-plan' + (clashes || unchecked ? ' bad' : '')} onClick={() => setSeqOpen(true)}>
-            {clashes ? <><AlertTriangle size={13} />{clashes} stroke{clashes === 1 ? '' : 's'} with a tool clash</> : <>{unchecked ? 'Tool collisions not checked' : 'No tool clash found in sampled poses'}</>}{sim.sequence === 'custom' ? ' · shop order' : ''}
+          {sim && !seqOpen && <div className={cn('absolute bottom-3 left-3 inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', clashes || unchecked ? 'border-destructive/25 bg-danger-soft text-destructive' : 'border-success/25 bg-success-soft text-success')} onClick={() => setSeqOpen(true)}>
+            {clashes ? <><AlertTriangle className="size-3.5" />{clashes} stroke{clashes === 1 ? '' : 's'} with a tool clash</> : <>{unchecked ? 'Tool collisions not checked' : 'No tool clash found in sampled poses'}</>}{sim.sequence === 'custom' ? ' · shop order' : ''}
           </div>}
         </div>
-        <footer className="pb-bar">
-          <button type="button" className="pb-play" title={playing ? 'Pause (Space)' : 'Play (Space)'} onClick={togglePlay} disabled={!sim}>
-            {playing ? <Pause size={16} /> : time >= total - 0.01 ? <RotateCcw size={16} /> : <Play size={16} />}
-          </button>
-          <div ref={bar} className="pb-track" onPointerDown={scrub}>
-            {seq.map((bi, i) => <div key={bi} className={'pb-seg' + (i < step || time >= total - 1.6 ? ' done' : i === step ? ' cur' : '') + (Object.keys(sim!.plan[i].clash || {}).length ? ' clash' : '')} style={{ left: `${tl.starts[i] / total * 100}%`, width: `${durOf(sim!.plan[i]) / total * 100}%` }}
-              title={`${sim!.bends[bi].stroke?.ids.join(' + ') || sim!.bends[bi].id} · ${sim!.bends[bi].angle}°`}><span>{i + 1}</span></div>)}
-            <div className="pb-head" style={{ left: `${time / total * 100}%` }} />
+        <footer className="flex items-center gap-3 border-t bg-card px-3.5 py-2.5">
+          <Button type="button" variant="outline" size="icon" className="shrink-0 rounded-full" title={playing ? 'Pause (Space)' : 'Play (Space)'} onClick={togglePlay} disabled={!sim}>
+            {playing ? <Pause /> : time >= total - 0.01 ? <RotateCcw /> : <Play />}
+          </Button>
+          <div ref={bar} className="relative h-7 flex-1 cursor-pointer touch-none overflow-hidden rounded-md bg-muted select-none" onPointerDown={scrub}>
+            {seq.map((bi, i) => { const clash = Object.keys(sim!.plan[i].clash || {}).length > 0; const done = i < step || time >= total - 1.6; const now = !done && i === step; return <div key={bi} className={cn('absolute inset-y-0 grid place-items-center border-r border-card text-xs font-medium tabular-nums', clash ? 'text-destructive' : 'text-success', clash ? (done ? 'bg-destructive/25' : 'bg-destructive/15') : done ? 'bg-success/25' : now ? 'bg-success/20' : 'bg-success/10')} style={{ left: `${tl.starts[i] / total * 100}%`, width: `${durOf(sim!.plan[i]) / total * 100}%` }}
+              title={`${sim!.bends[bi].stroke?.ids.join(' + ') || sim!.bends[bi].id} · ${sim!.bends[bi].angle}°`}><span>{i + 1}</span></div>; })}
+            <div className="pointer-events-none absolute inset-y-0.5 -ml-px w-[3px] rounded-sm bg-primary" style={{ left: `${time / total * 100}%` }} />
           </div>
-          <select className="pb-speed" value={speed} onChange={e => setSpeed(Number(e.target.value))} aria-label="Speed">
-            {[0.25, 0.5, 1, 2].map(s => <option key={s} value={s}>{s}×</option>)}
-          </select>
+          <div className="w-20 shrink-0"><Select size="sm" value={String(speed)} onChange={v => setSpeed(Number(v))} aria-label="Speed" options={[0.25, 0.5, 1, 2].map(s => ({ value: String(s), label: `${s}×` }))} /></div>
         </footer>
       </div>
     </div>
@@ -443,33 +450,35 @@ function Sequence({ sim, current, canEdit, notice, go, save, close }: { sim: Ben
   const procIds = () => Object.fromEntries(planned.map(bi => [sim.bends[bi].id, proc[bi]]));
   const apply = () => run(orderChanged || sim.sequence === 'custom' ? draft.map(bi => sim.bends[bi].id) : [], procIds());
   return (
-    <div className="pb-seq" onMouseDown={e => e.stopPropagation()}>
-      <header><b>Forming sequence</b><small>{sim.sequence === 'custom' ? 'Shop order, checked against the tooling' : 'Planned forming order · sampled tool checks'}</small>
-        <button type="button" className="icon" aria-label="Close" onClick={close}><X size={15} /></button></header>
-      <ol>{draft.map((bi, i) => {
+    <div className="absolute top-14 bottom-3 left-3 z-[3] flex w-[300px] flex-col rounded-xl border bg-popover text-popover-foreground shadow-pop" onMouseDown={e => e.stopPropagation()}>
+      <header className="relative flex flex-col gap-0.5 border-b py-2.5 pr-9 pl-3"><span className="text-sm font-medium">Forming sequence</span><small className="text-2xs text-muted-foreground">{sim.sequence === 'custom' ? 'Shop order, checked against the tooling' : 'Planned forming order · sampled tool checks'}</small>
+        <Button type="button" variant="ghost" size="icon-sm" className="absolute top-1.5 right-1.5" aria-label="Close" onClick={close}><X /></Button></header>
+      <ol className="m-0 flex-1 list-none overflow-auto p-1.5">{draft.map((bi, i) => {
         const b = sim.bends[bi], st = stepOf(bi), bad = !changed && Object.keys(st.clash || {}).length > 0;
         return (
-          <li key={bi} className={(i === current && !changed ? 'cur ' : '') + (bad ? 'clash' : '')} onClick={() => !changed && go(i)}>
-            <span className={'n' + (proc[bi] === 'roll' ? ' roll' : '')}>{i + 1}</span>
-            <span className="t"><b>{strokeName(b)}</b><small>{b.angle.toFixed(b.angle % 1 ? 1 : 0)}° {b.s > 0 ? 'up' : 'down'} · R{+b.radius.toFixed(2)}{!changed ? ' · ' + toolLabel(st, sim.tooling) : ''}</small>
-              {bad && <small className="pb-clash"><AlertTriangle size={11} />hits the {Object.keys(st.clash).map(k => CLASH[k] || k).join(' and ')}</small>}
-              {canEdit && <span className="pb-proc" onClick={e => e.stopPropagation()}>
-                {(['brake', 'roll'] as const).map(m => <button type="button" key={m} className={proc[bi] === m ? 'on' : ''} disabled={busy} onClick={() => setProc(x => ({ ...x, [bi]: m }))}>{m === 'brake' ? 'Press brake' : 'Roll'}</button>)}
+          <li key={bi} className={cn('flex cursor-pointer items-center gap-2 rounded-md p-1.5 hover:bg-accent', i === current && !changed && 'bg-selection hover:bg-selection')} onClick={() => !changed && go(i)}>
+            <span className={cn('grid size-[22px] shrink-0 place-items-center rounded-full text-2xs font-medium tabular-nums', bad ? 'bg-danger-soft text-destructive' : proc[bi] === 'roll' ? 'bg-primary/10 text-primary' : 'bg-success-soft text-success')}>{i + 1}</span>
+            <span className="flex min-w-0 flex-1 flex-col gap-px"><span className="truncate text-xs font-medium">{strokeName(b)}</span><small className="text-2xs text-muted-foreground">{b.angle.toFixed(b.angle % 1 ? 1 : 0)}° {b.s > 0 ? 'up' : 'down'} · R{+b.radius.toFixed(2)}{!changed ? ' · ' + toolLabel(st, sim.tooling) : ''}</small>
+              {bad && <small className="inline-flex items-center gap-1 text-2xs font-medium text-destructive"><AlertTriangle className="size-3" />hits the {Object.keys(st.clash).map(k => CLASH[k] || k).join(' and ')}</small>}
+              {canEdit && <span className="mt-1 self-start" onClick={e => e.stopPropagation()}>
+                <ToggleGroup type="single" variant="outline" size="sm" className="shadow-none" value={proc[bi]} disabled={busy} onValueChange={v => { if (v) setProc(x => ({ ...x, [bi]: v })); }}>
+                  {(['brake', 'roll'] as const).map(m => <ToggleGroupItem key={m} value={m} className="h-[22px] min-w-0 px-2 text-2xs font-normal text-muted-foreground data-[state=on]:bg-selection data-[state=on]:font-medium data-[state=on]:text-selection-foreground">{m === 'brake' ? 'Press brake' : 'Roll'}</ToggleGroupItem>)}
+                </ToggleGroup>
               </span>}</span>
-            {canEdit && <span className="mv">
-              <button type="button" className="icon" aria-label="Earlier" disabled={i === 0 || busy} onClick={e => { e.stopPropagation(); move(i, -1); }}><ArrowUp size={13} /></button>
-              <button type="button" className="icon" aria-label="Later" disabled={i === draft.length - 1 || busy} onClick={e => { e.stopPropagation(); move(i, 1); }}><ArrowDown size={13} /></button>
+            {canEdit && <span className="flex shrink-0 gap-0.5">
+              <Button type="button" variant="ghost" size="icon-xs" aria-label="Earlier" disabled={i === 0 || busy} onClick={e => { e.stopPropagation(); move(i, -1); }}><ArrowUp /></Button>
+              <Button type="button" variant="ghost" size="icon-xs" aria-label="Later" disabled={i === draft.length - 1 || busy} onClick={e => { e.stopPropagation(); move(i, 1); }}><ArrowDown /></Button>
             </span>}
           </li>);
       })}</ol>
-      {err && <div className="cfg-error">{err}</div>}
-      {canEdit && <footer>
-        {changed && <button type="button" disabled={busy} onClick={() => { setDraft(planned); setProc(procPlanned); }}>Undo</button>}
-        {!changed && sim.sequence === 'custom' && <button type="button" disabled={busy} onClick={() => run([], procIds())}>Plan automatically</button>}
-        {changed && <button type="button" className="primary" disabled={busy} onClick={apply}>{busy ? <span className="spinner" /> : null}{orderChanged ? 'Use this order' : 'Apply'}</button>}
+      {err && <div className="mx-2.5 mb-2 rounded-md bg-danger-soft px-2.5 py-2 text-xs text-destructive">{err}</div>}
+      {canEdit && <footer className="flex justify-end gap-1.5 border-t px-2.5 py-2">
+        {changed && <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => { setDraft(planned); setProc(procPlanned); }}>Undo</Button>}
+        {!changed && sim.sequence === 'custom' && <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => run([], procIds())}>Plan automatically</Button>}
+        {changed && <Button type="button" size="sm" disabled={busy} onClick={apply}>{busy ? <Loader2 className="animate-spin" /> : null}{orderChanged ? 'Use this order' : 'Apply'}</Button>}
       </footer>}
-      {changed ? <p className="pb-note">Checked against the tooling when you apply it; the flat-pattern drawing follows it.{procChanged && !orderChanged && sim.sequence !== 'custom' ? ' The order is planned again for the new processes.' : ''}</p>
-        : notice ? <p className="pb-note">{notice}</p> : <p className="pb-note">Curves from R ≥ 10 × thickness are rolled by default. B1… on the flat-pattern drawing is stroke 1… here.</p>}
+      {changed ? <p className="m-0 px-3 pb-2.5 text-2xs text-muted-foreground">Checked against the tooling when you apply it; the flat-pattern drawing follows it.{procChanged && !orderChanged && sim.sequence !== 'custom' ? ' The order is planned again for the new processes.' : ''}</p>
+        : notice ? <p className="m-0 px-3 pb-2.5 text-2xs text-muted-foreground">{notice}</p> : <p className="m-0 px-3 pb-2.5 text-2xs text-muted-foreground">Curves from R ≥ 10 × thickness are rolled by default. B1… on the flat-pattern drawing is stroke 1… here.</p>}
     </div>
   );
 }

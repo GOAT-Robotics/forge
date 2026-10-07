@@ -3,7 +3,16 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { CadControls, upFor, type NavStyle } from './cadControls';
-import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, ChevronUp, ChevronDown, Crosshair, Flame, CircleDashed, Square, Grid3x3, Shapes, Sparkles, Sun } from 'lucide-react';
+import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, ChevronUp, ChevronDown, Crosshair, Flame, CircleDashed, Square, Grid3x3, Shapes, Sparkles, Sun, Palette, Loader2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
+import { Kbd } from '@/components/ui/kbd';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
 import { loadSecureModel } from './api';
 import { beadGeometry, beadMaterial, labelSprite, pathLength, pathSection, pointAt, resample, type WeldShape, type WeldSelection } from './weld3d';
 
@@ -60,6 +69,8 @@ type Props = {
   /** Extra tool buttons placed at the start / end of the floating tool palette. */
   toolbarStart?: React.ReactNode;
   toolbarEnd?: React.ReactNode;
+  /** Layout controls (panels, full canvas) in the bottom-right corner, apart from the tools. */
+  corner?: React.ReactNode;
   /** Mouse layout: Forge (left rotates) or SolidWorks (middle rotates, Ctrl+middle pans). */
   navStyle?: NavStyle;
   /** Shaded, shaded with edges, or wireframe (all edges, faces see-through). */
@@ -163,7 +174,16 @@ function sameCadBoundary(a: THREE.Vector3[], b: THREE.Vector3[], tolerance: numb
 }
 
 
-export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, realistic = true, onRealistic, studio = false, onStudio, command = null, viewKey }: Props) {
+// Canvas overlay class sets (view rail, tool palette)
+const railButton = 'text-muted-foreground hover:text-foreground data-[state=open]:bg-selection data-[state=open]:text-primary';
+const railHeading = 'px-0.5 text-2xs font-medium tracking-wider text-faint uppercase';
+// Tool palette buttons; the palette root carries `compact` / `tight` (fitPalette) as marker classes for the group variants.
+const paletteButton = 'gap-1.5 px-2.5 text-xs font-medium text-foreground [&_svg]:text-muted-foreground group-[.compact]/palette:px-2 group-[.tight]/palette:px-1.5';
+const paletteOn = 'bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground [&_svg]:text-primary';
+const paletteSep = 'mx-1 data-[orientation=vertical]:h-5 group-[.tight]/palette:mx-0.5';
+const palettePop = 'flex w-auto items-center gap-3 rounded-lg px-3 py-2.5 shadow-pop';
+
+export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, corner, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, realistic = true, onRealistic, studio = false, onStudio, command = null, viewKey }: Props) {
   const weldClick = useRef(onWeldClick); weldClick.current = onWeldClick;
   const drafting = !!jointPreview || seamCandidates.length > 0;
   const seamToggle = useRef(onSeamToggle); seamToggle.current = onSeamToggle;
@@ -208,8 +228,9 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   const [measure, setMeasure] = useState(false);
   const saved = useRef<Any>(loadView(viewKey));
   const [ghost, setGhost] = useState<boolean>(saved.current.ghost ?? true);
-  const [viewPanel, setViewPanelState] = useState(() => { try { return localStorage.getItem('forge-view-panel') !== 'closed'; } catch { return true; } });
-  const setViewPanel = (v: boolean) => { setViewPanelState(v); try { localStorage.setItem('forge-view-panel', v ? 'open' : 'closed'); } catch { /* ignore */ } };
+  // View rail: standard views and display options open as small menus (Popover closes them on an outside click or Esc).
+  const rail = useRef<HTMLDivElement>(null);
+  const [railPop, setRailPop] = useState<'views' | 'display' | null>(null);
   const [distance, setDistance] = useState<number | null>(null);
   const [hoverName, setHoverName] = useState('');
   const [showWelds, setShowWelds] = useState<boolean>(saved.current.welds ?? false);   // weld beads off unless turned on
@@ -657,7 +678,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         e.applyExplode();
       }
       if (!container.clientWidth) return; // kept mounted behind another tab: no GPU work
-      if (document.querySelector('.cfg-overlay')) return; // a configuration dialog has its own 3D view
+      if (document.querySelector('[data-forge-config]')) return; // a configuration dialog has its own 3D view
       controls.update();
       // idle model: no GPU work. Redraw while the camera moves, after any change (React commit, input) and while animating.
       const camKey = camera.position.x.toFixed(3) + ',' + camera.position.y.toFixed(3) + ',' + camera.position.z.toFixed(3) + ',' + camera.quaternion.x.toFixed(5) + ',' + camera.quaternion.y.toFixed(5) + ',' + camera.quaternion.z.toFixed(5) + ',' + camera.quaternion.w.toFixed(5) + ',' + container.clientWidth + 'x' + container.clientHeight;
@@ -1201,68 +1222,90 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
   const hasSelection = !!selected;
   const welding = !!(pickMode || jointPreview?.faces?.length || seamCandidates.length);
   return (
-    <div className={'viewer' + (welding ? ' weld-mode' : '')}>
-      <div ref={host} className="canvas" />
-      {hud && <div className="cad-hud">{hud}</div>}
+    <div className="group/viewer @container/viewer relative min-h-[300px] flex-1 overflow-hidden bg-viewer" data-welding={welding ? '' : undefined}>
+      <div ref={host} className="absolute inset-0 [&_canvas]:block [&_canvas]:outline-none" />
+      {hud && <div className={cn('pointer-events-none absolute top-3 left-3 z-[6]', welding ? 'max-w-[34%]' : 'max-w-[calc(100%-128px)]')}>{hud}</div>}
       {welding && (
-        <div className="weld-bar">
-          {pickMode ? <span className="weld-bar-mode"><Crosshair size={13} />{pickMode === 'point' ? 'Click a picked face to place the tack' : pickMode === 'edge' ? 'Click seam edges' : 'Click face A, then face B'}</span>
-            : seamCandidates.length > 0 ? <span className="weld-bar-mode"><Crosshair size={13} />Click a seam to add or remove it</span> : null}
-          <span className="weld-bar-cam">
-            <button type="button" title="Frame the weld" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection()}><Focus size={13} />Weld</button>
-            <button type="button" title="Look from the other side" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection('opposite')}>Flip</button>
-            <button type="button" title="Look from below" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection([0, 0, -1])}>Below</button>
-            <button type="button" title="Look from above" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection([0, 0, 1])}>Above</button>
+        <div className="absolute top-3 left-1/2 z-[5] flex max-w-[calc(100%-120px)] -translate-x-1/2 items-center gap-2 rounded-full border border-warning/30 bg-warning-soft/95 py-1 pr-1 pl-2.5 text-xs whitespace-nowrap shadow-pop">
+          {pickMode ? <span className="inline-flex min-w-0 items-center gap-1.5 truncate font-medium text-warning"><Crosshair className="size-3.5 shrink-0" />{pickMode === 'point' ? 'Click a picked face to place the tack' : pickMode === 'edge' ? 'Click seam edges' : 'Click face A, then face B'}</span>
+            : seamCandidates.length > 0 ? <span className="inline-flex min-w-0 items-center gap-1.5 truncate font-medium text-warning"><Crosshair className="size-3.5 shrink-0" />Click a seam to add or remove it</span> : null}
+          <span className="inline-flex gap-0.5 border-l border-warning/30 pl-1.5">
+            <Button type="button" variant="ghost" size="xs" className="rounded-full font-normal hover:bg-warning/10" title="Frame the weld" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection()}><Focus />Weld</Button>
+            <Button type="button" variant="ghost" size="xs" className="rounded-full font-normal hover:bg-warning/10" title="Look from the other side" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection('opposite')}>Flip</Button>
+            <Button type="button" variant="ghost" size="xs" className="rounded-full font-normal hover:bg-warning/10" title="Look from below" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection([0, 0, -1])}>Below</Button>
+            <Button type="button" variant="ghost" size="xs" className="rounded-full font-normal hover:bg-warning/10" title="Look from above" disabled={!jointPreview?.faces?.length} onClick={() => frameWeldSelection([0, 0, 1])}>Above</Button>
           </span>
         </div>
       )}
-      <div className={'view-cube' + (viewPanel ? '' : ' collapsed')} role="toolbar" aria-label="Views and display">
-        <button type="button" className="vc-head" title={viewPanel ? 'Hide the view panel' : 'Show views and display styles'} onClick={() => setViewPanel(!viewPanel)}>
-          <span>View</span>{viewPanel ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        </button>
-        {viewPanel && <>
-          <button title="Isometric (7)" onClick={() => engine.current?.fit(VIEW_DIRS.iso, null)}><Box size={14} />Iso</button>
-          <button title="Fit everything (F)" onClick={() => engine.current?.fit(undefined, null)}><Maximize size={14} />Fit</button>
-          <button title="Top (5)" onClick={() => engine.current?.fit(VIEW_DIRS.top, null)}>Top</button>
-          <button title="Bottom (6)" onClick={() => engine.current?.fit(VIEW_DIRS.bottom, null)}>Bottom</button>
-          <button title="Front (1)" onClick={() => engine.current?.fit(VIEW_DIRS.front, null)}>Front</button>
-          <button title="Back (2)" onClick={() => engine.current?.fit(VIEW_DIRS.back, null)}>Back</button>
-          <button title="Right (4)" onClick={() => engine.current?.fit(VIEW_DIRS.right, null)}>Right</button>
-          <button title="Left (3)" onClick={() => engine.current?.fit(VIEW_DIRS.left, null)}>Left</button>
-          <button className="wide" title="Zoom to the selected part (Z)" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus size={14} />Zoom to selection</button>
-          <i className="vc-sep" />
-          {onDisplayMode && ([['shaded', 'Shaded', Box], ['edges', 'Edges', Shapes], ['wireframe', 'Wire', Grid3x3]] as const).map(([m, label, Icon]) =>
-            <button key={m} type="button" className={displayMode === m ? 'selected' : ''} title={m === 'edges' ? 'Shaded with edges' : label} onClick={() => onDisplayMode(m)}><Icon size={14} />{label}</button>)}
-          <button className={ghost ? 'selected' : ''} title="Fade the other parts while a part is selected" onClick={() => setGhost(!ghost)}><EyeOff size={14} />Ghost</button>
-          {onShowPlanes && <button className={showPlanes ? 'selected' : ''} title="Front / Top / Right planes and origin (P)" onClick={() => onShowPlanes(!showPlanes)}><Square size={14} />Planes</button>}
-          {onRealistic && <button className={realistic ? 'selected' : ''} title="Realistic materials: colour, gloss and reflections from each part's finish and material" onClick={() => onRealistic(!realistic)}><Sparkles size={14} />Realistic</button>}
-          {onStudio && <button className={studio ? 'selected' : ''} title="Show the studio environment behind the model" onClick={() => onStudio(!studio)}><Sun size={14} />Studio</button>}
-          {welds.length > 0 && <button className={showWelds ? 'selected' : ''} title={showWelds ? 'Hide weld beads' : 'Show weld beads'} onClick={() => setShowWelds(!showWelds)}><Flame size={14} />Welds</button>}
-          {refCount > 0 && <button className={showRefs ? 'selected' : ''} title="Reference surfaces (sketch circles, boundaries) — not solid parts" onClick={() => setShowRefs(!showRefs)}><CircleDashed size={14} />Refs</button>}
-        </>}
+      <div className="glass absolute top-3 right-3 z-[8] flex flex-col gap-0.5 rounded-xl p-1" ref={rail} role="toolbar" aria-label="View">
+        <Button type="button" variant="ghost" size="icon-sm" className={railButton} title="Fit everything (F)" aria-label="Fit everything" onClick={() => engine.current?.fit(undefined, null)}><Maximize /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" className={railButton} title="Zoom to the selected part (Z)" aria-label="Zoom to selection" disabled={!hasSelection} onClick={() => selected && engine.current?.fit(undefined, [selected])}><Focus /></Button>
+        <Popover open={railPop === 'views'} onOpenChange={o => setRailPop(o ? 'views' : null)}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="ghost" size="icon-sm" className={railButton} title="Standard views" aria-label="Standard views"><Box /></Button>
+          </PopoverTrigger>
+          <PopoverContent side="left" align="start" sideOffset={10} role="menu" className="grid w-64 gap-1.5 rounded-lg p-2.5 shadow-pop">
+            <h6 className={railHeading}>Standard views</h6>
+            <div className="grid grid-cols-3 gap-1">{([['top', 'Top', '5'], ['front', 'Front', '1'], ['right', 'Right', '4'], ['iso', 'Isometric', '7'], ['back', 'Back', '2'], ['left', 'Left', '3'], ['bottom', 'Bottom', '6']] as const).map(([d, label, key]) =>
+              <Button type="button" variant="outline" size="sm" key={d} className={cn('justify-between px-2 font-normal shadow-none', d === 'iso' && 'col-span-3')} onClick={() => { engine.current?.fit(VIEW_DIRS[d], null); setRailPop(null); }}>{label}<Kbd className="h-4 min-w-4 bg-transparent px-0 font-mono text-2xs text-faint">{key}</Kbd></Button>)}</div>
+          </PopoverContent>
+        </Popover>
+        <Popover open={railPop === 'display'} onOpenChange={o => setRailPop(o ? 'display' : null)}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="ghost" size="icon-sm" className={railButton} title="Display style and what is shown" aria-label="Display"><Palette /></Button>
+          </PopoverTrigger>
+          <PopoverContent side="left" align="start" sideOffset={10} role="menu" className="grid w-64 gap-1.5 rounded-lg p-2.5 shadow-pop">
+            {onDisplayMode && <><h6 className={railHeading}>Style</h6>
+              <ToggleGroup type="single" variant="outline" size="sm" className="grid w-full grid-cols-3 shadow-none" value={displayMode} onValueChange={v => { if (v) onDisplayMode(v as DisplayMode); }}>
+                {([['shaded', 'Shaded', Box], ['edges', 'Edges', Shapes], ['wireframe', 'Wire', Grid3x3]] as const).map(([m, label, Icon]) =>
+                  <ToggleGroupItem key={m} value={m} className="gap-1.5 text-xs font-normal data-[state=on]:bg-selection data-[state=on]:text-selection-foreground" title={m === 'edges' ? 'Shaded with edges' : label}><Icon className="size-3.5" />{label}</ToggleGroupItem>)}
+              </ToggleGroup></>}
+            <h6 className={cn(railHeading, onDisplayMode && 'mt-1.5')}>Show</h6>
+            {([
+              onRealistic && [Sparkles, 'Realistic materials', 'Colour, gloss and reflections from each part\'s finish and material', realistic, () => onRealistic(!realistic)],
+              onStudio && [Sun, 'Studio background', 'Show the studio environment behind the model', studio, () => onStudio(!studio)],
+              [EyeOff, 'Fade other parts', 'Fade the other parts while a part is selected', ghost, () => setGhost(!ghost)],
+              onShowPlanes && [Square, 'Planes & origin', 'Front / Top / Right planes and origin (P)', showPlanes, () => onShowPlanes(!showPlanes)],
+              welds.length > 0 && [Flame, 'Weld beads', 'Weld beads on the model', showWelds, () => setShowWelds(!showWelds)],
+              refCount > 0 && [CircleDashed, 'Reference surfaces', 'Sketch circles and boundaries — not solid parts', showRefs, () => setShowRefs(!showRefs)],
+            ].filter(Boolean) as [typeof Box, string, string, boolean, () => void][]).map(([Icon, label, tip, on, toggle]) =>
+              <Label key={label} title={tip} className="cursor-pointer justify-between gap-2 rounded-md px-1 py-1.5 text-sm font-normal hover:bg-accent"><span className="inline-flex items-center gap-2"><Icon className="size-3.5 text-muted-foreground" />{label}</span><Switch size="sm" checked={!!on} onCheckedChange={toggle} /></Label>)}
+          </PopoverContent>
+        </Popover>
       </div>
-      {loading && <div className="viewer-state"><span className="spinner" />Preparing lightweight 3D geometry…</div>}
-      {error && <div className="viewer-state">{error}</div>}
-      <div className="cad-palette" ref={palette} role="toolbar" aria-label="Tools">
+      {loading && <div className="absolute inset-0 flex items-center justify-center gap-2.5 bg-viewer/85 text-base text-muted-foreground"><Loader2 className="size-4 animate-spin text-primary" />Preparing lightweight 3D geometry…</div>}
+      {error && <div className="absolute inset-0 flex items-center justify-center gap-2.5 bg-viewer/85 text-base text-muted-foreground">{error}</div>}
+      <div className="group/palette glass absolute bottom-3.5 left-1/2 z-[7] flex max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-0.5 rounded-xl p-1 [&.tight]:gap-0" ref={palette} role="toolbar" aria-label="Tools">
         {toolbarStart}
-        {toolbarStart ? <i className="sep" /> : null}
-        <button className={measure ? 'selected' : ''} title="Measure two surface points" onClick={() => { setMeasure(!measure); setDistance(null); }}><Ruler size={16} /><span>Measure</span></button>
-        <span className="pop-wrap">
-          <button className={section < 100 || popover === 'section' ? 'selected' : ''} title="Section plane" onClick={() => setPopover(popover === 'section' ? null : 'section')}><Scissors size={16} /><span>Section</span></button>
-          {popover === 'section' && <span className="cad-pop"><label>Section height<input aria-label="Section plane" type="range" min="0" max="100" value={section} onChange={ev => setSection(+ev.target.value)} /></label><button type="button" className="mini" onClick={() => { setSection(100); setPopover(null); }}>Off</button></span>}
-        </span>
-        <span className="pop-wrap">
-          <button className={explode > 0 || popover === 'explode' ? 'selected' : ''} title="Explode the assembly" onClick={() => setPopover(popover === 'explode' ? null : 'explode')}><Layers size={16} /><span>Explode</span></button>
-          {popover === 'explode' && <span className="cad-pop"><label>Explode<input aria-label="Explode assembly" type="range" min="0" max="100" value={explode} onChange={ev => setExplode(+ev.target.value)} /></label><button type="button" className="mini" onClick={() => setExplode(explode > 0 ? 0 : 100)}>{explode > 0 ? 'Collapse' : 'Full'}</button></span>}
-        </span>
-        {toolbarEnd ? <i className="sep" /> : null}
+        {toolbarStart ? <Separator orientation="vertical" className={paletteSep} /> : null}
+        <Button variant="ghost" className={cn(paletteButton, measure && paletteOn)} title="Measure two surface points" onClick={() => { setMeasure(!measure); setDistance(null); }}><Ruler /><span className="group-[.compact]/palette:hidden">Measure</span></Button>
+        <Popover open={popover === 'section'} onOpenChange={o => setPopover(o ? 'section' : null)}>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" className={cn(paletteButton, (section < 100 || popover === 'section') && paletteOn)} title="Section plane"><Scissors /><span className="group-[.compact]/palette:hidden">Section</span></Button>
+          </PopoverTrigger>
+          <PopoverContent side="top" sideOffset={10} className={palettePop} onInteractOutside={e => e.preventDefault()}>
+            <Label className="gap-2.5 text-xs font-medium whitespace-nowrap text-muted-foreground">Section height<Slider aria-label="Section plane" className="w-40" min={0} max={100} value={[section]} onValueChange={v => setSection(v[0])} /></Label>
+            <Button type="button" variant="outline" size="xs" onClick={() => { setSection(100); setPopover(null); }}>Off</Button>
+          </PopoverContent>
+        </Popover>
+        <Popover open={popover === 'explode'} onOpenChange={o => setPopover(o ? 'explode' : null)}>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" className={cn(paletteButton, (explode > 0 || popover === 'explode') && paletteOn)} title="Explode the assembly"><Layers /><span className="group-[.compact]/palette:hidden">Explode</span></Button>
+          </PopoverTrigger>
+          <PopoverContent side="top" sideOffset={10} className={palettePop} onInteractOutside={e => e.preventDefault()}>
+            <Label className="gap-2.5 text-xs font-medium whitespace-nowrap text-muted-foreground">Explode<Slider aria-label="Explode assembly" className="w-40" min={0} max={100} value={[explode]} onValueChange={v => setExplode(v[0])} /></Label>
+            <Button type="button" variant="outline" size="xs" onClick={() => setExplode(explode > 0 ? 0 : 100)}>{explode > 0 ? 'Collapse' : 'Full'}</Button>
+          </PopoverContent>
+        </Popover>
+        {toolbarEnd ? <Separator orientation="vertical" className={paletteSep} /> : null}
         {toolbarEnd}
       </div>
-      <div className="cad-status">{hoverName ? <b>{hoverName}</b> : null}<span>{loading ? 'Preparing geometry…' : flat ? 'Developed sheet' : `${count >= 1e6 ? (count / 1e6).toFixed(1) + 'M' : count >= 1e4 ? Math.round(count / 1000) + 'k' : count.toLocaleString()} triangles`}</span></div>
+      {corner && <div className="glass absolute bottom-3.5 left-3 z-[7] flex gap-0.5 rounded-xl p-1 @max-[900px]/viewer:bottom-16" role="toolbar" aria-label="Layout">{corner}</div>}
+      <div className={cn('pointer-events-none absolute bottom-[18px] z-[5] flex max-w-[22%] flex-col gap-0.5 text-2xs text-faint @max-[1100px]/viewer:hidden', corner ? 'left-[136px]' : 'left-3.5')}>{hoverName ? <span className="truncate text-xs font-medium text-foreground">{hoverName}</span> : null}<span>{loading ? 'Preparing geometry…' : flat ? 'Developed sheet' : `${count >= 1e6 ? (count / 1e6).toFixed(1) + 'M' : count >= 1e4 ? Math.round(count / 1000) + 'k' : count.toLocaleString()} triangles`}</span></div>
       {measure && (
-        <div className="measurement">
+        <div className="absolute bottom-[72px] left-4 flex flex-col gap-1 rounded-lg border bg-card px-3 py-2.5 text-sm font-medium shadow-pop">
           {distance === null ? 'Pick two visible surface points' : `${distance.toFixed(3)} mm · mesh measurement`}
-          <small>Approximate; use CAD feature dimensions for QC.</small>
+          <small className="text-xs font-normal text-muted-foreground">Approximate; use CAD feature dimensions for QC.</small>
         </div>
       )}
     </div>

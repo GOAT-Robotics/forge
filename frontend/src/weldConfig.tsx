@@ -6,7 +6,26 @@ import { api, assetJson } from './api';
 import type { Any } from './constants';
 import type { NavStyle } from './cadControls';
 import { pathLength, pathSection, pointAt } from './weld3d';
-import { seamSelection, findAllSeams } from './welding';
+import { seamSelection, findAllSeams, Field, MmInput } from './welding';
+import { Select } from './controls';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+
+const cardCls = 'grid gap-3 rounded-lg border bg-card p-4';
+const msgCls = 'flex items-center gap-1.5 rounded-lg border bg-card/95 px-3 py-2 text-xs text-muted-foreground shadow-pop';
+/** segmented control: track + items (Button for the tab list, ToggleGroupItem for the side filter) */
+const segCls = 'grid w-full auto-cols-fr grid-flow-col gap-0.5 rounded-lg bg-muted p-0.5';
+const segItem = (on: boolean) => cn('h-7 text-xs font-normal', on ? 'bg-card text-foreground shadow-xs hover:bg-card dark:bg-input dark:hover:bg-input' : 'text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent');
+const segToggle = 'h-7 gap-1 px-2 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-xs dark:data-[state=on]:bg-input';
+/** seam / weld colours, matching the 3D overlay (COL) */
+const dotCls = 'inline-block size-2 shrink-0 rounded-full align-[-1px]';
+const DOT: Record<string, string> = { inside: 'bg-[#0ea5e9]', outside: 'bg-[#f59e0b]', weld: 'bg-[#e0479e]' };
+const SIDE_TAG: Record<string, string> = { inside: 'bg-sky-500/15 text-sky-700 dark:text-sky-300', outside: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' };
 
 type Mode = 'full' | 'stitch' | 'tack' | 'manual';
 type Seam = Any & { world: THREE.Vector3[]; len: number; air: THREE.Vector3 | null };
@@ -345,69 +364,71 @@ export default function WeldConfig({ revision, partIds: initialParts, weldment, 
   const selParts = partIds.map(id => names[id] || id);
 
   return (
-    <div className="overlay top cfg-overlay" onMouseDown={e => { if (e.target === e.currentTarget) finish(); }}>
-      <section className="cfg-dialog" role="dialog" aria-modal="true" aria-label="Weld configuration">
-        <header className="cfg-head">
-          <div className="cfg-title"><b>Weld configuration{asm ? <> · <span className="wc-asmname">{asm.name}</span></> : null}</b><small title={selParts.join(', ')}>{selParts.length === 1 ? selParts[0] : `${selParts.length} parts · ${selParts.slice(0, 3).join(', ')}${selParts.length > 3 ? '…' : ''}`}</small></div>
-          {asm && canJobOrder && onJobOrder && <button type="button" className="wc-jo" disabled={busy} onClick={() => onJobOrder(asm)}><ClipboardList size={15} />Job order</button>}
-          <button type="button" className="icon cfg-close" aria-label="Close" onClick={finish}><X size={18} /></button>
+    <div data-forge-config="weld" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-[2vw] py-[2.5vh]" onMouseDown={e => { if (e.target === e.currentTarget) finish(); }}>
+      <section className="flex h-[min(980px,95vh)] w-[min(1680px,96vw)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-pop" role="dialog" aria-modal="true" aria-label="Weld configuration">
+        <header className="flex min-h-14 items-center gap-4 border-b py-2.5 pr-3 pl-4">
+          <div className="mr-auto flex min-w-0 flex-col"><span className="truncate text-base font-semibold">Weld configuration{asm ? <> · <span className="text-pink-700 dark:text-pink-400">{asm.name}</span></> : null}</span><small className="truncate text-xs text-muted-foreground" title={selParts.join(', ')}>{selParts.length === 1 ? selParts[0] : `${selParts.length} parts · ${selParts.slice(0, 3).join(', ')}${selParts.length > 3 ? '…' : ''}`}</small></div>
+          {asm && canJobOrder && onJobOrder && <Button type="button" variant="outline" disabled={busy} onClick={() => onJobOrder(asm)}><ClipboardList />Job order</Button>}
+          <Button type="button" variant="ghost" size="icon" aria-label="Close" onClick={finish}><X /></Button>
         </header>
-        <div className="cfg-body">
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_380px] gap-3.5 p-3.5 min-[1100px]:grid-cols-[minmax(0,1fr)_470px]">
           {bodies ? <PartScene revision={revision} bodies={bodies} navStyle={navStyle} cursor={hover?.weld || hover?.cand ? 'pointer' : undefined}
             onReady={s => { scene.current = s; const g = { seams: new THREE.Group(), welds: new THREE.Group(), preview: new THREE.Group() }; s.overlay.add(g.seams, g.welds, g.preview); layer.current = g; drawAll(); }}
             onHover={onHover} onClick={onClickManual} onPress={onPress} onDrag={onDrag} onRelease={onRelease}>
-            <div className={'cfg-chip ' + chip.cls}>{seams === null ? <LoaderCircle size={16} className="spin" /> : <Crosshair size={16} />}<span><b>{chip.text}</b></span></div>
-            {(searching || message) && <div className="cfg-msgs">
-              {searching && <div className="cfg-msg"><LoaderCircle size={13} className="spin" /> {searching}</div>}
-              {message && <div className="cfg-msg">{message}</div>}
+            <div className={cn('absolute top-3.5 right-3.5 z-[3] flex max-w-[calc(100%-120px)] items-center gap-2.5 rounded-lg px-3 py-2 transition-colors',
+              chip.cls === 'warn' ? 'border border-warning/40 bg-warning-soft text-warning shadow-pop' : chip.cls === 'danger' ? 'border border-destructive/30 bg-danger-soft text-destructive shadow-pop' : 'glass text-foreground [&>svg]:text-faint')}>
+              {seams === null ? <LoaderCircle className="animate-spin" /> : <Crosshair />}<span className="flex min-w-0 flex-col"><span className="truncate text-sm font-medium">{chip.text}</span></span></div>
+            {(searching || message) && <div className="pointer-events-none absolute right-3.5 bottom-3.5 left-[170px] z-[3] grid gap-1.5">
+              {searching && <div className={msgCls}><LoaderCircle className="size-3.5 animate-spin" /> {searching}</div>}
+              {message && <div className={msgCls}>{message}</div>}
             </div>}
-          </PartScene> : <div className="pscene"><div className="pscene-state"><span className="spinner" />Finding seams…</div></div>}
-          <aside className="cfg-panel wc-panel">
-            {asm && <section className="wc-card wc-asm">
-              <h4><Layers size={15} />Weld assembly</h4>
-              <input className="wc-name" aria-label="Weld assembly name" value={name} disabled={!editable} placeholder="Name — left empty, Forge names it" maxLength={120}
+          </PartScene> : <div className="relative min-h-0 min-w-0 overflow-hidden rounded-xl border bg-viewer"><div className="absolute inset-0 flex items-center justify-center gap-2.5 text-sm text-muted-foreground"><LoaderCircle className="animate-spin text-primary" />Finding seams…</div></div>}
+          <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+            {asm && <section className={cardCls}>
+              <h4 className="flex items-center gap-2 text-sm font-semibold"><Layers className="size-4 text-[#e0479e]" />Weld assembly</h4>
+              <Input className="font-medium" aria-label="Weld assembly name" value={name} disabled={!editable} placeholder="Name — left empty, Forge names it" maxLength={120}
                 onChange={e => setName(e.target.value)} onBlur={saveName} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setName(asm.name); }} />
-              <div className="wc-parts">{partIds.map(pid => {
+              <div className="flex flex-wrap gap-1.5">{partIds.map(pid => {
                 const n = welds.filter(w => (w.data.parts || []).includes(pid)).length;
-                return <span key={pid} className={'wc-part' + (hotPart === pid ? ' hot' : '')} title={names[pid] || pid} onMouseEnter={() => setHotPart(pid)} onMouseLeave={() => setHotPart(null)}>
-                  <span>{short(pid)}</span>{n > 0 && <small>{n}</small>}
-                  {editable && <button type="button" className="icon" aria-label={`Remove ${names[pid] || 'part'} from the weld assembly`} title="Remove from the weld assembly" disabled={busy} onClick={() => removePart(pid)}><X size={12} /></button>}
+                return <span key={pid} className={cn('inline-flex max-w-full items-center gap-1 rounded-full border bg-subtle py-0.5 pr-0.5 pl-2.5 text-xs', !editable && 'pr-2.5', hotPart === pid && 'border-primary/40 bg-selection')} title={names[pid] || pid} onMouseEnter={() => setHotPart(pid)} onMouseLeave={() => setHotPart(null)}>
+                  <span className="max-w-[180px] truncate">{short(pid)}</span>{n > 0 && <small className="min-w-[18px] rounded-full bg-[#e0479e]/10 px-1.5 text-center text-2xs font-medium text-pink-700 dark:text-pink-300">{n}</small>}
+                  {editable && <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full text-faint hover:bg-danger-soft hover:text-destructive dark:hover:bg-danger-soft" aria-label={`Remove ${names[pid] || 'part'} from the weld assembly`} title="Remove from the weld assembly" disabled={busy} onClick={() => removePart(pid)}><X /></Button>}
                 </span>;
               })}</div>
             </section>}
-            <section className="wc-card">
-              <h4>Weld type</h4>
-              <div className="wc-seg" role="tablist">{([['full', 'Full'], ['stitch', 'Stitch'], ['tack', 'Tack'], ['manual', 'Manual']] as [Mode, string][]).map(([m, l]) => <button key={m} type="button" role="tab" aria-selected={mode === m} className={mode === m ? 'on' : ''} onClick={() => { setMode(m); setHover(null); }}>{l}</button>)}</div>
-              {mode === 'full' && <p className="wc-help">Click a seam to weld its whole length.</p>}
-              {mode === 'manual' && <p className="wc-help">Hold and drag along a seam. Release to finish the weld.</p>}
-              {(mode === 'stitch' || mode === 'tack') && <div className="wc-fields">
-                {mode === 'stitch' && <label>Length<span className="wc-num"><input type="number" min={2} max={500} step={1} value={stitchLen} onChange={e => setStitchLen(Math.max(1, Number(e.target.value) || 1))} /><i>mm</i></span></label>}
-                <label>Pattern<span className="wc-toggle"><input type="checkbox" role="switch" checked={fullPattern} onChange={e => setFullPattern(e.target.checked)} /><b>Full length</b></span></label>
-                {fullPattern && <label>Gap<span className="wc-num"><input type="number" min={2} max={1000} step={1} value={gap} onChange={e => setGap(Math.max(1, Number(e.target.value) || 1))} /><i>mm</i></span></label>}
+            <section className={cardCls}>
+              <h4 className="text-sm font-semibold">Weld type</h4>
+              <div className={segCls} role="tablist">{([['full', 'Full'], ['stitch', 'Stitch'], ['tack', 'Tack'], ['manual', 'Manual']] as [Mode, string][]).map(([m, l]) => <Button key={m} type="button" variant="ghost" size="sm" role="tab" aria-selected={mode === m} className={segItem(mode === m)} onClick={() => { setMode(m); setHover(null); }}>{l}</Button>)}</div>
+              {mode === 'full' && <p className="text-xs text-muted-foreground">Click a seam to weld its whole length.</p>}
+              {mode === 'manual' && <p className="text-xs text-muted-foreground">Hold and drag along a seam. Release to finish the weld.</p>}
+              {(mode === 'stitch' || mode === 'tack') && <div className="flex flex-wrap gap-x-5 gap-y-3">
+                {mode === 'stitch' && <Field label="Length"><MmInput min={2} max={500} step={1} value={stitchLen} onChange={e => setStitchLen(Math.max(1, Number(e.target.value) || 1))} /></Field>}
+                <Field label="Pattern"><span className="flex h-8 items-center gap-2.5"><Switch checked={fullPattern} onCheckedChange={setFullPattern} /><span className="font-normal text-foreground">Full length</span></span></Field>
+                {fullPattern && <Field label="Gap"><MmInput min={2} max={1000} step={1} value={gap} onChange={e => setGap(Math.max(1, Number(e.target.value) || 1))} /></Field>}
               </div>}
-              {(seams || []).some(x => x.side === 'inside') && (seams || []).some(x => x.side === 'outside') && <div className="wc-side">
+              {(seams || []).some(x => x.side === 'inside') && (seams || []).some(x => x.side === 'outside') && <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>Seams</span>
-                <div className="wc-seg">{([['all', 'Both'], ['inside', 'Inside'], ['outside', 'Outside']] as [Side, string][]).map(([v, l]) => <button key={v} type="button" className={side === v ? 'on' : ''} onClick={() => { setSide(v); setHover(null); }}>{v !== 'all' && <i className={'wc-dot ' + v} />}{l} <small>{v === 'all' ? (seams || []).length : (seams || []).filter(x => x.side === v).length}</small></button>)}</div>
+                <ToggleGroup type="single" spacing={1} value={side} className={cn(segCls, 'flex-1')}>{([['all', 'Both'], ['inside', 'Inside'], ['outside', 'Outside']] as [Side, string][]).map(([v, l]) => <ToggleGroupItem key={v} value={v} size="sm" className={segToggle} onClick={() => { setSide(v); setHover(null); }}>{v !== 'all' && <i className={cn(dotCls, DOT[v])} />}{l} <small className="tabular-nums text-faint">{v === 'all' ? (seams || []).length : (seams || []).filter(x => x.side === v).length}</small></ToggleGroupItem>)}</ToggleGroup>
               </div>}
-              <p className="wc-legend"><i className="wc-dot inside" />inside seam <i className="wc-dot outside" />outside seam <i className="wc-dot weld" />weld — a seam is picked from its own side only</p>
-              <label className="wc-proc">Process<select value={process} onChange={e => setProcess(e.target.value)}>{PROCESSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+              <p className="text-2xs leading-relaxed text-muted-foreground"><i className={cn(dotCls, 'mr-1', DOT.inside)} />inside seam <i className={cn(dotCls, 'mr-1 ml-2', DOT.outside)} />outside seam <i className={cn(dotCls, 'mr-1 ml-2', DOT.weld)} />weld — a seam is picked from its own side only</p>
+              <Label className="justify-between text-xs font-normal text-muted-foreground">Process<Select size="sm" className="w-[150px]" value={process} onChange={setProcess} options={PROCESSES.map(([v, l]) => ({ value: v, label: l }))} /></Label>
             </section>
-            {error && <div className="cfg-error">{error}</div>}
-            {confirm && <div className="wc-confirm"><b>{confirm.title}</b><small>{confirm.text}</small><div><button type="button" onClick={() => setConfirm(null)}>Cancel</button><button type="button" className="danger" onClick={() => { const go = confirm.go; setConfirm(null); go(); }}>Remove</button></div></div>}
-            {!welds.length ? <div className="wc-empty"><Flame size={34} /><b>No welds added yet</b><small>Click on the 3D model to add weld points</small></div>
-              : <div className="wc-list">
-                <div className="wc-listhead">
-                  {editable && <label className="wc-check" title="Select all"><input type="checkbox" checked={picked.size > 0 && welds.every(w => picked.has(w.id))} ref={el => { if (el) el.indeterminate = picked.size > 0 && !welds.every(w => picked.has(w.id)); }} onChange={e => setPicked(e.target.checked ? new Set(welds.map(w => w.id)) : new Set())} /></label>}
-                  <b>{welds.length} weld{welds.length === 1 ? '' : 's'}</b>
-                  {editable && picked.size > 0 && <button type="button" className="mini danger" disabled={busy} onClick={() => removeMany([...picked])}><Trash2 size={13} />Delete {picked.size}</button>}
-                  {editable && !picked.size && <button type="button" className="mini" disabled={busy} onClick={() => removeMany(welds.map(w => w.id))}><Trash2 size={13} />Clear all</button>}
+            {error && <div className="rounded-md bg-danger-soft px-3 py-2 text-xs text-destructive">{error}</div>}
+            {confirm && <div className="grid gap-1.5 rounded-lg border border-destructive/30 bg-danger-soft px-3.5 py-3"><span className="text-sm font-medium text-destructive">{confirm.title}</span><small className="text-xs text-destructive/80">{confirm.text}</small><div className="mt-1 flex justify-end gap-2"><Button type="button" variant="outline" size="sm" onClick={() => setConfirm(null)}>Cancel</Button><Button type="button" variant="destructive" size="sm" onClick={() => { const go = confirm.go; setConfirm(null); go(); }}>Remove</Button></div></div>}
+            {!welds.length ? <div className="flex min-h-[260px] flex-1 flex-col items-center justify-center gap-1.5 rounded-lg border bg-subtle text-center text-faint"><Flame className="size-8" /><span className="text-sm font-medium text-muted-foreground">No welds added yet</span><small className="text-xs">Click on the 3D model to add weld points</small></div>
+              : <div className="grid gap-2">
+                <div className="flex items-center gap-2.5 px-1 py-0.5 text-sm text-muted-foreground">
+                  {editable && <Label className="inline-flex" title="Select all"><Checkbox checked={picked.size > 0 && welds.every(w => picked.has(w.id)) ? true : picked.size > 0 ? 'indeterminate' : false} onCheckedChange={v => setPicked(v === true ? new Set(welds.map(w => w.id)) : new Set())} /></Label>}
+                  <span className="mr-auto font-medium text-foreground">{welds.length} weld{welds.length === 1 ? '' : 's'}</span>
+                  {editable && picked.size > 0 && <Button type="button" variant="outline" size="xs" className="text-destructive hover:text-destructive" disabled={busy} onClick={() => removeMany([...picked])}><Trash2 />Delete {picked.size}</Button>}
+                  {editable && !picked.size && <Button type="button" variant="outline" size="xs" disabled={busy} onClick={() => removeMany(welds.map(w => w.id))}><Trash2 />Clear all</Button>}
                 </div>
                 {welds.map((w, i) => (
-                <div key={w.id} className={'wc-weld' + (editable ? ' with-pick' : '') + (focus === w.id ? ' focus' : '') + (picked.has(w.id) ? ' picked' : '')} onMouseEnter={() => setFocus(w.id)} onMouseLeave={() => setFocus(null)}>
-                  {editable && <input type="checkbox" className="wc-pick" aria-label={`Select weld ${i + 1}`} checked={picked.has(w.id)} onChange={e => setPicked(p => { const n = new Set(p); e.target.checked ? n.add(w.id) : n.delete(w.id); return n; })} />}
-                  <span><b>Weld #{i + 1}{(() => { const sd = (w.data.faces || []).find((f: Any) => f.side)?.side; return sd ? <em className={'wc-sidetag ' + sd}>{sd}</em> : null; })()}</b><small>{describe(w)}{(w.data.parts || []).length > 1 ? ` · ${(w.data.parts || []).map((p: string) => names[p] || p).join(' + ')}` : ''}</small></span>
-                  <label className="wc-ground"><input type="checkbox" checked={!!w.data.weld?.ground} disabled={!editable || busy} onChange={e => setGround(w, e.target.checked)} />Ground</label>
-                  <button type="button" className="icon wc-del" title="Delete weld" disabled={!editable || busy} onClick={() => remove(w.id)}><Trash2 size={16} /></button>
+                <div key={w.id} className={cn('grid items-center gap-2.5 rounded-lg border bg-card px-3.5 py-2.5', editable ? 'grid-cols-[auto_minmax(0,1fr)_auto_auto]' : 'grid-cols-[minmax(0,1fr)_auto_auto]', (focus === w.id || picked.has(w.id)) && 'border-primary/40 bg-selection/60')} onMouseEnter={() => setFocus(w.id)} onMouseLeave={() => setFocus(null)}>
+                  {editable && <Checkbox aria-label={`Select weld ${i + 1}`} checked={picked.has(w.id)} onCheckedChange={v => setPicked(p => { const n = new Set(p); v === true ? n.add(w.id) : n.delete(w.id); return n; })} />}
+                  <span className="flex min-w-0 flex-col"><span className="text-sm font-medium">Weld #{i + 1}{(() => { const sd = (w.data.faces || []).find((f: Any) => f.side)?.side; return sd ? <span className={cn('ml-1.5 rounded px-1.5 text-2xs font-medium tracking-wide uppercase', SIDE_TAG[sd])}>{sd}</span> : null; })()}</span><small className="truncate text-xs text-muted-foreground">{describe(w)}{(w.data.parts || []).length > 1 ? ` · ${(w.data.parts || []).map((p: string) => names[p] || p).join(' + ')}` : ''}</small></span>
+                  <Label className="text-sm font-normal"><Checkbox checked={!!w.data.weld?.ground} disabled={!editable || busy} onCheckedChange={v => setGround(w, v === true)} />Ground</Label>
+                  <Button type="button" variant="ghost" size="icon-sm" className="text-destructive hover:bg-danger-soft hover:text-destructive dark:hover:bg-danger-soft" title="Delete weld" disabled={!editable || busy} onClick={() => remove(w.id)}><Trash2 /></Button>
                 </div>))}</div>}
           </aside>
         </div>
@@ -421,17 +442,17 @@ export function WeldAssemblies({ weldments, parts, editable, canJobOrder, onOpen
   weldments: Any[]; parts: Any[]; editable: boolean; canJobOrder: boolean; onOpen: (w: Any) => void; onJobOrder: (w: Any) => void; onSelect: (w: Any) => void; onDelete: (w: Any) => void;
 }) {
   const byId = new Map(parts.map(p => [p.id, p]));
-  if (!weldments.length) return <div className="wa-empty"><Flame size={30} /><b>No weld assemblies yet</b><small>Select the parts to weld in the model (Ctrl/⌘-click for several) and press Weld.</small></div>;
+  if (!weldments.length) return <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed px-4 py-12 text-center text-faint"><Flame className="size-7" /><span className="text-sm font-medium text-muted-foreground">No weld assemblies yet</span><small className="text-xs">Select the parts to weld in the model (Ctrl/⌘-click for several) and press Weld.</small></div>;
   return (
-    <div className="wa-grid">{weldments.map(w => (
-      <article key={w.id} className="wa-card">
-        <header><Flame size={16} /><b>{w.name}</b><small>{w.parts.length} part{w.parts.length === 1 ? '' : 's'} · {(w.welds || []).length} weld{(w.welds || []).length === 1 ? '' : 's'}</small></header>
-        <ul>{w.parts.slice(0, 8).map((pid: string) => { const p = byId.get(pid); return <li key={pid} title={p?.name}>{p?.alias ? <span className="alias-chip">{p.alias}</span> : null}{p?.name || pid}</li>; })}{w.parts.length > 8 && <li className="muted">+ {w.parts.length - 8} more</li>}</ul>
-        <footer>
-          <button type="button" className="primary" onClick={() => onOpen(w)}><Flame size={14} />Weld configuration</button>
-          <button type="button" onClick={() => onSelect(w)}><Target size={14} />Show in model</button>
-          {canJobOrder && <button type="button" onClick={() => onJobOrder(w)}><ClipboardList size={14} />Job order</button>}
-          {editable && <button type="button" className="icon danger" title="Delete the weld assembly and its welds" onClick={() => onDelete(w)}><Trash2 size={15} /></button>}
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3.5">{weldments.map(w => (
+      <article key={w.id} className="flex flex-col gap-2.5 rounded-lg border bg-card p-4">
+        <header className="grid grid-cols-[auto_1fr] items-center gap-x-2"><Flame className="size-4 text-[#e0479e]" /><span className="truncate text-sm font-medium">{w.name}</span><small className="col-start-2 text-xs text-muted-foreground">{w.parts.length} part{w.parts.length === 1 ? '' : 's'} · {(w.welds || []).length} weld{(w.welds || []).length === 1 ? '' : 's'}</small></header>
+        <ul className="grid gap-0.5 text-xs">{w.parts.slice(0, 8).map((pid: string) => { const p = byId.get(pid); return <li key={pid} className="truncate" title={p?.name}>{p?.alias ? <span className="mr-1.5 inline-block rounded bg-selection px-1.5 text-2xs leading-[17px] font-medium text-selection-foreground">{p.alias}</span> : null}{p?.name || pid}</li>; })}{w.parts.length > 8 && <li className="text-muted-foreground">+ {w.parts.length - 8} more</li>}</ul>
+        <footer className="mt-auto flex flex-wrap items-center gap-1.5">
+          <Button type="button" size="sm" onClick={() => onOpen(w)}><Flame />Weld configuration</Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => onSelect(w)}><Target />Show in model</Button>
+          {canJobOrder && <Button type="button" variant="outline" size="sm" onClick={() => onJobOrder(w)}><ClipboardList />Job order</Button>}
+          {editable && <Button type="button" variant="ghost" size="icon-sm" className="ml-auto text-destructive hover:bg-danger-soft hover:text-destructive dark:hover:bg-danger-soft" title="Delete the weld assembly and its welds" onClick={() => onDelete(w)}><Trash2 /></Button>}
         </footer>
       </article>))}
     </div>

@@ -1,6 +1,39 @@
 import React from 'react';
+import { X } from 'lucide-react';
 import type { Any } from './constants';
 import { api } from './api';
+import { Select } from './controls';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/components/ui/input-group';
+
+/** Label above a control (weld panels). */
+export function Field({ label, children, className }: { label: React.ReactNode; children: React.ReactNode; className?: string }) {
+  return <Label className={cn('grid items-stretch gap-1.5 text-xs leading-snug font-medium text-muted-foreground', className)}>{label}{children}</Label>;
+}
+/** Number field with a trailing "mm" unit. */
+export function MmInput({ className, ...props }: Omit<React.ComponentProps<'input'>, 'type'>) {
+  return <InputGroup className={cn('w-28 bg-card', className)}><InputGroupInput type="number" className="px-2 text-sm tabular-nums" {...props} /><InputGroupAddon align="inline-end" className="pr-2"><InputGroupText className="text-xs font-normal">mm</InputGroupText></InputGroupAddon></InputGroup>;
+}
+
+const eyebrow = 'text-2xs font-medium uppercase tracking-wider text-muted-foreground';
+const blockCls = 'rounded-md border bg-card px-2.5 py-2';
+const headCls = 'mb-2 flex items-center justify-between gap-1.5';
+const hintCls = 'mt-1.5 text-xs leading-snug text-muted-foreground';
+const tagCls = 'rounded px-1 text-2xs font-medium tracking-wide uppercase';
+const statCls = 'flex flex-col text-2xs text-muted-foreground';
+const statNum = 'text-sm font-semibold text-foreground tabular-nums';
+const LEVEL_DOT: Record<string, string> = { good: 'bg-success', review: 'bg-warning', blocked: 'bg-destructive' };
+const SIDE_TAG: Record<string, string> = { inside: 'bg-violet-500/15 text-violet-600 dark:text-violet-400', outside: 'bg-sky-500/15 text-sky-600 dark:text-sky-400' };
+/** segmented control (one of a few) */
+const segCls = 'grid w-full auto-cols-fr grid-flow-col gap-0.5 rounded-lg bg-muted p-0.5';
+const segToggle = 'h-7 gap-1 px-1.5 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-xs dark:data-[state=on]:bg-input';
+/** toggled outline button (was `.selected`) */
+const onCls = (on: boolean) => on ? 'border-primary/40 bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground dark:bg-selection dark:hover:bg-selection' : '';
 
 /**
  * All seams between the given parts. The server searches pair by pair within a time budget per call; a large
@@ -68,7 +101,7 @@ export function recommendWeld(parts: Any[], faces: Any[] = []) {
 export function WeldSketch({ type }: { type: string }) {
   const segments = type === 'stitch' ? [[25, 40], [50, 65], [75, 90]] : [[22, 94]];
   return (
-    <svg className="weld-sketch" viewBox="0 0 116 58" aria-hidden="true">
+    <svg className="mb-1 block h-12 w-full rounded bg-subtle text-muted-foreground" viewBox="0 0 116 58" aria-hidden="true">
       <path d="M10 47 L50 14 L106 14" fill="none" stroke="currentColor" strokeWidth="2" opacity=".42" />
       <path d="M10 47 H106" fill="none" stroke="currentColor" strokeWidth="2" opacity=".42" />
       {(type === 'linear' || type === 'stitch') && segments.map(([a, b], i) => <path key={i} d={`M${a} 45 Q${(a + b) / 2} 34 ${b} 45`} fill="none" stroke="#ffb000" strokeWidth="7" strokeLinecap="round" />)}
@@ -151,7 +184,7 @@ export function WeldSymbol({ weld, seams, length }: { weld: Any; seams: Any[]; l
     ? <path d={`M64 ${y} v${flip ? -9 : 9} M70 ${y} v${flip ? -9 : 9}`} stroke="currentColor" strokeWidth="1.6" />
     : <path d={`M62 ${y} v${flip ? -10 : 10} l10 ${flip ? 10 : -10} z`} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />;
   return (
-    <svg className="weld-symbol" viewBox="0 0 220 56" role="img" aria-label="ISO 2553 weld symbol">
+    <svg className="h-14 w-full text-foreground" viewBox="0 0 220 56" role="img" aria-label="ISO 2553 weld symbol">
       <path d="M8 46 L36 28" stroke="currentColor" strokeWidth="1.4" />
       <path d="M8 46 l9 -2 l-4 -5 z" fill="currentColor" />
       <path d="M36 28 H170" stroke="currentColor" strokeWidth="1.4" />
@@ -160,9 +193,9 @@ export function WeldSymbol({ weld, seams, length }: { weld: Any; seams: Any[]; l
       {weld.field && <path d="M36 28 V12 l10 3 l-10 3" fill="currentColor" stroke="currentColor" strokeWidth="1.2" />}
       {sym(28, false)}
       {both && sym(28, true)}
-      <text x="58" y="41" textAnchor="end" className="ws-t">{type === 'linear' || type === 'stitch' ? (joint === 'butt' ? '' : `a${a}`) : ''}</text>
-      <text x="78" y="41" className="ws-t">{right}</text>
-      {processCode(weld.process) && <><path d="M170 28 l10 -8 M170 28 l10 8" stroke="currentColor" strokeWidth="1.4" /><text x="184" y="32" className="ws-t">{processCode(weld.process)}{weld.quality ? ` / ${String(weld.quality).replace('ISO 5817-', '')}` : ''}</text></>}
+      <text x="58" y="41" textAnchor="end" className="fill-current text-[11px] font-medium">{type === 'linear' || type === 'stitch' ? (joint === 'butt' ? '' : `a${a}`) : ''}</text>
+      <text x="78" y="41" className="fill-current text-[11px] font-medium">{right}</text>
+      {processCode(weld.process) && <><path d="M170 28 l10 -8 M170 28 l10 8" stroke="currentColor" strokeWidth="1.4" /><text x="184" y="32" className="fill-current text-[11px] font-medium">{processCode(weld.process)}{weld.quality ? ` / ${String(weld.quality).replace('ISO 5817-', '')}` : ''}</text></>}
     </svg>
   );
 }
@@ -202,81 +235,81 @@ export function WeldStudio({ draft, setDraft, parts, seams, detecting, detectMes
   const groups = ['fillet', 'gap', 'butt', 'corner'].map(j => ({ joint: j, items: shown.filter(s => s.joint === j) })).filter(g => g.items.length);
 
   return (
-    <div className="weld-studio">
-      <section className="ws-block">
-        <header><b>1 · Components</b>{!draft.scopeLocked && <button type="button" className={'mini' + (addingParts ? ' selected' : '')} onClick={() => { setAddingParts(!addingParts); setPickMode(null); }}>{addingParts ? 'Done adding' : '+ Add from 3D'}</button>}</header>
-        <div className="ws-chips">{checks.map((c: Any) => (
-          <span key={c.p.id} className={'ws-chip ' + c.level} title={`${c.label}: ${c.reason}`}><i />{c.p.name}{!draft.scopeLocked && <button type="button" aria-label={'Remove ' + c.p.name} onClick={() => setDraft({ ...draft, parts: draft.parts.filter((x: string) => x !== c.p.id), faces: draft.faces.filter((f: Any) => f.part !== c.p.id && f.other_part !== c.p.id) })}>×</button>}</span>
-        ))}{!checks.length && <small className="muted">Click the components to weld in the 3D view.</small>}</div>
-        {addingParts && <p className="ws-hint">Click components in the 3D view to add or remove them. Seams are found where they touch.</p>}
-        {blocked && <p className="weld-required">{checks.find((c: Any) => c.level === 'blocked')?.reason}</p>}
+    <div className="flex flex-col gap-2.5">
+      <section className={blockCls}>
+        <header className={headCls}><span className={eyebrow}>1 · Components</span>{!draft.scopeLocked && <Button type="button" variant="outline" size="xs" className={onCls(addingParts)} onClick={() => { setAddingParts(!addingParts); setPickMode(null); }}>{addingParts ? 'Done adding' : '+ Add from 3D'}</Button>}</header>
+        <div className="flex flex-wrap gap-1.5">{checks.map((c: Any) => (
+          <span key={c.p.id} className={cn('inline-flex max-w-full items-center gap-1.5 rounded-full border bg-subtle py-0.5 pl-2 text-xs', draft.scopeLocked ? 'pr-2' : 'pr-0.5')} title={`${c.label}: ${c.reason}`}><i className={cn('size-[7px] shrink-0 rounded-full', LEVEL_DOT[c.level] || 'bg-warning')} /><span className="min-w-0 truncate">{c.p.name}</span>{!draft.scopeLocked && <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full text-muted-foreground" aria-label={'Remove ' + c.p.name} onClick={() => setDraft({ ...draft, parts: draft.parts.filter((x: string) => x !== c.p.id), faces: draft.faces.filter((f: Any) => f.part !== c.p.id && f.other_part !== c.p.id) })}><X /></Button>}</span>
+        ))}{!checks.length && <small className="text-xs text-muted-foreground">Click the components to weld in the 3D view.</small>}</div>
+        {addingParts && <p className={hintCls}>Click components in the 3D view to add or remove them. Seams are found where they touch.</p>}
+        {blocked && <p className="mt-1.5 rounded-md bg-warning-soft px-2.5 py-2 text-xs text-warning">{checks.find((c: Any) => c.level === 'blocked')?.reason}</p>}
       </section>
 
-      <section className="ws-block">
-        <header><b>2 · Seams</b><span className="flex">{seams.length > 0 && <><button type="button" className="mini" title="Main inside fillets not welded yet" onClick={() => setAll(sideOnly.filter(s => !s.minor && s.joint === 'fillet' && !s.welded_by))}>Main</button><button type="button" className="mini" title={seamSide === 'all' ? 'Every seam not welded yet' : `Every ${seamSide} seam not welded yet`} onClick={() => setAll(sideOnly.filter(s => !s.welded_by))}>All</button><button type="button" className="mini" onClick={() => setAll([])}>None</button></>}<button type="button" className="mini primary-soft" disabled={detecting || (draft.parts || []).length < 1} onClick={onDetect}>{detecting ? 'Finding…' : seams.length ? 'Find all again' : 'Find all seams'}</button></span></header>
-        <div className={'ws-pair' + (pickMode === 'face' ? ' on' : '')}>
-          <button type="button" className={pickMode === 'face' ? 'selected' : ''} onClick={() => { setAddingParts(false); setPickMode(pickMode === 'face' ? null : 'face'); }}><b>Pick two faces</b><small>Face A, then face B — on any parts, or two faces of one part. Repeat for more seams.</small></button>
+      <section className={blockCls}>
+        <header className={headCls}><span className={eyebrow}>2 · Seams</span><span className="flex items-center gap-1">{seams.length > 0 && <><Button type="button" variant="outline" size="xs" title="Main inside fillets not welded yet" onClick={() => setAll(sideOnly.filter(s => !s.minor && s.joint === 'fillet' && !s.welded_by))}>Main</Button><Button type="button" variant="outline" size="xs" title={seamSide === 'all' ? 'Every seam not welded yet' : `Every ${seamSide} seam not welded yet`} onClick={() => setAll(sideOnly.filter(s => !s.welded_by))}>All</Button><Button type="button" variant="outline" size="xs" onClick={() => setAll([])}>None</Button></>}<Button type="button" variant="secondary" size="xs" className="bg-selection text-selection-foreground hover:bg-selection/70" disabled={detecting || (draft.parts || []).length < 1} onClick={onDetect}>{detecting ? 'Finding…' : seams.length ? 'Find all again' : 'Find all seams'}</Button></span></header>
+        <div className="mb-1.5">
+          <Button type="button" variant="outline" className={cn('h-auto w-full flex-col items-start gap-0.5 border-dashed px-3 py-2 text-left whitespace-normal', pickMode === 'face' && 'border-solid border-primary bg-selection hover:bg-selection dark:bg-selection dark:hover:bg-selection')} onClick={() => { setAddingParts(false); setPickMode(pickMode === 'face' ? null : 'face'); }}><span className="text-xs font-medium text-foreground">Pick two faces</span><small className="text-2xs leading-snug font-normal text-muted-foreground">Face A, then face B — on any parts, or two faces of one part. Repeat for more seams.</small></Button>
         </div>
-        {!seams.length && !detecting && detectMessage && <p className="ws-hint">{detectMessage}</p>}
-        {hasSides && <div className="ws-side">
+        {!seams.length && !detecting && detectMessage && <p className={hintCls}>{detectMessage}</p>}
+        {hasSides && <div className="mt-2 mb-1 flex items-center gap-2 text-xs text-muted-foreground">
           <span>Weld from</span>
-          <div className="ws-seg">{[['all', 'Both sides', seams.length], ['inside', 'Inside', sideCount('inside')], ['outside', 'Outside', sideCount('outside')]].map(([v, l, n]) => (
-            <button type="button" key={v as string} className={seamSide === v ? 'selected' : ''} title={v === 'inside' ? 'Seams facing the inside of these parts (towards their common centre)' : v === 'outside' ? 'Seams on the outer faces' : 'Seams on every side'} onClick={() => setSeamSide?.(v as string)}>{l}<small>{n}</small></button>
-          ))}</div>
+          <ToggleGroup type="single" spacing={1} value={seamSide} className={cn(segCls, 'flex-1')}>{[['all', 'Both sides', seams.length], ['inside', 'Inside', sideCount('inside')], ['outside', 'Outside', sideCount('outside')]].map(([v, l, n]) => (
+            <ToggleGroupItem key={v as string} value={v as string} size="sm" className={segToggle} title={v === 'inside' ? 'Seams facing the inside of these parts (towards their common centre)' : v === 'outside' ? 'Seams on the outer faces' : 'Seams on every side'} onClick={() => setSeamSide?.(v as string)}>{l}<small className="tabular-nums opacity-70">{n}</small></ToggleGroupItem>
+          ))}</ToggleGroup>
         </div>}
-        {seams.length > 0 && <p className="ws-legend"><i className="lg-found" />found — click to add<i className="lg-chosen" />will be welded<span>Shift-click a seam in 3D to take its whole side</span></p>}
+        {seams.length > 0 && <p className="my-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-2xs text-muted-foreground"><i className="inline-block h-[3px] w-3.5 rounded-sm bg-[#22d3ee]" />found — click to add<i className="ml-1.5 inline-block h-[3px] w-3.5 rounded-sm bg-[#f59e0b]" />will be welded<span className="basis-full">Shift-click a seam in 3D to take its whole side</span></p>}
         {groups.map(g => (
-          <div key={g.joint} className="ws-seam-group">
-            <small>{JOINT_LABEL[g.joint]} · {g.items.length}</small>
+          <div key={g.joint} className="mt-1">
+            <small className={cn(eyebrow, 'mt-1.5 mb-1 block')}>{JOINT_LABEL[g.joint]} · {g.items.length}</small>
             {g.items.map(s => (
-              <label key={s.id} className={'ws-seam' + (hoverSeam === s.id ? ' hot' : '') + (s.minor ? ' minor' : '')} onMouseEnter={() => setHoverSeam(s.id)} onMouseLeave={() => setHoverSeam(null)}>
-                <input type="checkbox" checked={chosen.has(seamKey(s))} onChange={() => toggleSeam(s)} />
-                <b>{s.id}</b>
-                <span title={`${s.part_name || named(s.part)} → ${s.other_name || named(s.other_part)}`}>{hasSides && s.side && <em className={'ws-sidetag ' + s.side}>{s.side === 'inside' ? 'in' : 'out'}</em>}{s.part === s.other_part && s.occurrence === s.other_occurrence ? <><em>{s.part_name || named(s.part)}</em> · closes on itself</> : <><em>{s.part_name || named(s.part)}</em> → {s.other_name || named(s.other_part)}</>}</span>
-                <i>{s.gap ? <em className="ws-gap" title="Air gap the weld bridges">{s.gap} mm gap</em> : null}{s.welded_by ? <em className="ws-welded" title={`Already welded in ${s.welded_by}`}>{s.welded_by}</em> : null}{fmtLen(s.length)}</i>
-              </label>
+              <Label key={s.id} className={cn('grid cursor-pointer grid-cols-[16px_28px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-normal hover:bg-cyan-500/10', hoverSeam === s.id && 'bg-cyan-500/10', s.minor && 'opacity-70')} onMouseEnter={() => setHoverSeam(s.id)} onMouseLeave={() => setHoverSeam(null)}>
+                <Checkbox checked={chosen.has(seamKey(s))} onCheckedChange={() => toggleSeam(s)} />
+                <span className="text-2xs font-medium text-cyan-600 dark:text-cyan-400">{s.id}</span>
+                <span className="min-w-0 truncate text-muted-foreground" title={`${s.part_name || named(s.part)} → ${s.other_name || named(s.other_part)}`}>{hasSides && s.side && <span className={cn(tagCls, 'mr-1', SIDE_TAG[s.side])}>{s.side === 'inside' ? 'in' : 'out'}</span>}{s.part === s.other_part && s.occurrence === s.other_occurrence ? <><span className="text-foreground">{s.part_name || named(s.part)}</span> · closes on itself</> : <><span className="text-foreground">{s.part_name || named(s.part)}</span> → {s.other_name || named(s.other_part)}</>}</span>
+                <span className="text-muted-foreground tabular-nums">{s.gap ? <span className={cn(tagCls, 'mr-1.5 bg-sky-500/15 text-sky-700 dark:text-sky-300')} title="Air gap the weld bridges">{s.gap} mm gap</span> : null}{s.welded_by ? <span className={cn(tagCls, 'mr-1.5 bg-warning-soft text-warning')} title={`Already welded in ${s.welded_by}`}>{s.welded_by}</span> : null}{fmtLen(s.length)}</span>
+              </Label>
             ))}
           </div>
         ))}
-        <div className="ws-manual">
+        <div className="mt-2 flex items-center gap-1.5 border-t border-dashed pt-2 text-2xs text-muted-foreground">
           <span>Also:</span>
-          <button type="button" className={'mini' + (pickMode === 'edge' ? ' selected' : '')} disabled={type === 'patch' || type === 'tack'} onClick={() => { setAddingParts(false); setPickMode(pickMode === 'edge' ? null : 'edge'); }}>Pick edges</button>
+          <Button type="button" variant="outline" size="xs" className={onCls(pickMode === 'edge')} disabled={type === 'patch' || type === 'tack'} onClick={() => { setAddingParts(false); setPickMode(pickMode === 'edge' ? null : 'edge'); }}>Pick edges</Button>
 
-          {(edgeFaces.length > 0 || faceFaces.length > 0) && <button type="button" className="mini" onClick={() => setDraft({ ...draft, faces: [], weld: { ...w, placement: null } })}>Clear</button>}
+          {(edgeFaces.length > 0 || faceFaces.length > 0) && <Button type="button" variant="outline" size="xs" onClick={() => setDraft({ ...draft, faces: [], weld: { ...w, placement: null } })}>Clear</Button>}
         </div>
-        {faceFaces.length > 0 && (type === 'patch' || type === 'tack') && <p className="ws-hint">{faceFaces.length} face{faceFaces.length === 1 ? '' : 's'} picked.</p>}
+        {faceFaces.length > 0 && (type === 'patch' || type === 'tack') && <p className={hintCls}>{faceFaces.length} face{faceFaces.length === 1 ? '' : 's'} picked.</p>}
       </section>
 
-      <section className="ws-block">
-        <header><b>3 · Weld</b></header>
-        <div className="ws-seg">{[['linear', 'Continuous'], ['stitch', 'Stitch'], ['tack', 'Tack'], ['patch', 'Patch']].map(([id, label]) => (
-          <button type="button" key={id} className={type === id ? 'selected' : ''} title={WELD_TYPE_HELP[id]?.use} onClick={() => {
+      <section className={blockCls}>
+        <header className={headCls}><span className={eyebrow}>3 · Weld</span></header>
+        <ToggleGroup type="single" spacing={1} value={type} className={segCls}>{[['linear', 'Continuous'], ['stitch', 'Stitch'], ['tack', 'Tack'], ['patch', 'Patch']].map(([id, label]) => (
+          <ToggleGroupItem key={id} value={id} size="sm" className={segToggle} title={WELD_TYPE_HELP[id]?.use} onClick={() => {
             const next: Any = { ...draft, weld: { ...w, type: id, length: id === 'stitch' ? (w.length || '25') : id === 'tack' ? (w.length || '6') : w.length, pitch: id === 'stitch' ? (w.pitch || '50') : w.pitch, width: id === 'tack' ? (w.width || '4') : w.width, placement: id === 'tack' ? w.placement : null } };
             if (id === 'tack' || id === 'patch') { next.faces = faceFaces; setPickMode('face'); }
             setDraft(next);
-          }}>{label}</button>
-        ))}</div>
-        <div className="ws-seg ws-proc">{PROCESSES.map(p => <button type="button" key={p.id} className={w.process === p.id ? 'selected' : ''} onClick={() => setW({ process: p.id })}>{p.label}<small>{p.code}</small></button>)}</div>
-        <div className="ws-fields">
-          {(type === 'linear' || type === 'stitch') && <label>Throat a<span className="ws-num"><input type="number" min="0.5" max="30" step="0.5" placeholder="auto" value={w.size || w.thickness || ''} onChange={e => setW({ size: e.target.value, thickness: e.target.value })} /><i>mm</i></span></label>}
-          {type === 'stitch' && <><label>Segment<span className="ws-num"><input type="number" min="5" max="500" step="5" value={w.length || '25'} onChange={e => setW({ length: e.target.value })} /><i>mm</i></span></label><label>Pitch<span className="ws-num"><input type="number" min="10" max="1000" step="5" value={w.pitch || '50'} onChange={e => setW({ pitch: e.target.value })} /><i>mm</i></span></label></>}
-          {type === 'tack' && <><label>Width<span className="ws-num"><input type="number" min="1" max="20" step="0.5" value={w.width || '4'} onChange={e => setW({ width: e.target.value })} /><i>mm</i></span></label><label>Length<span className="ws-num"><input type="number" min="1" max="50" step="0.5" value={w.length || '6'} onChange={e => setW({ length: e.target.value })} /><i>mm</i></span></label></>}
-          {(type === 'linear' || type === 'stitch') && <label>Sides<select value={w.sides || 'one'} onChange={e => setW({ sides: e.target.value })}><option value="one">Arrow side</option><option value="both">Both sides</option><option value="all_around">All around</option></select></label>}
-          <label>Quality<select value={w.quality || ''} onChange={e => setW({ quality: e.target.value })}><option value="">—</option><option value="ISO 5817-B">ISO 5817 B</option><option value="ISO 5817-C">ISO 5817 C</option><option value="ISO 5817-D">ISO 5817 D</option></select></label>
-          <label>Filler<input value={w.filler || ''} placeholder="ER70S-6" onChange={e => setW({ filler: e.target.value })} /></label>
+          }}>{label}</ToggleGroupItem>
+        ))}</ToggleGroup>
+        <ToggleGroup type="single" spacing={1} value={w.process || ''} className={cn(segCls, 'mt-1.5')}>{PROCESSES.map(p => <ToggleGroupItem key={p.id} value={p.id} size="sm" className={cn(segToggle, 'h-auto flex-col gap-0 py-1 leading-tight')} onClick={() => setW({ process: p.id })}>{p.label}<small className="text-2xs opacity-70">{p.code}</small></ToggleGroupItem>)}</ToggleGroup>
+        <div className="mt-2.5 grid grid-cols-2 gap-x-2 gap-y-2">
+          {(type === 'linear' || type === 'stitch') && <Field label="Throat a"><MmInput className="h-7 w-full" min="0.5" max="30" step="0.5" placeholder="auto" value={w.size || w.thickness || ''} onChange={e => setW({ size: e.target.value, thickness: e.target.value })} /></Field>}
+          {type === 'stitch' && <><Field label="Segment"><MmInput className="h-7 w-full" min="5" max="500" step="5" value={w.length || '25'} onChange={e => setW({ length: e.target.value })} /></Field><Field label="Pitch"><MmInput className="h-7 w-full" min="10" max="1000" step="5" value={w.pitch || '50'} onChange={e => setW({ pitch: e.target.value })} /></Field></>}
+          {type === 'tack' && <><Field label="Width"><MmInput className="h-7 w-full" min="1" max="20" step="0.5" value={w.width || '4'} onChange={e => setW({ width: e.target.value })} /></Field><Field label="Length"><MmInput className="h-7 w-full" min="1" max="50" step="0.5" value={w.length || '6'} onChange={e => setW({ length: e.target.value })} /></Field></>}
+          {(type === 'linear' || type === 'stitch') && <Field label="Sides"><Select size="sm" value={w.sides || 'one'} onChange={v => setW({ sides: v })} options={[{ value: 'one', label: 'Arrow side' }, { value: 'both', label: 'Both sides' }, { value: 'all_around', label: 'All around' }]} /></Field>}
+          <Field label="Quality"><Select size="sm" value={w.quality || ''} onChange={v => setW({ quality: v })} options={[{ value: '', label: '—' }, { value: 'ISO 5817-B', label: 'ISO 5817 B' }, { value: 'ISO 5817-C', label: 'ISO 5817 C' }, { value: 'ISO 5817-D', label: 'ISO 5817 D' }]} /></Field>
+          <Field label="Filler"><Input className="h-7 px-2 text-xs" value={w.filler || ''} placeholder="ER70S-6" onChange={e => setW({ filler: e.target.value })} /></Field>
         </div>
-        <label className="ws-check"><input type="checkbox" checked={!!w.field} onChange={e => setW({ field: e.target.checked })} />Site / field weld</label>
-        {type === 'tack' && <p className="ws-hint">{faceFaces.length < 2 ? 'Pick the two mating faces, then click where the tack goes.' : w.placement ? 'Tack placed — click again to move it.' : 'Click on a picked face to place the tack.'} <button type="button" className="mini" disabled={faceFaces.length < 2} onClick={() => setPickMode('point')}>Place tack</button></p>}
-        {type === 'patch' && <p className="ws-hint">Pick the faces the patch weld covers.</p>}
+        <Label className="mt-2.5 text-xs font-normal"><Checkbox checked={!!w.field} onCheckedChange={v => setW({ field: v === true })} />Site / field weld</Label>
+        {type === 'tack' && <p className={hintCls}>{faceFaces.length < 2 ? 'Pick the two mating faces, then click where the tack goes.' : w.placement ? 'Tack placed — click again to move it.' : 'Click on a picked face to place the tack.'} <Button type="button" variant="outline" size="xs" disabled={faceFaces.length < 2} onClick={() => setPickMode('point')}>Place tack</Button></p>}
+        {type === 'patch' && <p className={hintCls}>Pick the faces the patch weld covers.</p>}
       </section>
 
-      <section className="ws-block ws-summary">
+      <section className={cn(blockCls, 'bg-subtle')}>
         <WeldSymbol weld={{ ...w, type }} seams={edgeFaces} length={totalLength} />
-        {(type === 'linear' || type === 'stitch') && edgeFaces.length > 0 && <div className="ws-stats">
-          <span><b>{edgeFaces.length}</b>seam{edgeFaces.length === 1 ? '' : 's'}</span>
-          <span><b>{fmtLen(welded * sides)}</b>weld length</span>
-          {a > 0 && <span><b>{fillerGrams >= 1000 ? (fillerGrams / 1000).toFixed(2) + ' kg' : Math.round(fillerGrams) + ' g'}</b>filler (est.)</span>}
-          <span><b>{arcMinutes < 1 ? '<1' : Math.round(arcMinutes)} min</b>arc time</span>
+        {(type === 'linear' || type === 'stitch') && edgeFaces.length > 0 && <div className="mt-1.5 grid grid-cols-4 gap-1">
+          <span className={statCls}><span className={statNum}>{edgeFaces.length}</span>seam{edgeFaces.length === 1 ? '' : 's'}</span>
+          <span className={statCls}><span className={statNum}>{fmtLen(welded * sides)}</span>weld length</span>
+          {a > 0 && <span className={statCls}><span className={statNum}>{fillerGrams >= 1000 ? (fillerGrams / 1000).toFixed(2) + ' kg' : Math.round(fillerGrams) + ' g'}</span>filler (est.)</span>}
+          <span className={statCls}><span className={statNum}>{arcMinutes < 1 ? '<1' : Math.round(arcMinutes)} min</span>arc time</span>
         </div>}
       </section>
     </div>

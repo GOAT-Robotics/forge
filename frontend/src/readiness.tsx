@@ -1,6 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, CircleHelp, X, FileText, ShieldCheck, Sparkles } from 'lucide-react';
 import { categories, suggestions, RAL } from './constants';
+import { Combo } from './controls';
+import { Progress } from './shell';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import type { Any } from './constants';
 
 /**
@@ -33,8 +42,16 @@ export const DATUMS = [
 export const procFor = (cat: string) => cat === 'sheet_metal' ? ['Laser cutting + CNC bending', 'Laser cutting', 'Sheet metal fabrication + welding', 'Waterjet cutting'] : cat === 'machining' ? ['CNC milling (3-axis)', 'CNC turning', 'Turn-mill', 'CNC milling (5-axis)', 'Wire EDM'] : suggestions.process.slice(0, 6);
 export const matFor = (cat: string) => cat === 'sheet_metal' ? ['Mild steel IS 513 CR2 (CRCA)', 'Stainless steel SS304 (X5CrNi18-10)', 'Aluminium 5052-H32', 'Mild steel HR IS 1079'] : ['Aluminium 6061-T6', 'Mild steel IS 2062 E250 BR', 'Alloy steel EN8 (080M40)', 'Stainless steel SS304 (X5CrNi18-10)', 'Alloy steel EN24 (817M40)'];
 
+/** Outlined answer button; selected → accent outline and tint. */
+const choiceCls = (on: boolean) => cn('h-auto min-h-8 justify-start py-1.5 text-left font-normal whitespace-normal', on && 'border-primary bg-selection text-selection-foreground ring-1 ring-primary ring-inset hover:bg-selection hover:text-selection-foreground');
+const fieldCls = 'mb-3 grid gap-1.5 text-xs leading-snug';
+const note = 'my-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-sm [&>svg]:mt-0.5 [&>svg]:size-4 [&>svg]:shrink-0';
+const noteWarn = cn(note, 'border-warning/30 bg-warning-soft text-warning');
+const noteOk = cn(note, 'border-success/30 bg-success-soft text-success');
+const noteInfo = cn(note, 'bg-subtle text-foreground');
+
 function Choice({ options, value, onPick, hint }: { options: string[]; value: string; onPick: (v: string) => void; hint?: string }) {
-  return <div className="rw-choices">{options.map(o => <button type="button" key={o} className={value === o ? 'selected' : ''} onClick={() => onPick(o)}>{value === o && <Check size={13} />}{o}{hint === o && <em>from CAD</em>}</button>)}</div>;
+  return <div className="mb-3 flex flex-wrap gap-2">{options.map(o => <Button type="button" variant="outline" key={o} className={choiceCls(value === o)} onClick={() => onPick(o)}>{value === o && <Check className="size-3.5" />}{o}{hint === o && <em className="rounded-full bg-success-soft px-1.5 py-px text-2xs font-medium not-italic text-success">from CAD</em>}</Button>)}</div>;
 }
 
 export function ReadinessWizard({ part, settings, editable, canReview, onSave, onDocReview, onOpenDrawing, onClose }: {
@@ -88,26 +105,23 @@ export function ReadinessWizard({ part, settings, editable, canReview, onSave, o
     if (!step) return null;
     if (step.id === 'type') return <>
       <Choice options={Object.values(categories)} value={categories[category]} onPick={v => setCategory(Object.entries(categories).find(([, l]) => l === v)?.[0] || category)} />
-      {purchased && <p className="rw-note"><ShieldCheck size={15} />Purchased parts are bought complete: they are left out of release checks, drawing sets and the assembly drawing. Save to finish.</p>}
+      {purchased && <p className={noteInfo}><ShieldCheck />Purchased parts are bought complete: they are left out of release checks, drawing sets and the assembly drawing. Save to finish.</p>}
     </>;
     if (step.id === 'material') return <>
       <Choice options={[...new Set([...(stepMat ? [stepMat] : []), ...matFor(category)])]} value={spec.material} onPick={v => set('material', v)} hint={stepMat} />
-      <label className="rw-field">Or type the grade<input value={spec.material || ''} list="rw-materials" onChange={e => set('material', e.target.value)} placeholder="e.g. Aluminium 6082-T6" /></label>
-      <datalist id="rw-materials">{suggestions.material.map(m => <option key={m} value={m} />)}</datalist>
-      <label className="rw-field">Stock (optional)<input value={spec.stock || ''} list="rw-stock" onChange={e => set('stock', e.target.value)} placeholder={part.geometry?.thickness ? `Sheet ${part.geometry.thickness} mm` : 'Plate / bar size'} /></label>
-      <datalist id="rw-stock">{suggestions.stock.map(m => <option key={m} value={m} />)}</datalist>
+      <div className={fieldCls}><span className="font-medium">Or type the grade</span><Combo aria-label="Or type the grade" value={spec.material || ''} suggestions={suggestions.material} onChange={v => set('material', v)} placeholder="e.g. Aluminium 6082-T6" /></div>
+      <div className={fieldCls}><span className="font-medium">Stock (optional)</span><Combo aria-label="Stock (optional)" value={spec.stock || ''} suggestions={suggestions.stock} onChange={v => set('stock', v)} placeholder={part.geometry?.thickness ? `Sheet ${part.geometry.thickness} mm` : 'Plate / bar size'} /></div>
     </>;
     if (step.id === 'process') return <>
       <Choice options={procFor(category)} value={spec.process} onPick={v => set('process', v)} />
-      <label className="rw-field">Or describe it<input value={spec.process || ''} list="rw-proc" onChange={e => set('process', e.target.value)} /></label>
-      <datalist id="rw-proc">{suggestions.process.map(m => <option key={m} value={m} />)}</datalist>
+      <div className={fieldCls}><span className="font-medium">Or describe it</span><Combo aria-label="Or describe it" value={spec.process || ''} suggestions={suggestions.process} onChange={v => set('process', v)} /></div>
     </>;
     if (step.id === 'finish') return <>
       <Choice options={suggestions.finish} value={spec.finish} onPick={v => set('finish', v)} />
       {/powder|paint/i.test(spec.finish || '') && <>
-        <p className="rw-sub">Which colour?</p>
-        <div className="rw-ral">{RAL.slice(0, 24).map(c => <button type="button" key={c.code} title={`${c.code} ${c.name}`} className={spec.coating_color === c.code ? 'selected' : ''} style={{ background: c.hex }} onClick={() => setSpec((s: Any) => ({ ...s, coating_color: c.code, coating_hex: c.hex }))} />)}</div>
-        <p className="rw-sub">{spec.coating_color ? `${spec.coating_color} · ${RAL.find(c => c.code === spec.coating_color)?.name || ''}` : 'Pick a RAL colour'}</p>
+        <p className="mt-1 mb-2 text-xs text-muted-foreground">Which colour?</p>
+        <div className="mb-1 grid grid-cols-[repeat(12,28px)] gap-1.5">{RAL.slice(0, 24).map(c => <Button type="button" variant="ghost" size="icon-sm" key={c.code} title={`${c.code} ${c.name}`} aria-label={`${c.code} ${c.name}`} className={cn('ring-1 ring-black/10 ring-inset dark:ring-white/15', spec.coating_color === c.code && 'outline-2 outline-offset-2 outline-primary')} style={{ background: c.hex }} onClick={() => setSpec((s: Any) => ({ ...s, coating_color: c.code, coating_hex: c.hex }))} />)}</div>
+        <p className="mt-1 mb-2 text-xs text-muted-foreground">{spec.coating_color ? `${spec.coating_color} · ${RAL.find(c => c.code === spec.coating_color)?.name || ''}` : 'Pick a RAL colour'}</p>
         <Choice options={suggestions.coatingThickness.slice(0, 3)} value={spec.coating_thickness} onPick={v => set('coating_thickness', v)} />
         <Choice options={suggestions.masking} value={spec.masking} onPick={v => set('masking', v)} />
       </>}
@@ -115,70 +129,74 @@ export function ReadinessWizard({ part, settings, editable, canReview, onSave, o
     if (step.id === 'tolerance') return <Choice options={[...new Set([tol, ...suggestions.tolerance])]} value={spec.general_tolerance} onPick={v => set('general_tolerance', v)} />;
     if (step.id === 'datums') return <>
       <Choice options={DATUMS} value={spec.datums} onPick={v => set('datums', v)} />
-      <label className="rw-field">Or describe them<input value={spec.datums || ''} onChange={e => set('datums', e.target.value)} placeholder="A = …, B = …, C = …" /></label>
+      <Label className={fieldCls}>Or describe them<Input value={spec.datums || ''} onChange={e => set('datums', e.target.value)} placeholder="A = …, B = …, C = …" /></Label>
     </>;
     if (step.id === 'kfactor') return <>
-      <div className="rw-row"><label className="rw-field">K-factor<input type="number" min={0.2} max={0.5} step={0.01} value={spec.k_factor ?? 0.4} onChange={e => set('k_factor', Number(e.target.value))} /></label>
-        <div className="rw-presets">{[[0.33, 'Soft, tight bend'], [0.4, 'Typical mild steel'], [0.44, 'Stainless / large radius']].map(([v, l]) => <button type="button" key={v as number} className={spec.k_factor === v ? 'selected' : ''} onClick={() => set('k_factor', v)}><b>{v as number}</b><small>{l as string}</small></button>)}</div></div>
-      <p className="rw-sub">{(part.geometry?.bends || []).length} bend(s) · thickness {part.geometry?.thickness || '?'} mm · inside radius {part.geometry?.bends?.[0]?.radius?.toFixed?.(2) || '?'} mm</p>
-      <label className="rw-check"><input type="checkbox" checked={!!spec.k_factor_approved} onChange={e => set('k_factor_approved', e.target.checked)} />I confirmed this K-factor with the material, thickness and press tooling</label>
+      <div className="flex flex-wrap items-end gap-3.5"><Label className={cn(fieldCls, 'w-32')}>K-factor<Input type="number" min={0.2} max={0.5} step={0.01} className="tabular-nums" value={spec.k_factor ?? 0.4} onChange={e => set('k_factor', Number(e.target.value))} /></Label>
+        <div className="mb-3 flex gap-2">{[[0.33, 'Soft, tight bend'], [0.4, 'Typical mild steel'], [0.44, 'Stainless / large radius']].map(([v, l]) => <Button type="button" variant="outline" key={v as number} className={cn(choiceCls(spec.k_factor === v), 'flex-col items-start gap-0')} onClick={() => set('k_factor', v)}><span className="font-medium tabular-nums">{v as number}</span><small className="text-2xs text-muted-foreground">{l as string}</small></Button>)}</div></div>
+      <p className="mt-1 mb-2 text-xs text-muted-foreground">{(part.geometry?.bends || []).length} bend(s) · thickness {part.geometry?.thickness || '?'} mm · inside radius {part.geometry?.bends?.[0]?.radius?.toFixed?.(2) || '?'} mm</p>
+      <Label className="my-2 font-normal leading-snug"><Checkbox checked={!!spec.k_factor_approved} onCheckedChange={v => set('k_factor_approved', v === true)} />I confirmed this K-factor with the material, thickness and press tooling</Label>
     </>;
     if (step.id.startsWith('check:')) {
       const k = step.id.slice(6);
       return <>
-        <div className="rw-answers">{MANUAL[k].answers.map(a => <button type="button" key={a} className={spec.manual_checks?.[k] === a ? 'selected' : ''} onClick={() => check(k, a)}>{spec.manual_checks?.[k] === a && <Check size={13} />}{a}</button>)}</div>
-        <label className="rw-field">Verification note (who / how)<textarea rows={2} value={spec.manual_checks?.[k] || ''} onChange={e => check(k, e.target.value)} placeholder="At least a short sentence: what was checked and how" /></label>
+        <div className="mb-3 flex flex-col gap-2">{MANUAL[k].answers.map(a => <Button type="button" variant="outline" key={a} className={choiceCls(spec.manual_checks?.[k] === a)} onClick={() => check(k, a)}>{spec.manual_checks?.[k] === a && <Check className="size-3.5" />}{a}</Button>)}</div>
+        <Label className={fieldCls}>Verification note (who / how)<Textarea rows={2} className="min-h-0 text-sm text-foreground" value={spec.manual_checks?.[k] || ''} onChange={e => check(k, e.target.value)} placeholder="At least a short sentence: what was checked and how" /></Label>
       </>;
     }
-    if (step.id === 'warnings') return <div className="rw-warns">{warnings.map((f: Any) => {
+    if (step.id === 'warnings') return <div className="flex flex-col gap-2.5">{warnings.map((f: Any) => {
       const key = f.code + (f.feature ? ':' + f.feature : '');
-      return <div key={key} className="rw-warn"><b>{f.title}{f.feature ? ` · ${f.feature}` : ''}</b><small>{f.detail}</small>
-        <div className="rw-answers inline">{['Accepted: vendor confirmed capability', 'Accepted: matches proven released part', 'Will change the CAD in the next revision'].map(a => <button type="button" key={a} className={spec.rule_waivers?.[key] === a ? 'selected' : ''} onClick={() => waive(key, a)}>{a}</button>)}</div>
-        <input value={spec.rule_waivers?.[key] || ''} onChange={e => waive(key, e.target.value)} placeholder="Reason (min. 10 characters)" /></div>;
+      return <div key={key} className="rounded-lg border bg-card px-3 py-2.5"><div className="text-sm font-medium">{f.title}{f.feature ? ` · ${f.feature}` : ''}</div><small className="mt-0.5 block text-xs text-muted-foreground">{f.detail}</small>
+        <div className="my-2 flex flex-wrap gap-2">{['Accepted: vendor confirmed capability', 'Accepted: matches proven released part', 'Will change the CAD in the next revision'].map(a => <Button type="button" variant="outline" size="sm" key={a} className={choiceCls(spec.rule_waivers?.[key] === a)} onClick={() => waive(key, a)}>{a}</Button>)}</div>
+        <Input value={spec.rule_waivers?.[key] || ''} onChange={e => waive(key, e.target.value)} placeholder="Reason (min. 10 characters)" /></div>;
     })}</div>;
     if (step.id === 'design') {
       const missing = steps.filter(s => !['design', 'drawing'].includes(s.id) && !s.done(spec, part));
       return <>
-        <div className="rw-summary">{[['Type', categories[category]], ['Material', spec.material], ['Process', spec.process], ['Finish', spec.finish + (spec.coating_color ? ` · ${spec.coating_color}` : '')], ['Tolerance', spec.general_tolerance], ['Datums', spec.datums]].map(([l, v]) => <div key={l}><span>{l}</span><b>{v || '—'}</b></div>)}</div>
-        {missing.length ? <p className="rw-note warn">Still open: {missing.map(s => s.title).join(', ')}. Complete them before signing off.</p>
-          : canReview ? <label className="rw-check big"><input type="checkbox" checked={reviewed} onChange={e => setReviewed(e.target.checked)} />I reviewed this design and it is complete for production</label>
-            : <p className="rw-note">A reviewer signs this off (your role cannot).</p>}
+        <div className="mb-3 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border bg-card px-3.5 py-3">{[['Type', categories[category]], ['Material', spec.material], ['Process', spec.process], ['Finish', spec.finish + (spec.coating_color ? ` · ${spec.coating_color}` : '')], ['Tolerance', spec.general_tolerance], ['Datums', spec.datums]].map(([l, v]) => <div key={l} className="min-w-0"><span className="block text-2xs font-medium uppercase tracking-wider text-faint">{l}</span><span className="text-sm text-foreground">{v || '—'}</span></div>)}</div>
+        {missing.length ? <p className={noteWarn}>Still open: {missing.map(s => s.title).join(', ')}. Complete them before signing off.</p>
+          : canReview ? <Label className="rounded-lg border px-3.5 py-3 text-base font-medium leading-snug hover:bg-accent/50"><Checkbox checked={reviewed} onCheckedChange={v => setReviewed(v === true)} />I reviewed this design and it is complete for production</Label>
+            : <p className={noteInfo}>A reviewer signs this off (your role cannot).</p>}
       </>;
     }
     if (step.id === 'drawing') return <>
-      <button type="button" className="rw-big" onClick={onOpenDrawing}><FileText size={18} /><span><b>Open the drawing</b><small>Check views, dimensions, hole table, notes and title block.</small></span></button>
-      {part.doc_reviewed ? <p className="rw-note ok"><Check size={15} />Drawing reviewed{part.doc_reviewed_by ? ` by ${part.doc_reviewed_by}` : ''}.</p>
-        : <button type="button" className="primary" disabled={!canReview || saving} onClick={async () => { setSaving(true); try { await onDocReview(); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setSaving(false); } }}><Check size={14} />Mark drawing reviewed</button>}
+      <Button type="button" variant="outline" className="mb-3 h-auto w-full justify-start gap-3 bg-subtle px-4 py-3.5 text-left whitespace-normal" onClick={onOpenDrawing}><FileText className="size-[18px] text-primary" /><span><span className="block text-base font-medium">Open the drawing</span><small className="block text-xs font-normal text-muted-foreground">Check views, dimensions, hole table, notes and title block.</small></span></Button>
+      {part.doc_reviewed ? <p className={noteOk}><Check />Drawing reviewed{part.doc_reviewed_by ? ` by ${part.doc_reviewed_by}` : ''}.</p>
+        : <Button type="button" disabled={!canReview || saving} onClick={async () => { setSaving(true); try { await onDocReview(); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setSaving(false); } }}><Check />Mark drawing reviewed</Button>}
     </>;
     return null;
   };
 
   const allDone = doneCount === steps.length;
   return (
-    <div className="overlay rw-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <section className="rw" role="dialog" aria-modal="true" aria-label="Make production ready">
-        <aside className="rw-steps">
-          <header><Sparkles size={16} /><span><b>Production ready</b><small>{part.name}</small></span></header>
-          <div className="rw-progress"><i style={{ width: `${Math.round(100 * doneCount / steps.length)}%` }} /></div>
-          <small className="rw-count">{doneCount} of {steps.length} done</small>
-          <ol>{steps.map((s, i) => { const d = s.done(spec, part); return <li key={s.id}><button type="button" className={(i === at ? 'active ' : '') + (d ? 'done' : '')} onClick={() => setAt(i)}><span>{d ? <Check size={12} /> : i + 1}</span>{s.title}</button></li>; })}</ol>
+    <Dialog open onOpenChange={o => { if (!o) onClose(); }}>
+      <DialogContent aria-modal="true" aria-label="Make production ready" showCloseButton={false}
+        onInteractOutside={e => { const t = e.target as HTMLElement; if (t?.closest?.('#popover-root, [data-sonner-toaster]')) e.preventDefault(); }}
+        className="grid h-[min(680px,calc(100vh-40px))] w-[min(980px,calc(100vw-32px))] max-w-none grid-cols-[250px_1fr] gap-0 overflow-hidden rounded-xl bg-card p-0 shadow-pop sm:max-w-none">
+        <DialogTitle className="sr-only">Make production ready</DialogTitle>
+        <DialogDescription className="sr-only">{part.name}</DialogDescription>
+        <aside className="flex min-h-0 flex-col border-r bg-subtle px-3 py-4">
+          <header className="flex items-start gap-2.5 px-1 pb-3"><Sparkles className="mt-0.5 size-4 shrink-0 text-primary" /><span className="min-w-0"><span className="block text-base font-semibold">Production ready</span><small className="block text-xs [overflow-wrap:anywhere] text-muted-foreground">{part.name}</small></span></header>
+          <div className="px-1"><Progress value={Math.round(100 * doneCount / steps.length)} tone="success" /></div>
+          <small className="mx-1 mt-1.5 mb-2.5 text-xs text-muted-foreground tabular-nums">{doneCount} of {steps.length} done</small>
+          <ol className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-0">{steps.map((s, i) => { const d = s.done(spec, part); const on = i === at; return <li key={s.id}><Button type="button" variant="ghost" aria-current={on ? 'step' : undefined} className={cn('h-auto w-full justify-start gap-2.5 px-2 py-1.5 text-left font-normal whitespace-normal', on && 'bg-selection font-medium text-selection-foreground hover:bg-selection hover:text-selection-foreground')} onClick={() => setAt(i)}><span className={cn('grid size-5 shrink-0 place-items-center rounded-full border text-2xs font-medium tabular-nums', d ? 'border-success bg-success text-white' : on ? 'border-primary bg-primary text-primary-foreground' : 'bg-card text-muted-foreground')}>{d ? <Check className="size-3" /> : i + 1}</span>{s.title}</Button></li>; })}</ol>
         </aside>
-        <div className="rw-main">
-          <header><span className="rw-eyebrow">Step {at + 1} of {steps.length} · {step?.title}</span><button type="button" className="icon" aria-label="Close" onClick={onClose}><X size={18} /></button></header>
-          <h2>{step?.question}</h2>
-          <p className="rw-help"><CircleHelp size={15} />{step?.help}</p>
-          <div className="rw-body">{body()}</div>
-          {err && <p className="rw-note warn">{err}</p>}
-          {allDone && <p className="rw-note ok"><ShieldCheck size={15} />This part is production ready. Release the revision from Overview once every part is.</p>}
-          <footer>
-            <button type="button" disabled={at === 0} onClick={() => setAt(at - 1)}><ChevronLeft size={15} />Back</button>
-            <span />
-            {step && step.id !== 'drawing' && <button type="button" disabled={at >= steps.length - 1} onClick={() => setAt(at + 1)}>Skip</button>}
-            {step && step.id !== 'drawing' ? <button type="button" className="primary" disabled={!editable || saving} onClick={() => save(true)}>{saving ? 'Saving…' : purchased && step.id === 'type' ? 'Save' : 'Save & next'}<ChevronRight size={15} /></button>
-              : <button type="button" className="primary" onClick={onClose}>Done</button>}
+        <div className="flex min-h-0 min-w-0 flex-col px-6 pt-4 pb-4">
+          <header className="flex items-center justify-between"><span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">Step {at + 1} of {steps.length} · {step?.title}</span><Button type="button" variant="ghost" size="icon" aria-label="Close" onClick={onClose}><X /></Button></header>
+          <h2 className="mt-1.5 mb-1.5 text-xl font-semibold tracking-tight">{step?.question}</h2>
+          <p className="mb-3.5 flex items-start gap-2 rounded-md bg-selection px-3 py-2.5 text-sm leading-relaxed text-foreground"><CircleHelp className="mt-0.5 size-4 shrink-0 text-primary" />{step?.help}</p>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">{body()}</div>
+          {err && <p className={noteWarn}>{err}</p>}
+          {allDone && <p className={noteOk}><ShieldCheck />This part is production ready. Release the revision from Overview once every part is.</p>}
+          <footer className="mt-2 flex items-center gap-2 border-t pt-3">
+            <Button type="button" variant="outline" disabled={at === 0} onClick={() => setAt(at - 1)}><ChevronLeft />Back</Button>
+            <span className="flex-1" />
+            {step && step.id !== 'drawing' && <Button type="button" variant="ghost" disabled={at >= steps.length - 1} onClick={() => setAt(at + 1)}>Skip</Button>}
+            {step && step.id !== 'drawing' ? <Button type="button" disabled={!editable || saving} onClick={() => save(true)}>{saving ? 'Saving…' : purchased && step.id === 'type' ? 'Save' : 'Save & next'}<ChevronRight /></Button>
+              : <Button type="button" onClick={onClose}>Done</Button>}
           </footer>
         </div>
-      </section>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

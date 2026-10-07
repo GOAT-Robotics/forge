@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { LoaderCircle } from 'lucide-react';
 import { api } from './api';
+import { Button } from '@/components/ui/button';
 
 /**
  * A document the worker renders (welding document, work instructions): shows Create → progress → Open, polls while
@@ -27,9 +29,9 @@ export function JobDocButton({ revision, kind, label, icon, open, disabled, noti
   };
   const busy = st.state === 'generating';
   return (
-    <button type="button" disabled={disabled || busy || st.state === 'no-welds'} onClick={click}
+    <Button type="button" variant="outline" disabled={disabled || busy || st.state === 'no-welds'} onClick={click}
       title={st.state === 'ready' ? `Open the ${label.toLowerCase()}` : busy ? (st.message || 'Generating…') : st.state === 'failed' ? `Failed: ${st.error || ''} — click to try again` : st.state === 'no-welds' ? 'No welds configured yet' : `Create the ${label.toLowerCase()}`}>
-      {busy ? <span className="spinner" /> : icon}{busy ? `${label} ${st.progress ? st.progress + '%' : '…'}` : st.state === 'ready' ? label : st.state === 'failed' ? `Retry ${label.toLowerCase()}` : `Create ${label.toLowerCase()}`}
-    </button>
+      {busy ? <LoaderCircle className="size-4 animate-spin" /> : icon}{busy ? `${label} ${st.progress ? st.progress + '%' : '…'}` : st.state === 'ready' ? label : st.state === 'failed' ? `Retry ${label.toLowerCase()}` : `Create ${label.toLowerCase()}`}
+    </Button>
   );
 }

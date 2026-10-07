@@ -1,0 +1,165 @@
+/* Forge UI — Tailwind v4 + shadcn/ui. Geist type, zinc neutrals, one blue accent, dense tool sizing. */
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+@import './styles/drawing.css';
+@import './styles/pages.css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* Raw palette (--ui-*), mapped to Tailwind colours in @theme below. */
+:root {
+  --ui-radius: 0.5rem;
+  --ui-background: #f7f7f8;          /* app background */
+  --ui-foreground: #18181b;
+  --ui-card: #ffffff;                /* panels, cards, popovers */
+  --ui-card-foreground: #18181b;
+  --ui-popover: #ffffff;
+  --ui-popover-foreground: #18181b;
+  --ui-primary: #2563eb;             /* the one accent: primary actions, selection */
+  --ui-primary-foreground: #ffffff;
+  --ui-secondary: #f1f1f3;
+  --ui-secondary-foreground: #18181b;
+  --ui-muted: #f1f1f3;
+  --ui-muted-foreground: #63636b;
+  --ui-accent: #f1f1f3;              /* hover / active neutral fill */
+  --ui-accent-foreground: #18181b;
+  --ui-destructive: #dc2626;
+  --ui-border: #e6e6e9;
+  --ui-input: #dcdce0;
+  --ui-ring: #93b4fb;
+  --ui-subtle: #fafafa;              /* secondary surface inside cards */
+  --ui-faint: #8b8b94;               /* tertiary text */
+  --ui-selection: #eff4ff;           /* selected rows / chips */
+  --ui-selection-foreground: #1d4ed8;
+  --ui-success: #16a34a;
+  --ui-success-soft: #f0fdf4;
+  --ui-warning: #d97706;
+  --ui-warning-soft: #fffbeb;
+  --ui-danger-soft: #fef2f2;
+  --ui-machining: #3b6ea5;
+  --ui-sheet: #0f766e;
+  --ui-purchased: #6b7280;
+  --ui-other: #8b6f47;
+  --ui-viewer: #eceef1;              /* 3D canvas backdrop */
+  --ui-sidebar: #111113;             /* app rail */
+  --ui-sidebar-foreground: #a1a1aa;
+  --ui-glass: rgb(255 255 255 / 0.86);
+  --ui-shadow-pop: 0 1px 2px rgb(0 0 0 / 0.06), 0 8px 24px -4px rgb(0 0 0 / 0.14);
+}
+.dark {
+  --ui-background: #0e0e10;
+  --ui-foreground: #ececef;
+  --ui-card: #161618;
+  --ui-card-foreground: #ececef;
+  --ui-popover: #1b1b1e;
+  --ui-popover-foreground: #ececef;
+  --ui-primary: #3b82f6;
+  --ui-primary-foreground: #ffffff;
+  --ui-secondary: #212124;
+  --ui-secondary-foreground: #ececef;
+  --ui-muted: #212124;
+  --ui-muted-foreground: #a1a1aa;
+  --ui-accent: #26262a;
+  --ui-accent-foreground: #ececef;
+  --ui-destructive: #ef4444;
+  --ui-border: #27272a;
+  --ui-input: #34343a;
+  --ui-ring: #1e3a8a;
+  --ui-subtle: #1b1b1e;
+  --ui-faint: #71717a;
+  --ui-selection: #172036;
+  --ui-selection-foreground: #93b4fb;
+  --ui-success: #22c55e;
+  --ui-success-soft: #0f2417;
+  --ui-warning: #f59e0b;
+  --ui-warning-soft: #2a1f0b;
+  --ui-danger-soft: #2a1414;
+  --ui-viewer: #1b1b1e;
+  --ui-sidebar: #0a0a0b;
+  --ui-glass: rgb(27 27 30 / 0.86);
+  --ui-shadow-pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -4px rgb(0 0 0 / 0.5);
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* dense tool type scale (13px body) */
+  --text-2xs: 0.6875rem;  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;     --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem;   --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;  --text-base--line-height: 1.375rem;
+  --text-lg: 1rem;        --text-lg--line-height: 1.5rem;
+  --text-xl: 1.125rem;    --text-xl--line-height: 1.625rem;
+  --text-2xl: 1.375rem;   --text-2xl--line-height: 1.875rem;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 580;
+  --font-weight-bold: 640;
+
+  --radius-sm: calc(var(--ui-radius) - 3px);
+  --radius-md: calc(var(--ui-radius) - 1px);
+  --radius-lg: var(--ui-radius);
+  --radius-xl: calc(var(--ui-radius) + 4px);
+  --shadow-pop: var(--ui-shadow-pop);
+
+  --color-background: var(--ui-background);
+  --color-foreground: var(--ui-foreground);
+  --color-card: var(--ui-card);
+  --color-card-foreground: var(--ui-card-foreground);
+  --color-popover: var(--ui-popover);
+  --color-popover-foreground: var(--ui-popover-foreground);
+  --color-primary: var(--ui-primary);
+  --color-primary-foreground: var(--ui-primary-foreground);
+  --color-secondary: var(--ui-secondary);
+  --color-secondary-foreground: var(--ui-secondary-foreground);
+  --color-muted: var(--ui-muted);
+  --color-muted-foreground: var(--ui-muted-foreground);
+  --color-accent: var(--ui-accent);
+  --color-accent-foreground: var(--ui-accent-foreground);
+  --color-destructive: var(--ui-destructive);
+  --color-border: var(--ui-border);
+  --color-input: var(--ui-input);
+  --color-ring: var(--ui-ring);
+  --color-subtle: var(--ui-subtle);
+  --color-faint: var(--ui-faint);
+  --color-selection: var(--ui-selection);
+  --color-selection-foreground: var(--ui-selection-foreground);
+  --color-success: var(--ui-success);
+  --color-success-soft: var(--ui-success-soft);
+  --color-warning: var(--ui-warning);
+  --color-warning-soft: var(--ui-warning-soft);
+  --color-danger-soft: var(--ui-danger-soft);
+  --color-machining: var(--ui-machining);
+  --color-sheet: var(--ui-sheet);
+  --color-purchased: var(--ui-purchased);
+  --color-other: var(--ui-other);
+  --color-viewer: var(--ui-viewer);
+  --color-sidebar: var(--ui-sidebar);
+  --color-sidebar-foreground: var(--ui-sidebar-foreground);
+  --color-glass: var(--ui-glass);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-background text-foreground font-sans text-sm antialiased;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+  b, strong { font-weight: 560; }
+  h1, h2, h3, h4 { letter-spacing: -0.01em; font-weight: 580; }
+  code, kbd, pre, samp { font-family: var(--font-mono); }
+  .tabular, td, .tabular-nums { font-variant-numeric: tabular-nums; }
+}
+
+/* glass panels floating over the 3D canvas */
+@utility glass {
+  background: var(--ui-glass);
+  border: 1px solid var(--ui-border);
+  box-shadow: var(--ui-shadow-pop);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+

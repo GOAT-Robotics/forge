@@ -1,6 +1,8 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, Check } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Select as UiSelect, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 /* -------------------------------------------------------------------------------------------
    Custom form controls. Native <select> and <datalist> pop-ups take the OS look and cannot be
@@ -60,52 +62,31 @@ type SelectProps = {
   className?: string;
 };
 
+// Radix Select reserves the empty string; Forge uses '' for "none / default", so it travels as a sentinel.
+const EMPTY = '__forge_empty__';
+const enc = (v: string | undefined) => (v === '' ? EMPTY : v);
+const dec = (v: string) => (v === EMPTY ? '' : v);
+
+/** Single-choice select (shadcn / Radix). Options may carry a muted hint (a count, a unit) on the right. */
 export function Select({ options, value, defaultValue, onChange, placeholder = 'Choose…', disabled, name, required, size = 'md', className, ...rest }: SelectProps) {
   const controlled = value !== undefined;
   const [inner, setInner] = useState(defaultValue ?? '');
   const current = controlled ? value! : inner;
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
-  const anchor = useRef<HTMLButtonElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const close = React.useCallback(() => setOpen(false), []);
-  const rect = usePopover(open, anchor, close);
-  const selected = options.find(o => o.value === current);
-
-  const choose = (v: string) => { if (!controlled) setInner(v); onChange?.(v); setOpen(false); anchor.current?.focus(); };
-  const openList = () => { if (disabled) return; setActive(Math.max(0, options.findIndex(o => o.value === current))); setOpen(true); };
-  useEffect(() => { if (open) listRef.current?.querySelector<HTMLElement>('[data-active="true"]')?.scrollIntoView({ block: 'nearest' }); }, [open, active]);
-
-  const onKey = (e: React.KeyboardEvent) => {
-    if (disabled) return;
-    if (!open) { if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); openList(); } return; }
-    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(a => Math.min(options.length - 1, a + 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(a => Math.max(0, a - 1)); }
-    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const o = options[active]; if (o && !o.disabled) choose(o.value); }
-    else if (e.key === 'Escape') { e.preventDefault(); setOpen(false); }
-    else if (e.key === 'Tab') setOpen(false);
-    else if (e.key.length === 1) { const i = options.findIndex(o => o.label.toLowerCase().startsWith(e.key.toLowerCase())); if (i >= 0) setActive(i); }
-  };
-
+  const known = options.some(o => o.value === current);
   return (
     <>
-      <button type="button" ref={anchor} className={'select-trigger' + (size === 'sm' ? ' sm' : '') + (open ? ' open' : '') + (className ? ' ' + className : '')} disabled={disabled}
-        aria-haspopup="listbox" aria-expanded={open} aria-label={rest['aria-label']} onClick={() => (open ? setOpen(false) : openList())} onKeyDown={onKey}>
-        <span className={selected ? '' : 'placeholder'}>{selected?.label ?? placeholder}</span>
-        <ChevronDown size={15} />
-      </button>
-      {name && <input type="hidden" name={name} value={current} required={required} />}
-      {open && rect && createPortal(
-        <div ref={listRef} className={'popover' + (rect.up ? ' up' : '')} role="listbox" style={{ top: rect.up ? undefined : rect.top, bottom: rect.up ? window.innerHeight - rect.top : undefined, left: rect.left, width: rect.width, maxHeight: rect.maxHeight }}>
+      <UiSelect value={known ? enc(current) : undefined} disabled={disabled} onValueChange={v => { const d = dec(v); if (!controlled) setInner(d); onChange?.(d); }}>
+        <SelectTrigger size={size === 'sm' ? 'sm' : 'default'} aria-label={rest['aria-label']} className={cn('w-full min-w-0 justify-between', className)}>
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent position="popper" className="max-h-80 min-w-[var(--radix-select-trigger-width)]">
           {options.map((o, i) => (
-            <div key={o.value + i} role="option" aria-selected={o.value === current} data-active={i === active} className={'popover-item' + (o.value === current ? ' selected' : '') + (i === active ? ' active' : '') + (o.disabled ? ' disabled' : '')}
-              onMouseEnter={() => setActive(i)} onClick={() => !o.disabled && choose(o.value)}>
-              <span>{o.label}{o.hint && <small>{o.hint}</small>}</span>
-              {o.value === current && <Check size={14} />}
-            </div>
+            <SelectItem key={o.value + i} value={enc(o.value)!} disabled={o.disabled} hint={o.hint}>{o.label}</SelectItem>
           ))}
-          {!options.length && <div className="popover-empty">No options</div>}
-        </div>, popoverRoot())}
+          {!options.length && <div className="px-2 py-1.5 text-sm text-muted-foreground">No options</div>}
+        </SelectContent>
+      </UiSelect>
+      {name && <input type="hidden" name={name} value={current} required={required} />}
     </>
   );
 }
@@ -144,19 +125,19 @@ export function Combo({ value, onChange, suggestions, placeholder, disabled, siz
     else if (e.key === 'Tab') setOpen(false);
   };
   return (
-    <div ref={anchor} className={'combo' + (size === 'sm' ? ' sm' : '')}>
-      <input ref={input} value={value ?? ''} placeholder={placeholder} disabled={disabled} autoFocus={autoFocus} aria-label={rest['aria-label']} autoComplete="off"
+    <div ref={anchor} className="relative w-full">
+      <input ref={input} className={cn('w-full min-w-0 rounded-md border border-input bg-card pr-8 pl-2.5 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50', size === 'sm' ? 'h-7' : 'h-8')} value={value ?? ''} placeholder={placeholder} disabled={disabled} autoFocus={autoFocus} aria-label={rest['aria-label']} autoComplete="off"
         onChange={e => { onChange(e.target.value); setOpen(true); setActive(-1); }} onFocus={() => setOpen(true)} onClick={() => setOpen(true)} onKeyDown={onKey} />
-      <button type="button" tabIndex={-1} className="combo-toggle" aria-label="Show suggestions" disabled={disabled} onMouseDown={e => e.preventDefault()} onClick={() => { setOpen(o => !o); input.current?.focus(); }}><ChevronDown size={14} /></button>
+      <button type="button" tabIndex={-1} className="absolute top-1/2 right-1 grid size-6 -translate-y-1/2 place-items-center rounded text-muted-foreground hover:bg-accent disabled:opacity-50" aria-label="Show suggestions" disabled={disabled} onMouseDown={e => e.preventDefault()} onClick={() => { setOpen(o => !o); input.current?.focus(); }}><ChevronDown size={14} /></button>
       {open && rect && shown.length > 0 && createPortal(
-        <div ref={listRef} className={'popover' + (rect.up ? ' up' : '')} role="listbox" style={{ top: rect.up ? undefined : rect.top, bottom: rect.up ? window.innerHeight - rect.top : undefined, left: rect.left, width: rect.width, maxHeight: rect.maxHeight }}>
+        <div ref={listRef} className="fixed z-50 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-pop animate-in fade-in-0 zoom-in-95" role="listbox" style={{ top: rect.up ? undefined : rect.top, bottom: rect.up ? window.innerHeight - rect.top : undefined, left: rect.left, width: rect.width, maxHeight: rect.maxHeight }}>
           {shown.map((s, i) => (
-            <div key={s} role="option" aria-selected={s === value} data-active={i === active} className={'popover-item' + (s === value ? ' selected' : '') + (i === active ? ' active' : '')}
+            <div key={s} role="option" aria-selected={s === value} data-active={i === active} className={cn('flex cursor-default items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm select-none', i === active && 'bg-accent text-accent-foreground', s === value && 'font-medium')}
               onMouseEnter={() => setActive(i)} onMouseDown={e => e.preventDefault()} onClick={() => pick(s)}>
-              <span>{s}</span>{s === value && <Check size={14} />}
+              <span className="truncate">{s}</span>{s === value && <Check className="size-3.5 text-primary" />}
             </div>
           ))}
-          {matches.length > shown.length && <div className="popover-empty">Keep typing to narrow {matches.length} matches</div>}
+          {matches.length > shown.length && <div className="px-2 py-1.5 text-xs text-muted-foreground">Keep typing to narrow {matches.length} matches</div>}
         </div>, popoverRoot())}
     </div>
   );

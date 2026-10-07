@@ -4,6 +4,33 @@ import { api, asset, saveBlob } from './api';
 import { X, Save, Download, Undo2, Redo2, Plus, Eye, EyeOff, RotateCcw, ZoomIn, ZoomOut, Trash2, CheckCircle2, Circle, FileText, ScanSearch, GripVertical, Hexagon } from 'lucide-react';
 import type { Any } from './constants';
 import { ask } from './components';
+import { Select, Combo } from './controls';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Slider } from '@/components/ui/slider';
+import { Separator } from '@/components/ui/separator';
+import { Kbd } from '@/components/ui/kbd';
+
+const eyebrow = 'text-2xs font-medium uppercase tracking-wider text-muted-foreground';
+const hintCls = 'text-xs leading-relaxed text-muted-foreground';
+const noteCls = 'text-2xs leading-relaxed text-muted-foreground';
+const codeCls = 'rounded bg-muted px-1 text-2xs text-foreground';
+const detailsCls = 'border-t pt-3';
+const summaryCls = 'cursor-pointer text-xs font-medium select-none';
+/** Toggled toolbar button (was `.selected`). */
+const toolOn = (on: boolean) => on ? 'bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground dark:bg-selection dark:hover:bg-selection' : '';
+/** Preset chip (was `.chip` / `.chip.chosen`). */
+const chipCls = (on: boolean) => cn('rounded-full font-normal', on && 'border-primary/40 bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground dark:bg-selection dark:hover:bg-selection');
+function Field({ label, children, className }: { label: React.ReactNode; children: React.ReactNode; className?: string }) {
+  return <Label className={cn('grid items-stretch gap-1.5 text-xs leading-snug font-medium text-muted-foreground', className)}>{label}{children}</Label>;
+}
+function CheckRow({ checked, disabled, onChange, children }: { checked: boolean; disabled?: boolean; onChange: (v: boolean) => void; children: React.ReactNode }) {
+  return <Label className="items-start text-sm leading-snug font-normal text-foreground"><Checkbox className="mt-0.5" checked={checked} disabled={disabled} onCheckedChange={v => onChange(v === true)} /><span>{children}</span></Label>;
+}
 
 type Edits = { objects: Record<string, { dx?: number; dy?: number; text?: string; hidden?: boolean; page?: number; hidden_lines?: boolean; flip?: boolean; size?: number }>; notes: Any[]; views: Any[]; details: Any[]; page_order?: number[]; extra_pages?: { id: string; size: string }[] };
 const DETAIL_SCALES = [1.5, 2, 2.5, 3, 4, 5, 8, 10];
@@ -28,9 +55,9 @@ const scaleText = (s: number) => s >= 1 ? `${+s.toFixed(2)}:1` : `1:${+(1 / s).t
 function ViewThumb({ partId, az, el }: { partId: string; az: number; el: number }) {
   const [pic, setPic] = useState<Pic | null>(null), [err, setErr] = useState(false);
   useEffect(() => { let live = true; setPic(null); setErr(false); fetchPic(partId, az, el).then(p => live && setPic(p)).catch(() => live && setErr(true)); return () => { live = false; }; }, [partId, az, el]);
-  if (!pic) return <div className="view-thumb loading">{err ? '—' : ''}</div>;
+  if (!pic) return <div className={cn('grid h-16 w-full place-items-center rounded text-zinc-400', !err && 'animate-pulse bg-zinc-100')}>{err ? '—' : ''}</div>;
   const cx = (pic.lo[0] + pic.hi[0]) / 2, cy = (pic.lo[1] + pic.hi[1]) / 2, span = Math.max(pic.hi[0] - pic.lo[0], pic.hi[1] - pic.lo[1]) * 1.1 || 1;
-  return <svg className="view-thumb" viewBox={`${-span / 2} ${-span / 2} ${span} ${span}`}><g transform={`scale(1 -1) translate(${-cx} ${-cy})`}><path d={picPath(pic.lines)} fill="none" stroke="#1d2533" strokeWidth={span / 160} strokeLinejoin="round" /></g></svg>;
+  return <svg className="block h-16 w-full" viewBox={`${-span / 2} ${-span / 2} ${span} ${span}`}><g transform={`scale(1 -1) translate(${-cx} ${-cy})`}><path d={picPath(pic.lines)} fill="none" stroke="#1d2533" strokeWidth={span / 160} strokeLinejoin="round" /></g></svg>;
 }
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const rgb = (c: number[]) => `rgb(${c.map(x => Math.round(x * 255)).join(',')})`;
@@ -93,7 +120,7 @@ const SHEET_RE = /^(SHEET\s*:\s*)\d+(\s+OF\s+)\d+/;
 /** Clickable arrowhead: a click flips the arrow to the other side of the feature (SolidWorks arrow handle). */
 function ArrowHandle({ x, y, chosen, onFlip }: { x: number; y: number; chosen?: boolean; onFlip?: (e: React.PointerEvent) => void }) {
   if (!onFlip) return null;
-  return <circle className="arrow-handle" cx={x} cy={y} r={2.2 * MM} fill={chosen ? '#f59e0b33' : 'transparent'} stroke={chosen ? '#f59e0b' : 'none'} strokeWidth=".6" style={{ cursor: 'pointer' }} onPointerDown={onFlip}><title>Click to flip the arrow inside / outside</title></circle>;
+  return <circle className="dwg-arrow-handle" cx={x} cy={y} r={2.2 * MM} fill={chosen ? '#f59e0b33' : 'transparent'} stroke={chosen ? '#f59e0b' : 'none'} strokeWidth=".6" style={{ cursor: 'pointer' }} onPointerDown={onFlip}><title>Click to flip the arrow inside / outside</title></circle>;
 }
 function GoatCallout({ g, lines, dx, dy, px, py, chosen, handlers, flip, onFlip }: { g: Any; lines: string[]; dx: number; dy: number; px: number; py: number; chosen?: boolean; handlers?: Any; flip?: boolean; onFlip?: (e: React.PointerEvent) => void }) {
   const k = goatCallout(g, lines, dx, dy, px, py);
@@ -102,7 +129,7 @@ function GoatCallout({ g, lines, dx, dy, px, py, chosen, handlers, flip, onFlip 
       ? <><line x1={k.tx} y1={k.ty} x2={k.ax} y2={k.ay} stroke="#111" strokeWidth={.18 * MM} pointerEvents="none" /><line x1={k.tx} y1={k.ty} x2={k.tx + ux * ext} y2={k.ty + uy * ext} stroke="#111" strokeWidth={.18 * MM} markerStart="url(#goat-arrow)" pointerEvents="none" /></>
       : <line x1={k.tx} y1={k.ty} x2={k.ax} y2={k.ay} stroke="#111" strokeWidth={.18 * MM} markerStart="url(#goat-arrow)" pointerEvents="none" />}
     <ArrowHandle x={k.tx} y={k.ty} chosen={chosen} onFlip={onFlip} />
-    <g {...(handlers || {})}><rect className="hit" x={k.bx - 2} y={k.by - 3} width={k.w + 4} height={k.top - k.by + 5} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />
+    <g {...(handlers || {})}><rect className="dwg-hit" x={k.bx - 2} y={k.by - 3} width={k.w + 4} height={k.top - k.by + 5} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />
       <line x1={k.bx} y1={k.by} x2={k.bx + k.w} y2={k.by} stroke="#111" strokeWidth={.18 * MM} />
       {lines.map((line: string, i: number) => { const w = textWidth(line, k.size, GOAT_FONT); const y = k.by + .9 * MM + k.pitch * (k.n - 1 - i); const x = k.attachLeft ? k.bx + .5 * MM : k.bx + k.w - .5 * MM - w;
         return <g key={i}>{!chosen && <rect x={x - .25 * MM} y={y - .22 * k.size} width={w + .5 * MM} height={k.size * .98} fill="#fff" />}<text transform={`translate(${x} ${y}) scale(1 -1)`} fontFamily={GOAT_FONT} fontSize={k.size}>{line}</text></g>; })}</g></>;
@@ -126,7 +153,7 @@ function DimGroup({ g, e, chosen, handlers }: { g: Any; e: Any; chosen?: boolean
       const size = it.size * MM * scale, w = textWidth(s, size, GOAT_FONT) * (it.hscale || 1);
       const x0 = it.ha === 'r' ? -w : it.ha === 'c' ? -w / 2 : 0;
       return <g key={'t' + i} transform={`translate(${(it.x + mx) * MM} ${(it.y + my) * MM}) rotate(${it.rot || 0})`} {...(handlers || {})}>
-        <rect className="hit" x={x0 - .6 * MM} y={-.3 * size - .4 * MM} width={w + 1.2 * MM} height={size * 1.05 + .8 * MM} fill={chosen ? '#e4f0ff' : '#fff'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".6" />
+        <rect className="dwg-hit" x={x0 - .6 * MM} y={-.3 * size - .4 * MM} width={w + 1.2 * MM} height={size * 1.05 + .8 * MM} fill={chosen ? '#e4f0ff' : '#fff'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".6" />
         <text transform="scale(1 -1)" x={x0} fontFamily={GOAT_FONT} fontSize={size} fill={e.text != null ? '#7a3e00' : '#111'}>{s}</text></g>;
     })}</>;
 }
@@ -246,8 +273,9 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement;
-    if (t && (t.closest('input, textarea, select, [contenteditable="true"]'))) return;
-    if (document.querySelector('.overlay.top')) return; // a confirmation dialog is open
+    // native fields and their Radix stand-ins (Select trigger/list, Checkbox, Slider) keep their own keys
+    if (t && (t.closest('input, textarea, select, [contenteditable="true"], [role="combobox"], [role="listbox"], [role="checkbox"], [role="slider"]'))) return;
+    if (document.querySelector('[data-slot="dialog-content"]')) return; // a confirmation dialog is open
     const mod = e.metaKey || e.ctrlKey; const k = e.key.toLowerCase();
     if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
     if (mod && k === 'y') { e.preventDefault(); redo(); return; }
@@ -264,7 +292,7 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
   // Middle-button or Space + drag pans the sheet.
   const pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null); const space = useRef(false); const [panning, setPanning] = useState(false);
   useEffect(() => {
-    const down = (e: KeyboardEvent) => { if (e.code === 'Space' && !(e.target as HTMLElement)?.closest?.('input, textarea, select, button')) { space.current = true; setPanning(true); e.preventDefault(); } };
+    const down = (e: KeyboardEvent) => { if (e.code === 'Space' && !(e.target as HTMLElement)?.closest?.('input, textarea, select, button, [role="slider"]')) { space.current = true; setPanning(true); e.preventDefault(); } };
     const up = (e: KeyboardEvent) => { if (e.code === 'Space') { space.current = false; setPanning(false); } };
     window.addEventListener('keydown', down); window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
@@ -474,53 +502,54 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
       await waitForRegeneration(); onSaved();
     } catch (e: Any) { setError(e.message); } finally { setBusy(false); }
   }
-  return <div className="overlay drawing-overlay"><section className="drawing-editor" role="dialog" aria-modal="true" aria-label="Drawing editor">
-    <header><div><strong>{data?.name || 'Drawing editor'}</strong><small>{data ? (data.editable ? 'STEP-linked drawing · ' + (dirty ? 'Unsaved changes' : 'Saved') : 'Read-only drawing') : 'Loading drawing…'}{data && (data.doc_reviewed ? ' · Reviewed' : ' · Not reviewed')}</small></div>
-      <nav><button onClick={undo} disabled={!writable || !past.length} title="Undo"><Undo2 size={16} /></button><button onClick={redo} disabled={!writable || !future.length} title="Redo"><Redo2 size={16} /></button>
-        <button disabled={!writable} onClick={() => { const id = 'note:' + crypto.randomUUID(); change({ ...edits, notes: [...edits.notes, { id, page, x: 150, y: sheet.height - 180, text: 'Manufacturing note', size: 10 }] }); select(id); }}><Plus size={16} />Note</button>
-        {hiddenViews.length > 0 && <button disabled={!writable} className={allHiddenShown ? 'selected' : ''} title={allHiddenShown ? 'Hide the dashed hidden edges (holes, pockets behind faces) in every view' : 'Show the dashed hidden edges in every view'} onClick={() => setHiddenLines(hiddenViews, !allHiddenShown)}>{allHiddenShown ? <Eye size={16} /> : <EyeOff size={16} />}Hidden lines</button>}
-        <button disabled={!writable} className={detailMode ? 'selected' : ''} title="Detail view: click a crowded area of a view to enlarge it (ISO 128-3)" onClick={() => setDetailMode(!detailMode)}><ScanSearch size={16} />Detail</button>
-        <button className={showBalloons ? 'selected' : ''} title="Inspection balloons: every dimension and note numbered; click one to mark it critical or set its limits" onClick={() => setShowBalloons(!showBalloons)}><Hexagon size={16} />Balloons</button>
-        <button onClick={() => setZoom(z => Math.max(.25, +(z - .2).toFixed(2)))} aria-label="Zoom out"><ZoomOut size={16} /></button><button title="Reset to 100% (pinch or Ctrl/⌘ + scroll to zoom)" style={{ minWidth: 58, fontVariantNumeric: 'tabular-nums' }} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(z => Math.min(8, +(z + .2).toFixed(2)))} aria-label="Zoom in"><ZoomIn size={16} /></button>
-        <button onClick={save} disabled={!writable || !dirty}><Save size={16} />Save</button>
+  return <div className="fixed inset-0 z-50 flex bg-black/60 p-3"><section className="flex size-full flex-col overflow-hidden rounded-xl border bg-background text-foreground shadow-pop" role="dialog" aria-modal="true" aria-label="Drawing editor">
+    <header className="flex items-center justify-between gap-3 border-b bg-card px-4 py-2 max-lg:flex-wrap"><div className="min-w-0"><div className="truncate text-sm font-semibold">{data?.name || 'Drawing editor'}</div><small className="mt-0.5 block text-xs text-muted-foreground">{data ? (data.editable ? 'STEP-linked drawing · ' + (dirty ? 'Unsaved changes' : 'Saved') : 'Read-only drawing') : 'Loading drawing…'}{data && (data.doc_reviewed ? ' · Reviewed' : ' · Not reviewed')}</small></div>
+      <nav className="flex items-center gap-1 max-lg:flex-wrap"><Button variant="ghost" size="icon-sm" onClick={undo} disabled={!writable || !past.length} title="Undo"><Undo2 /></Button><Button variant="ghost" size="icon-sm" onClick={redo} disabled={!writable || !future.length} title="Redo"><Redo2 /></Button>
+        <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-5" />
+        <Button variant="ghost" size="sm" disabled={!writable} onClick={() => { const id = 'note:' + crypto.randomUUID(); change({ ...edits, notes: [...edits.notes, { id, page, x: 150, y: sheet.height - 180, text: 'Manufacturing note', size: 10 }] }); select(id); }}><Plus />Note</Button>
+        {hiddenViews.length > 0 && <Button variant="ghost" size="sm" disabled={!writable} className={toolOn(allHiddenShown)} title={allHiddenShown ? 'Hide the dashed hidden edges (holes, pockets behind faces) in every view' : 'Show the dashed hidden edges in every view'} onClick={() => setHiddenLines(hiddenViews, !allHiddenShown)}>{allHiddenShown ? <Eye /> : <EyeOff />}Hidden lines</Button>}
+        <Button variant="ghost" size="sm" disabled={!writable} className={toolOn(detailMode)} title="Detail view: click a crowded area of a view to enlarge it (ISO 128-3)" onClick={() => setDetailMode(!detailMode)}><ScanSearch />Detail</Button>
+        <Button variant="ghost" size="sm" className={toolOn(showBalloons)} title="Inspection balloons: every dimension and note numbered; click one to mark it critical or set its limits" onClick={() => setShowBalloons(!showBalloons)}><Hexagon />Balloons</Button>
+        <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-5" />
+        <Button variant="ghost" size="icon-sm" onClick={() => setZoom(z => Math.max(.25, +(z - .2).toFixed(2)))} aria-label="Zoom out"><ZoomOut /></Button><Button variant="ghost" size="sm" className="min-w-[58px] tabular-nums" title="Reset to 100% (pinch or Ctrl/⌘ + scroll to zoom)" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</Button><Button variant="ghost" size="icon-sm" onClick={() => setZoom(z => Math.min(8, +(z + .2).toFixed(2)))} aria-label="Zoom in"><ZoomIn /></Button>
+        <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-5" />
+        <Button variant="outline" size="sm" onClick={save} disabled={!writable || !dirty}><Save />Save</Button>
         {data?.can_review && (data.doc_reviewed
-          ? <button className="selected" disabled={busy} title={`Reviewed by ${data.doc_reviewed_by}`} onClick={() => markReviewed(false)}><CheckCircle2 size={16} />Reviewed</button>
-          : <button className="primary" disabled={busy} title="Save the arrangement and record that this drawing was reviewed" onClick={() => markReviewed(true)}><Circle size={16} />Mark reviewed</button>)}<button onClick={exportPdf} disabled={!data || busy}><Download size={16} />Export PDF</button><button onClick={closeEditor} aria-label="Close drawing editor"><X size={20} /></button></nav>
+          ? <Button variant="outline" size="sm" className={toolOn(true)} disabled={busy} title={`Reviewed by ${data.doc_reviewed_by}`} onClick={() => markReviewed(false)}><CheckCircle2 />Reviewed</Button>
+          : <Button size="sm" disabled={busy} title="Save the arrangement and record that this drawing was reviewed" onClick={() => markReviewed(true)}><Circle />Mark reviewed</Button>)}<Button variant="outline" size="sm" onClick={exportPdf} disabled={!data || busy}><Download />Export PDF</Button><Button variant="ghost" size="icon-sm" onClick={closeEditor} aria-label="Close drawing editor"><X /></Button></nav>
     </header>
-    {error && <div className="drawing-error" role="alert">{error}</div>}
-    {data && <div className="drawing-workspace"><aside className="drawing-sheets">
-        <strong>Sheets</strong>
-        <div className="sheet-list">{order.map((pi, i) => { const pg = pages[pi]; const added = pi >= baseCount; return (
-          <div key={pi} className={'sheet-item' + (page === pi ? ' active' : '')} draggable={!!writable} onClick={() => { setPage(pi); select(''); }}
+    {error && <div className="border-b border-destructive/20 bg-danger-soft px-4 py-2 text-sm text-destructive" role="alert">{error}</div>}
+    {data && <div className="flex min-h-0 flex-1"><aside className="flex w-[150px] shrink-0 flex-col gap-2 overflow-auto border-r bg-card px-2.5 py-4 lg:w-[216px]">
+        <div className={eyebrow}>Sheets</div>
+        <div className="flex flex-col gap-1">{order.map((pi, i) => { const pg = pages[pi]; const added = pi >= baseCount; return (
+          <div key={pi} className={cn('flex cursor-pointer items-center gap-1.5 rounded-md border bg-card px-1.5 py-1 text-xs select-none hover:border-input [&.drop]:ring-2 [&.drop]:ring-primary', page === pi && 'border-primary/40 bg-selection font-medium text-selection-foreground hover:border-primary/40')} draggable={!!writable} onClick={() => { setPage(pi); select(''); }}
             onDragStart={e => { e.dataTransfer.setData('application/x-forge-sheet', String(i)); e.dataTransfer.effectAllowed = 'move'; }}
             onDragOver={e => { if (writable && e.dataTransfer.types.includes('application/x-forge-sheet')) { e.preventDefault(); e.currentTarget.classList.add('drop'); } }}
             onDragLeave={e => e.currentTarget.classList.remove('drop')}
             onDrop={e => { e.currentTarget.classList.remove('drop'); const from = Number(e.dataTransfer.getData('application/x-forge-sheet')); if (Number.isFinite(from)) dropSheet(from, i); }}>
-            <GripVertical size={12} className="grip" /><FileText size={13} /><span>Sheet {i + 1}</span><em>{pg ? sheetName(pg.width) : ''}</em>
-            {added && writable && <button type="button" title="Remove this added sheet (its views go back)" onClick={e => { e.stopPropagation(); removeSheet(pi); }}><X size={11} /></button>}
+            <GripVertical className="size-3 shrink-0 cursor-grab text-faint" /><FileText className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate">Sheet {i + 1}</span><span className="rounded bg-muted px-1 text-2xs font-normal text-muted-foreground">{pg ? sheetName(pg.width) : ''}</span>
+            {added && writable && <Button type="button" variant="ghost" size="icon-xs" className="size-[18px] text-muted-foreground" title="Remove this added sheet (its views go back)" onClick={e => { e.stopPropagation(); removeSheet(pi); }}><X /></Button>}
           </div>); })}</div>
-        {writable && <div className="sheet-add"><select value={newSize} onChange={e => setNewSize(e.target.value)} aria-label="New sheet size"><option>A4</option><option>A3</option><option>A2</option></select><button type="button" onClick={() => addSheet(newSize)}><Plus size={13} />New sheet</button></div>}
-        {data.editable && <label className="page-template">Sheet template (regenerates)
-          <select value={data.drawing_options?.template_id || data.drawing_options?.size || ''} disabled={busy} onChange={e => setTemplate(e.target.value)}>
-            <option value="">Project default</option><option value="A4">A4 landscape</option><option value="A3">A3 landscape</option><option value="A2">A2 landscape</option>
-            {(data.drawing_templates || []).map((t: Any) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select></label>}
-        <p>Drag sheets to reorder. Drag views, dimensions or callouts on the sheet; leaders stay attached to their feature.</p>
-        <strong className="palette-title">Views</strong><p>Drag a view onto the sheet, or press + to add it at the centre.</p>
-        <div className="view-palette">{palette.map((pr: Any) => <div key={pr.preset} className="palette-item" draggable={!!writable} title={pr.label}
+        {writable && <div className="flex gap-1.5"><Select size="sm" className="w-16 shrink-0" value={newSize} onChange={setNewSize} aria-label="New sheet size" options={['A4', 'A3', 'A2'].map(v => ({ value: v, label: v }))} /><Button type="button" variant="outline" size="sm" className="min-w-0 flex-1" onClick={() => addSheet(newSize)}><Plus />New sheet</Button></div>}
+        {data.editable && <Field label="Sheet template (regenerates)" className="mt-1">
+          <Select size="sm" value={data.drawing_options?.template_id || data.drawing_options?.size || ''} disabled={busy} onChange={v => setTemplate(v)}
+            options={[{ value: '', label: 'Project default' }, { value: 'A4', label: 'A4 landscape' }, { value: 'A3', label: 'A3 landscape' }, { value: 'A2', label: 'A2 landscape' }, ...(data.drawing_templates || []).map((t: Any) => ({ value: t.id, label: t.name }))]} /></Field>}
+        <p className={noteCls}>Drag sheets to reorder. Drag views, dimensions or callouts on the sheet; leaders stay attached to their feature.</p>
+        <div className={cn(eyebrow, 'mt-3')}>Views</div><p className={noteCls}>Drag a view onto the sheet, or press + to add it at the centre.</p>
+        <div className="grid grid-cols-1 gap-1.5 lg:grid-cols-2">{palette.map((pr: Any) => <div key={pr.preset} className="relative grid cursor-grab justify-items-center gap-0.5 rounded-lg border bg-white p-1 pb-1.5 select-none hover:border-primary active:cursor-grabbing dark:bg-zinc-200" draggable={!!writable} title={pr.label}
           onDragStart={e => { e.dataTransfer.setData('application/x-forge-view', JSON.stringify(pr)); e.dataTransfer.effectAllowed = 'copy'; }}>
-          <ViewThumb partId={partId} az={pr.azimuth} el={pr.elevation} /><span>{pr.label.replace('Isometric - ', 'Iso · ')}</span>
-          <button type="button" disabled={!writable} aria-label={'Add ' + pr.label} onClick={() => placeView(pr)}><Plus size={13} /></button></div>)}</div>
-        <div className="palette-custom"><label>Azimuth °<input type="number" step="15" value={customAz} onChange={e => setCustomAz(Number(e.target.value) || 0)} /></label><label>Elevation °<input type="number" step="5" min="-89" max="89" value={customEl} onChange={e => setCustomEl(Math.max(-89, Math.min(89, Number(e.target.value) || 0)))} /></label></div>
+          <ViewThumb partId={partId} az={pr.azimuth} el={pr.elevation} /><span className="text-center text-2xs leading-tight text-zinc-500 dark:text-zinc-700">{pr.label.replace('Isometric - ', 'Iso · ')}</span>
+          <Button type="button" variant="ghost" size="icon-xs" className="absolute top-0.5 right-0.5 text-zinc-600 hover:bg-black/5 hover:text-zinc-900 dark:hover:bg-black/10 dark:hover:text-zinc-900" disabled={!writable} aria-label={'Add ' + pr.label} onClick={() => placeView(pr)}><Plus /></Button></div>)}</div>
+        <div className="grid grid-cols-2 gap-1.5"><Field label="Azimuth °"><Input className="h-7 px-2 text-xs" type="number" step="15" value={customAz} onChange={e => setCustomAz(Number(e.target.value) || 0)} /></Field><Field label="Elevation °"><Input className="h-7 px-2 text-xs" type="number" step="5" min="-89" max="89" value={customEl} onChange={e => setCustomEl(Math.max(-89, Math.min(89, Number(e.target.value) || 0)))} /></Field></div>
       </aside>
-      <main className={'drawing-paper-wrap' + (panning ? ' panning' : '')} ref={paper} onPointerDownCapture={e => { if (panStart(e)) setMenu(null); }} onPointerMove={e => { panMove(e); }} onPointerUp={() => panEnd()} onAuxClick={e => e.preventDefault()} onContextMenu={e => e.preventDefault()}><svg ref={svg} className="drawing-paper" viewBox={`0 0 ${sheet.width} ${sheet.height}`} style={{ width: `${sheet.width * zoom}px`, height: `${sheet.height * zoom}px` }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onPointerDown={e => { setMenu(null); if (e.button !== 0) return; if (detailMode && writable) addDetail(e); else select(''); }} onDragOver={e => { if (writable) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }} onDrop={drop}>
+      <main className={cn('min-w-0 flex-1 overflow-auto overscroll-contain bg-viewer p-7 [touch-action:pan-x_pan-y]', panning && 'cursor-grab! [&_*]:cursor-grab!')} ref={paper} onPointerDownCapture={e => { if (panStart(e)) setMenu(null); }} onPointerMove={e => { panMove(e); }} onPointerUp={() => panEnd()} onAuxClick={e => e.preventDefault()} onContextMenu={e => e.preventDefault()}><svg ref={svg} data-drawing-paper="" className="block max-w-none shrink-0 touch-none bg-white shadow-[0_4px_20px_rgb(29_41_59/0.14)] select-none" viewBox={`0 0 ${sheet.width} ${sheet.height}`} style={{ width: `${sheet.width * zoom}px`, height: `${sheet.height * zoom}px` }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onPointerDown={e => { setMenu(null); if (e.button !== 0) return; if (detailMode && writable) addDetail(e); else select(''); }} onDragOver={e => { if (writable) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }} onDrop={drop}>
         <defs><marker id="goat-arrow" viewBox="0 0 10 6" refX="0" refY="3" markerUnits="userSpaceOnUse" markerWidth={3.3 * MM} markerHeight={1.0 * MM} orient="auto-start-reverse"><path d="M 10 0 L 0 3 L 10 6 Z" fill="#111" /></marker><marker id="drawing-arrow" viewBox="0 0 10 6" refX="0" refY="3" markerUnits="userSpaceOnUse" markerWidth={3 * 72 / 25.4} markerHeight={1.8 * 72 / 25.4} orient="auto-start-reverse"><path d="M 10 0 L 0 3 L 10 6 Z" fill="#111" /></marker></defs>
         <g transform={`translate(0 ${sheet.height}) scale(1 -1)`}>
           {shown.map((g: Any) => {
-            const [dx, dy] = offset(g, groups, edits); const chosen = selected === g.id; const movable = ['view', 'callout'].includes(g.kind); const props = { onPointerDown: (e: React.PointerEvent) => start(e, g.id), onContextMenu: (e: React.MouseEvent) => openMenu(e, g.id), onDoubleClick: () => { if (g.kind === 'callout') setTimeout(() => (document.querySelector('.drawing-properties textarea') as HTMLTextAreaElement | null)?.focus(), 0); }, style: { cursor: writable ? 'move' : 'pointer' } };
+            const [dx, dy] = offset(g, groups, edits); const chosen = selected === g.id; const movable = ['view', 'callout'].includes(g.kind); const props = { onPointerDown: (e: React.PointerEvent) => start(e, g.id), onContextMenu: (e: React.MouseEvent) => openMenu(e, g.id), onDoubleClick: () => { if (g.kind === 'callout') setTimeout(() => (document.querySelector('[data-drawing-properties] textarea') as HTMLTextAreaElement | null)?.focus(), 0); }, style: { cursor: writable ? 'move' : 'pointer' } };
             if (g.kind === 'dim') {
               const [px, py] = groups[g.parent] ? offset(groups[g.parent], groups, edits) : [0, 0];
-              const dprops = { ...props, onDoubleClick: () => setTimeout(() => (document.querySelector('.drawing-properties input[aria-label="Dimension text"]') as HTMLInputElement | null)?.select(), 0) };
+              const dprops = { ...props, onDoubleClick: () => setTimeout(() => (document.querySelector('[data-drawing-properties] input[aria-label="Dimension text"]') as HTMLInputElement | null)?.select(), 0) };
               return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1} transform={`translate(${px} ${py})`}><DimGroup g={g} e={edits.objects[g.id] || {}} chosen={chosen} handlers={dprops} /></g>;
             }
             if (g.kind === 'callout' && g.style === 'goat') {
@@ -536,11 +565,11 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
               return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1}><line x1={ax} y1={ay} x2={ex} y2={ey} stroke="#111" strokeWidth=".4" markerStart={fl ? undefined : 'url(#drawing-arrow)'} pointerEvents="none" />
                 {fl && <line x1={ax} y1={ay} x2={ax - (ex - ax) / ln * ext} y2={ay - (ey - ay) / ln * ext} stroke="#111" strokeWidth=".4" markerStart="url(#drawing-arrow)" pointerEvents="none" />}
                 <ArrowHandle x={ax} y={ay} chosen={chosen} onFlip={e => flipArrow(e, g.id)} />
-                <g transform={`translate(${dx} ${dy})`} {...props}><rect className="hit" x={x0 - 2} y={y0 - 2} width={x1 - x0 + 4} height={y1 - y0 + 4} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />{lines.map((line: string, i: number) => <text key={i} transform={`translate(${x0 + 3} ${y1 - 8.5 - i * 10}) scale(1 -1)`} fontFamily="Helvetica, Arial, sans-serif" fontSize={size}>{line}</text>)}</g></g>;
+                <g transform={`translate(${dx} ${dy})`} {...props}><rect className="dwg-hit" x={x0 - 2} y={y0 - 2} width={x1 - x0 + 4} height={y1 - y0 + 4} fill={chosen ? '#e4f0ff' : 'transparent'} stroke={chosen ? '#2470e8' : 'none'} strokeWidth=".7" />{lines.map((line: string, i: number) => <text key={i} transform={`translate(${x0 + 3} ${y1 - 8.5 - i * 10}) scale(1 -1)`} fontFamily="Helvetica, Arial, sans-serif" fontSize={size}>{line}</text>)}</g></g>;
             }
             const [x0, y0, x1, y1] = bounds(g);
             return <g key={g.id} data-drawing-id={g.id} opacity={hiddenAncestor(g) ? .18 : 1} transform={`translate(${dx} ${dy})`} {...(movable ? props : { pointerEvents: 'none' as const })}>
-              {movable && <rect className="hit" x={x0 - 3} y={y0 - 3} width={x1 - x0 + 6} height={y1 - y0 + 6} fill="transparent" stroke={chosen ? '#2470e8' : 'none'} strokeDasharray="3 2" strokeWidth=".7" />}
+              {movable && <rect className="dwg-hit" x={x0 - 3} y={y0 - 3} width={x1 - x0 + 6} height={y1 - y0 + 6} fill="transparent" stroke={chosen ? '#2470e8' : 'none'} strokeDasharray="3 2" strokeWidth=".7" />}
               {(g.kind === 'view' && edits.objects[g.id]?.hidden_lines === false ? g.nodes.filter((n: Any) => !isHiddenLine(n)) : g.nodes).map((n: Any, i: number) => <VectorNode key={i} n={g.kind === 'fixed' && n.type === 'text' && SHEET_RE.test(n.text) ? { ...n, text: n.text.replace(SHEET_RE, (_m: string, a: string, b: string) => `${a}${order.indexOf(page) + 1}${b}${order.length}`) } : n} />)}</g>;
           })}
           {edits.views.filter(v => v.page === page && v.lines).map(v => {
@@ -580,7 +609,7 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
             const chosen = selected === 'balloon:' + c.id;
             if (!c.selected) {
               // candidate: a faint "+" — click to inspect this dimension / note
-              return <g key={'b' + c.id} className="balloon candidate" style={{ cursor: plan.editable ? 'copy' : 'pointer' }} onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; select('balloon:' + c.id);
+              return <g key={'b' + c.id} className="dwg-balloon dwg-balloon-candidate" style={{ cursor: plan.editable ? 'copy' : 'pointer' }} onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; select('balloon:' + c.id);
                 if (plan.editable) api(`/parts/${partId}/characteristics`, 'PUT', { keys: c.reqs.map((q: Any) => q.key), inspect: true }).then(loadPlan).catch((er: Any) => setError(er.message)); }}>
                 <rect x={x0 - 1} y={y0 - 1} width={x1 - x0 + 2} height={y1 - y0 + 2} fill="transparent" stroke={chosen ? '#1f5fd6' : '#c5d6f2'} strokeWidth=".5" />
                 <circle cx={bx} cy={by} r={r * .7} fill="#fff" stroke="#9aa6b8" strokeWidth={.15 * MM} strokeDasharray="1.5 1" />
@@ -590,7 +619,7 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
             const nx = Math.max(x0, Math.min(bx, x1)), ny = Math.max(y0, Math.min(by, y1)), d = Math.hypot(nx - bx, ny - by) || 1;
             const kc = c.reqs.some((q: Any) => q.critical), col = kc ? '#c0392b' : '#1f5fd6';
             const hex = Array.from({ length: 6 }, (_, k) => { const a = Math.PI / 6 + k * Math.PI / 3; return `${bx + r * 1.12 * Math.cos(a)},${by + r * 1.12 * Math.sin(a)}`; }).join(' ');
-            return <g key={'b' + c.id} className={'balloon' + (chosen ? ' chosen' : '')} style={{ cursor: plan.editable ? 'move' : 'pointer' }}
+            return <g key={'b' + c.id} className="dwg-balloon" style={{ cursor: plan.editable ? 'move' : 'pointer' }}
               onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; select('balloon:' + c.id); if (plan.editable) { const [x, y] = position(e); balloonDrag.current = { n: c.id, x, y, dx: c.dx || 0, dy: c.dy || 0 }; svg.current!.setPointerCapture(e.pointerId); } }}>
               {c.source.endsWith('_table') ? null : d > r + .5 && <line x1={bx + (nx - bx) / d * r} y1={by + (ny - by) / d * r} x2={nx} y2={ny} stroke={col} strokeWidth={.18 * MM} />}
               {kc ? <polygon points={hex} fill={chosen ? '#fde2e2' : '#fff'} stroke={col} strokeWidth={.18 * MM * (chosen ? 2 : 1)} /> : <circle cx={bx} cy={by} r={r} fill={chosen ? '#e4f0ff' : '#fff'} stroke={col} strokeWidth={.18 * MM * (chosen ? 2 : 1)} />}
@@ -598,94 +627,94 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
           })}
         </g></svg>
         {menu && (() => { const mg = groups[menu.id]; const mo = edits.objects[menu.id] || {}; const isNote = edits.notes.some(n => n.id === menu.id);
-          const item = (label: string, fn: () => void, disabled = !writable) => <button type="button" role="menuitem" disabled={disabled} onClick={() => { setMenu(null); fn(); }}>{label}</button>;
-          return <div className="drawing-menu" role="menu" style={{ left: menu.x, top: menu.y }} onPointerDown={e => e.stopPropagation()}>
-            {mg?.kind === 'callout' && <>{item(mo.flip ? 'Arrow outside → inside' : 'Flip arrow (inside / outside)', () => toggleFlag(menu.id, 'flip'))}{item('Edit text…', () => setTimeout(() => (document.querySelector('.drawing-properties textarea') as HTMLTextAreaElement | null)?.focus(), 0), false)}</>}
-            {mg?.kind === 'dim' && <>{item('Edit dimension text…', () => setTimeout(() => (document.querySelector('.drawing-properties input[aria-label="Dimension text"]') as HTMLInputElement | null)?.select(), 0), false)}{item('Reset text & size', () => { const next = clone(edits); const o: Any = { ...(next.objects[menu.id] || {}) }; delete o.text; delete o.size; if (Object.keys(o).length) next.objects[menu.id] = o; else delete next.objects[menu.id]; change(next); }, !writable || (mo.text == null && mo.size == null))}</>}
+          const item = (label: string, fn: () => void, disabled = !writable) => <Button type="button" variant="ghost" size="sm" role="menuitem" className="h-7 justify-start px-2.5 text-sm font-normal" disabled={disabled} onClick={() => { setMenu(null); fn(); }}>{label}</Button>;
+          return <div className="fixed z-50 grid min-w-52 gap-px rounded-lg border bg-popover p-1 text-popover-foreground shadow-pop" role="menu" style={{ left: menu.x, top: menu.y }} onPointerDown={e => e.stopPropagation()}>
+            {mg?.kind === 'callout' && <>{item(mo.flip ? 'Arrow outside → inside' : 'Flip arrow (inside / outside)', () => toggleFlag(menu.id, 'flip'))}{item('Edit text…', () => setTimeout(() => (document.querySelector('[data-drawing-properties] textarea') as HTMLTextAreaElement | null)?.focus(), 0), false)}</>}
+            {mg?.kind === 'dim' && <>{item('Edit dimension text…', () => setTimeout(() => (document.querySelector('[data-drawing-properties] input[aria-label="Dimension text"]') as HTMLInputElement | null)?.select(), 0), false)}{item('Reset text & size', () => { const next = clone(edits); const o: Any = { ...(next.objects[menu.id] || {}) }; delete o.text; delete o.size; if (Object.keys(o).length) next.objects[menu.id] = o; else delete next.objects[menu.id]; change(next); }, !writable || (mo.text == null && mo.size == null))}</>}
             {mg && ['view', 'callout', 'dim'].includes(mg.kind) && <>{item(mo.hidden ? 'Show' : 'Hide', () => toggleFlag(menu.id, 'hidden'))}{item('Reset position', () => resetPosition(menu.id), !writable || !(mo.dx || mo.dy))}</>}
             {mg?.kind === 'view' && mg.nodes?.some(isHiddenLine) && item(mo.hidden_lines === false ? 'Show hidden lines' : 'Hide hidden lines', () => setHiddenLines([menu.id], mo.hidden_lines === false))}
             {isNote && item('Delete note', deleteSelected)}
-            <small>Arrows nudge · Del hides · Esc deselects · F fits</small>
+            <small className="mt-1 border-t px-2.5 pt-1.5 pb-0.5 text-2xs text-muted-foreground">Arrows nudge · Del hides · Esc deselects · F fits</small>
           </div>; })()}
       </main>
-      <aside className="drawing-properties"><h3>{selected.startsWith('balloon:') ? (() => { const c = plan?.chars.find((c: Any) => 'balloon:' + c.id === selected); return c?.number ? `Balloon ${c.number}` : 'Not inspected'; })() : selectedDetail ? `Detail ${selectedDetail.label}` : group?.kind === 'callout' ? 'Hole / feature callout' : group?.kind === 'dim' ? (group.axis === 'angle' ? 'Angle dimension' : 'Ordinate dimension') : group?.kind === 'view' ? group.title + ' view' : note ? 'Drawing note' : 'Drawing properties'}</h3>
+      <aside data-drawing-properties="" className="flex w-[230px] shrink-0 flex-col gap-3 overflow-auto border-l bg-card p-4 lg:w-72"><h3 className="text-base font-semibold">{selected.startsWith('balloon:') ? (() => { const c = plan?.chars.find((c: Any) => 'balloon:' + c.id === selected); return c?.number ? `Balloon ${c.number}` : 'Not inspected'; })() : selectedDetail ? `Detail ${selectedDetail.label}` : group?.kind === 'callout' ? 'Hole / feature callout' : group?.kind === 'dim' ? (group.axis === 'angle' ? 'Angle dimension' : 'Ordinate dimension') : group?.kind === 'view' ? group.title + ' view' : note ? 'Drawing note' : 'Drawing properties'}</h3>
         {selected.startsWith('balloon:') && plan && (() => { const c = plan.chars.find((c: Any) => 'balloon:' + c.id === selected); if (!c) return null;
           const putChar = async (q: Any, body: Any) => { try { await api(`/parts/${partId}/characteristics/${q.key}`, 'PUT', body); await loadPlan(); setError(''); } catch (e: Any) { setError(e.message); } };
           const putBalloon = async (b: Any) => { try { await api(`/parts/${partId}/balloons/${c.id}`, 'PUT', { dx: c.dx || 0, dy: c.dy || 0, ...b }); await loadPlan(); } catch (e: Any) { setError(e.message); } };
-          return <div className="balloon-panel">
-            <small>Zone {c.zone} · sheet {c.page + 1} · “{c.text}”</small>
-            {c.reqs.map((q: Any) => <div key={q.key} className={'balloon-req' + (q.critical ? ' kc' : '')}>
-              <label className="check"><input type="checkbox" checked={!!q.inspect} disabled={!plan.editable} onChange={e => putChar(q, { inspect: e.target.checked })} /><b>{q.no ? q.no + ' · ' : ''}{q.label}{q.qty > 1 ? ` (${q.qty}×)` : ''}</b></label>
-              {q.nominal === null ? <small>Attribute check (pass / fail, gauge)</small> : <div className="lim">
-                <label>Lower<input key={'l' + q.lower} defaultValue={q.lower ?? ''} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(v) && v !== q.lower) putChar(q, { lower: v, upper: q.upper }); }} /></label>
-                <span>{q.nominal}</span>
-                <label>Upper<input key={'u' + q.upper} defaultValue={q.upper ?? ''} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(v) && v !== q.upper) putChar(q, { lower: q.lower, upper: v }); }} /></label></div>}
-              <small>{q.basis}{q.basis === 'specified' && plan.editable && <> · <button className="link" onClick={() => putChar(q, { reset_limits: true })}>use general tolerance</button></>}</small>
-              <label className="check"><input type="checkbox" checked={!!q.critical} disabled={!plan.editable} onChange={e => putChar(q, { critical: e.target.checked })} />Critical (KC) — measured on every part</label>
-              <label>Method / gauge<input key={'m' + q.method} defaultValue={q.method} disabled={!plan.editable} placeholder="e.g. CMM, pin gauge, thread gauge" onBlur={e => { if (e.target.value !== (q.method || '')) putChar(q, { method: e.target.value }); }} /></label>
+          return <div className="grid gap-2.5">
+            <small className={hintCls}>Zone {c.zone} · sheet {c.page + 1} · “{c.text}”</small>
+            {c.reqs.map((q: Any) => <div key={q.key} className={cn('grid gap-2 rounded-lg border p-2.5', q.critical && 'border-destructive/40 bg-danger-soft')}>
+              <CheckRow checked={!!q.inspect} disabled={!plan.editable} onChange={v => putChar(q, { inspect: v })}><span className="font-medium">{q.no ? q.no + ' · ' : ''}{q.label}{q.qty > 1 ? ` (${q.qty}×)` : ''}</span></CheckRow>
+              {q.nominal === null ? <small className={hintCls}>Attribute check (pass / fail, gauge)</small> : <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+                <Field label="Lower"><Input key={'l' + q.lower} defaultValue={q.lower ?? ''} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(v) && v !== q.lower) putChar(q, { lower: v, upper: q.upper }); }} /></Field>
+                <span className="pb-1.5 font-medium tabular-nums">{q.nominal}</span>
+                <Field label="Upper"><Input key={'u' + q.upper} defaultValue={q.upper ?? ''} disabled={!plan.editable} onBlur={e => { const v = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(v) && v !== q.upper) putChar(q, { lower: q.lower, upper: v }); }} /></Field></div>}
+              <small className={hintCls}>{q.basis}{q.basis === 'specified' && plan.editable && <> · <Button variant="link" size="xs" className="h-auto p-0 text-xs font-normal" onClick={() => putChar(q, { reset_limits: true })}>use general tolerance</Button></>}</small>
+              <CheckRow checked={!!q.critical} disabled={!plan.editable} onChange={v => putChar(q, { critical: v })}>Critical (KC) — measured on every part</CheckRow>
+              <Field label="Method / gauge"><Input key={'m' + q.method} defaultValue={q.method} disabled={!plan.editable} placeholder="e.g. CMM, pin gauge, thread gauge" onBlur={e => { if (e.target.value !== (q.method || '')) putChar(q, { method: e.target.value }); }} /></Field>
             </div>)}
-            {plan.editable && <div className="placed-actions"><button type="button" disabled={!c.selected} onClick={() => api(`/parts/${partId}/characteristics`, 'PUT', { keys: c.reqs.map((q: Any) => q.key), inspect: false }).then(loadPlan).catch((e: Any) => setError(e.message))}>Don't inspect</button><button type="button" disabled={!c.dx && !c.dy} onClick={() => putBalloon({ dx: 0, dy: 0 })}>Reset position</button></div>}
-            <small>Tick what is checked; unticked dimensions get no balloon. Grey “+” marks on the sheet add a dimension. Hexagon = critical. Saves immediately; the ballooned copy is the “Inspection drawing” PDF.</small>
+            {plan.editable && <div className="flex flex-wrap items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={!c.selected} onClick={() => api(`/parts/${partId}/characteristics`, 'PUT', { keys: c.reqs.map((q: Any) => q.key), inspect: false }).then(loadPlan).catch((e: Any) => setError(e.message))}>Don't inspect</Button><Button type="button" variant="outline" size="sm" disabled={!c.dx && !c.dy} onClick={() => putBalloon({ dx: 0, dy: 0 })}>Reset position</Button></div>}
+            <small className={hintCls}>Tick what is checked; unticked dimensions get no balloon. Grey “+” marks on the sheet add a dimension. Hexagon = critical. Saves immediately; the ballooned copy is the “Inspection drawing” PDF.</small>
           </div>; })()}
-        {showBalloons && plan?.error && <div className="drawing-error">{plan.error}</div>}
-        {selectedDetail && <div className="placed-view">
-          <label>Label<select value={selectedDetail.label} disabled={!writable} onChange={e => detailPatch({ label: e.target.value, id: e.target.value })}>{[...DETAIL_LETTERS].filter(l => l === selectedDetail.label || !edits.details.some(d => d.label === l)).map(l => <option key={l}>{l}</option>)}</select></label>
+        {showBalloons && plan?.error && <div className="rounded-md bg-danger-soft px-3 py-2 text-xs text-destructive">{plan.error}</div>}
+        {selectedDetail && <div className="grid gap-3">
+          <Field label="Label"><Select value={selectedDetail.label} disabled={!writable} onChange={v => detailPatch({ label: v, id: v })} options={[...DETAIL_LETTERS].filter(l => l === selectedDetail.label || !edits.details.some(d => d.label === l)).map(l => ({ value: l, label: l }))} /></Field>
           {(() => { const vg = groups[selectedDetail.view]; const base = vg?.scale_used || data.scene.frame?.scale || 1; return <>
-            <label>Enlargement (%)<input type="number" min={105} max={2000} step={5} disabled={!writable} value={Math.round(selectedDetail.scale * 100)} onChange={e => { const v = Number(e.target.value) / 100; if (Number.isFinite(v) && v >= 1.05 && v <= 20) detailPatch({ scale: v }); }} /></label>
-            <div className="chips">{DETAIL_SCALES.map(v => <button type="button" key={v} disabled={!writable} className={'chip' + (Math.abs(selectedDetail.scale - v) < 1e-6 ? ' chosen' : '')} onClick={() => detailPatch({ scale: v })}>{v * 100}%</button>)}</div>
-            <label>Detail scale (on paper)<input type="text" disabled={!writable} defaultValue={scaleText(base * selectedDetail.scale)} key={selectedDetail.id + selectedDetail.scale}
+            <Field label="Enlargement (%)"><Input type="number" min={105} max={2000} step={5} disabled={!writable} value={Math.round(selectedDetail.scale * 100)} onChange={e => { const v = Number(e.target.value) / 100; if (Number.isFinite(v) && v >= 1.05 && v <= 20) detailPatch({ scale: v }); }} /></Field>
+            <div className="flex flex-wrap gap-1.5">{DETAIL_SCALES.map(v => <Button type="button" variant="outline" size="xs" key={v} disabled={!writable} className={chipCls(Math.abs(selectedDetail.scale - v) < 1e-6)} onClick={() => detailPatch({ scale: v })}>{v * 100}%</Button>)}</div>
+            <Field label="Detail scale (on paper)"><Input type="text" disabled={!writable} defaultValue={scaleText(base * selectedDetail.scale)} key={selectedDetail.id + selectedDetail.scale}
               onBlur={e => { const m = e.target.value.trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/); if (!m) return; const abs = Number(m[1]) / Number(m[2]); const k = abs / base; if (k >= 1.05 && k <= 20) detailPatch({ scale: Math.round(k * 1000) / 1000 }); else setError(`That scale is ${Math.round(k * 100)} % of the sheet scale; use 105–2000 %.`); }} />
-              <small>Sheet scale {scaleText(base)} · type e.g. 2:1 or 5:1</small></label></>; })()}
-          <label>Circle radius (mm)<input type="number" min={3} max={60} step={1} disabled={!writable} value={Math.round(selectedDetail.r / MM)} onChange={e => detailPatch({ r: Math.max(3, Math.min(60, Number(e.target.value) || 10)) * MM })} /></label>
-          <label>Place on sheet<select value={String(selectedDetail.target_page)} disabled={!writable} onChange={e => detailPatch({ target_page: Number(e.target.value) })}>{order.map((pi, i) => <option key={pi} value={String(pi)}>Sheet {i + 1}</option>)}</select></label>
-          <button type="button" disabled={!writable} onClick={() => { change({ ...edits, details: edits.details.filter(d => d !== selectedDetail) }); select(''); }}><Trash2 size={14} />Remove detail</button>
-          <small>Drag the circle on the view to choose the area; drag the enlarged view to place it. The detail shows the part geometry; add dimensions as notes if needed.</small>
+              <small className={cn(hintCls, 'font-normal')}>Sheet scale {scaleText(base)} · type e.g. 2:1 or 5:1</small></Field></>; })()}
+          <Field label="Circle radius (mm)"><Input type="number" min={3} max={60} step={1} disabled={!writable} value={Math.round(selectedDetail.r / MM)} onChange={e => detailPatch({ r: Math.max(3, Math.min(60, Number(e.target.value) || 10)) * MM })} /></Field>
+          <Field label="Place on sheet"><Select value={String(selectedDetail.target_page)} disabled={!writable} onChange={v => detailPatch({ target_page: Number(v) })} options={order.map((pi, i) => ({ value: String(pi), label: `Sheet ${i + 1}` }))} /></Field>
+          <Button type="button" variant="outline" size="sm" className="justify-self-start" disabled={!writable} onClick={() => { change({ ...edits, details: edits.details.filter(d => d !== selectedDetail) }); select(''); }}><Trash2 />Remove detail</Button>
+          <small className={hintCls}>Drag the circle on the view to choose the area; drag the enlarged view to place it. The detail shows the part geometry; add dimensions as notes if needed.</small>
         </div>}
-        {!group && !note && !selectedView && !selectedDetail && !selected.startsWith('balloon:') && <><p>Select a view, dimension, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>
-          <dl className="drawing-keys"><dt>Drag a dimension value</dt><dd>move it (leader follows)</dd><dt>Double-click a value</dt><dd>edit dimension text</dd><dt>Click arrowhead</dt><dd>flip arrow inside / outside</dd><dt>Right-click</dt><dd>flip, hide, reset</dd><dt>Arrow keys</dt><dd>nudge (Shift ×10)</dd><dt>Delete</dt><dd>hide callout / view, delete note</dd><dt>Middle drag / Space drag</dt><dd>pan</dd><dt>Ctrl/⌘ scroll, pinch</dt><dd>zoom</dd><dt>F</dt><dd>fit sheet</dd><dt>Esc</dt><dd>deselect</dd><dt>⌘/Ctrl Z · Y · S</dt><dd>undo · redo · save</dd></dl></>}
-        {selectedView && <div className="placed-view">
-          <label>Name<input value={selectedView.label} maxLength={80} disabled={!writable} onChange={e => viewPatch({ label: e.target.value })} /></label>
-          <label>Scale<select value={String(selectedView.scale)} disabled={!writable} onChange={e => viewPatch({ scale: Number(e.target.value) })}>{!SCALE_OPTIONS.some(([, v]) => Math.abs(v - selectedView.scale) < 1e-6) && <option value={String(selectedView.scale)}>{scaleText(selectedView.scale)}</option>}{SCALE_OPTIONS.map(([t, v]) => <option key={t} value={String(v)}>{t}</option>)}</select></label>
-          <div className="placed-angles">
-            <label>Azimuth °<input type="number" step="15" disabled={!writable} value={Math.round(selectedView.azimuth * 10) / 10} onChange={e => viewAngles(Number(e.target.value), selectedView.elevation)} /></label>
-            <label>Elevation °<input type="number" step="5" min="-89" max="89" disabled={!writable} value={Math.round(selectedView.elevation * 10) / 10} onChange={e => viewAngles(selectedView.azimuth, Number(e.target.value))} /></label>
-            <label>Rotate °<input type="number" step="15" disabled={!writable} value={selectedView.roll || 0} onChange={e => viewPatch({ roll: Number(e.target.value) || 0 })} /></label>
+        {!group && !note && !selectedView && !selectedDetail && !selected.startsWith('balloon:') && <><p className={hintCls}>Select a view, dimension, callout or note on the sheet, or drag another view from the Views palette. Measured geometry remains linked to the STEP; drawing text records your manufacturing intent.</p>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs [&_dd]:text-muted-foreground [&_dt]:font-medium [&_dt]:whitespace-nowrap"><dt>Drag a dimension value</dt><dd>move it (leader follows)</dd><dt>Double-click a value</dt><dd>edit dimension text</dd><dt>Click arrowhead</dt><dd>flip arrow inside / outside</dd><dt>Right-click</dt><dd>flip, hide, reset</dd><dt>Arrow keys</dt><dd>nudge (Shift ×10)</dd><dt>Delete</dt><dd>hide callout / view, delete note</dd><dt>Middle drag / Space drag</dt><dd>pan</dd><dt>Ctrl/⌘ scroll, pinch</dt><dd>zoom</dd><dt><Kbd>F</Kbd></dt><dd>fit sheet</dd><dt><Kbd>Esc</Kbd></dt><dd>deselect</dd><dt>⌘/Ctrl Z · Y · S</dt><dd>undo · redo · save</dd></dl></>}
+        {selectedView && <div className="grid gap-3">
+          <Field label="Name"><Input value={selectedView.label} maxLength={80} disabled={!writable} onChange={e => viewPatch({ label: e.target.value })} /></Field>
+          <Field label="Scale"><Select value={String(selectedView.scale)} disabled={!writable} onChange={v => viewPatch({ scale: Number(v) })} options={[...(!SCALE_OPTIONS.some(([, v]) => Math.abs(v - selectedView.scale) < 1e-6) ? [{ value: String(selectedView.scale), label: scaleText(selectedView.scale) }] : []), ...SCALE_OPTIONS.map(([t, v]) => ({ value: String(v), label: t }))]} /></Field>
+          <div className="grid grid-cols-3 gap-1.5">
+            <Field label="Azimuth °"><Input className="px-2" type="number" step="15" disabled={!writable} value={Math.round(selectedView.azimuth * 10) / 10} onChange={e => viewAngles(Number(e.target.value), selectedView.elevation)} /></Field>
+            <Field label="Elevation °"><Input className="px-2" type="number" step="5" min="-89" max="89" disabled={!writable} value={Math.round(selectedView.elevation * 10) / 10} onChange={e => viewAngles(selectedView.azimuth, Number(e.target.value))} /></Field>
+            <Field label="Rotate °"><Input className="px-2" type="number" step="15" disabled={!writable} value={selectedView.roll || 0} onChange={e => viewPatch({ roll: Number(e.target.value) || 0 })} /></Field>
           </div>
-          <div className="placed-actions"><button type="button" disabled={!writable} onClick={() => viewPatch({ roll: ((selectedView.roll || 0) + 90) % 360 })}><RotateCcw size={14} />Rotate 90°</button>
-            <label className="check"><input type="checkbox" disabled={!writable} checked={!!selectedView.caption} onChange={e => viewPatch({ caption: e.target.checked })} />Caption</label></div>
-          <button type="button" disabled={!writable} onClick={() => { change({ ...edits, views: edits.views.filter(v => v.id !== selected) }); select(''); }}><Trash2 size={14} />Remove view</button>
-          <small>Azimuth turns about the vertical axis (0 = front, 90 = right side); elevation looks from above (+) or below (−); rotate spins the view on the sheet.</small>
+          <div className="flex flex-wrap items-center gap-3"><Button type="button" variant="outline" size="sm" disabled={!writable} onClick={() => viewPatch({ roll: ((selectedView.roll || 0) + 90) % 360 })}><RotateCcw />Rotate 90°</Button>
+            <CheckRow disabled={!writable} checked={!!selectedView.caption} onChange={v => viewPatch({ caption: v })}>Caption</CheckRow></div>
+          <Button type="button" variant="outline" size="sm" className="justify-self-start" disabled={!writable} onClick={() => { change({ ...edits, views: edits.views.filter(v => v.id !== selected) }); select(''); }}><Trash2 />Remove view</Button>
+          <small className={hintCls}>Azimuth turns about the vertical axis (0 = front, 90 = right side); elevation looks from above (+) or below (−); rotate spins the view on the sheet.</small>
         </div>}
-        {group?.kind === 'view' && <>{!group.parent && <label>Sheet<select value={String(pageOf(group))} disabled={!writable} onChange={e => moveViewTo(Number(e.target.value))}>{order.map((pi, i) => <option key={pi} value={String(pi)}>Sheet {i + 1}{pi >= baseCount ? ' (added)' : ''}</option>)}</select></label>}
-          <p>Drag this view to reposition it. Attached callouts follow. Dimensions and geometry stay at the source scale. Move it to another sheet (e.g. a new one) to give it room for details.</p><button disabled={!writable} onClick={() => { const next = clone(edits); const { hidden, hidden_lines } = next.objects[selected] || {}; delete next.objects[selected]; const keep: Any = {}; if (hidden) keep.hidden = hidden; if (hidden_lines === false) keep.hidden_lines = false; if (Object.keys(keep).length) next.objects[selected] = keep; change(next); }}><RotateCcw size={15} />Reset position</button>
-          {group.nodes.some(isHiddenLine) && <label className="check"><input type="checkbox" disabled={!writable} checked={edits.objects[selected]?.hidden_lines !== false} onChange={e => setHiddenLines([selected], e.target.checked)} />Show hidden lines (dashed edges behind faces)</label>}
-          <button disabled={!writable} onClick={() => { const next = clone(edits); const o: Any = { ...(next.objects[selected] || {}) }; if (o.hidden) delete o.hidden; else o.hidden = true; if (Object.keys(o).length) next.objects[selected] = o; else delete next.objects[selected]; change(next); }}>{edits.objects[selected]?.hidden ? 'Show view' : 'Hide view'}</button>
-          {edits.objects[selected]?.hidden && <small>Hidden views (with their dimensions and callouts) are left out of the PDF.</small>}</>}
+        {group?.kind === 'view' && <>{!group.parent && <Field label="Sheet"><Select value={String(pageOf(group))} disabled={!writable} onChange={v => moveViewTo(Number(v))} options={order.map((pi, i) => ({ value: String(pi), label: `Sheet ${i + 1}${pi >= baseCount ? ' (added)' : ''}` }))} /></Field>}
+          <p className={hintCls}>Drag this view to reposition it. Attached callouts follow. Dimensions and geometry stay at the source scale. Move it to another sheet (e.g. a new one) to give it room for details.</p><Button variant="outline" size="sm" className="self-start" disabled={!writable} onClick={() => { const next = clone(edits); const { hidden, hidden_lines } = next.objects[selected] || {}; delete next.objects[selected]; const keep: Any = {}; if (hidden) keep.hidden = hidden; if (hidden_lines === false) keep.hidden_lines = false; if (Object.keys(keep).length) next.objects[selected] = keep; change(next); }}><RotateCcw />Reset position</Button>
+          {group.nodes.some(isHiddenLine) && <CheckRow disabled={!writable} checked={edits.objects[selected]?.hidden_lines !== false} onChange={v => setHiddenLines([selected], v)}>Show hidden lines (dashed edges behind faces)</CheckRow>}
+          <Button variant="outline" size="sm" className="self-start" disabled={!writable} onClick={() => { const next = clone(edits); const o: Any = { ...(next.objects[selected] || {}) }; if (o.hidden) delete o.hidden; else o.hidden = true; if (Object.keys(o).length) next.objects[selected] = o; else delete next.objects[selected]; change(next); }}>{edits.objects[selected]?.hidden ? 'Show view' : 'Hide view'}</Button>
+          {edits.objects[selected]?.hidden && <small className={hintCls}>Hidden views (with their dimensions and callouts) are left out of the PDF.</small>}</>}
         {group?.kind === 'dim' && (() => { const o: Any = edits.objects[selected] || {}; const sz = o.size ?? 1;
           const setO = (k: string, v: Any) => { const next = clone(edits); const n: Any = { ...(next.objects[selected] || {}) }; if (v === undefined) delete n[k]; else n[k] = v; if (Object.keys(n).length) next.objects[selected] = n; else delete next.objects[selected]; change(next); };
-          return <div className="placed-view">
-            <label>Dimension text<input aria-label="Dimension text" maxLength={80} disabled={!writable} value={o.text ?? '<>'} onChange={e => setO('text', e.target.value === '<>' ? undefined : e.target.value)} /></label>
-            <small>&lt;&gt; is the measured value ({group.text}); add text around it, e.g. <code>&lt;&gt; TYP</code>, <code>(&lt;&gt;)</code>, <code>&lt;&gt; ±0.05</code>. Replacing it overrides the value on the drawing only — the inspection plan keeps the STEP value.</small>
-            <div className="chips">{['<> TYP', '(<>)', '<> REF', '<> ±0.1'].map(t => <button type="button" key={t} className={'chip' + (o.text === t ? ' chosen' : '')} disabled={!writable} onClick={() => setO('text', t)}>{t}</button>)}</div>
-            <label>Text size ({Math.round(sz * 100)} %)<input type="range" min={50} max={300} step={10} disabled={!writable} value={Math.round(sz * 100)} onChange={e => { const v = Number(e.target.value) / 100; setO('size', Math.abs(v - 1) < 1e-6 ? undefined : v); }} /></label>
-            <div className="chips">{[.75, 1, 1.25, 1.5, 2].map(v => <button type="button" key={v} className={'chip' + (Math.abs(sz - v) < 1e-6 ? ' chosen' : '')} disabled={!writable} onClick={() => setO('size', v === 1 ? undefined : v)}>{v * 100}%</button>)}</div>
-            <div className="placed-actions"><button type="button" disabled={!writable || !(o.dx || o.dy)} onClick={() => resetPosition(selected)}>Reset position</button>
-              <button type="button" disabled={!writable} onClick={() => toggleFlag(selected, 'hidden')}>{o.hidden ? 'Show dimension' : 'Hide dimension'}</button></div>
-            <small>Drag the value to move it — the extension line stays on the feature and stretches with a jog. Arrow keys nudge (Shift ×10).</small>
+          return <div className="grid gap-3">
+            <Field label="Dimension text"><Input aria-label="Dimension text" maxLength={80} disabled={!writable} value={o.text ?? '<>'} onChange={e => setO('text', e.target.value === '<>' ? undefined : e.target.value)} /></Field>
+            <small className={hintCls}>&lt;&gt; is the measured value ({group.text}); add text around it, e.g. <code className={codeCls}>&lt;&gt; TYP</code>, <code className={codeCls}>(&lt;&gt;)</code>, <code className={codeCls}>&lt;&gt; ±0.05</code>. Replacing it overrides the value on the drawing only — the inspection plan keeps the STEP value.</small>
+            <div className="flex flex-wrap gap-1.5">{['<> TYP', '(<>)', '<> REF', '<> ±0.1'].map(t => <Button type="button" variant="outline" size="xs" key={t} className={chipCls(o.text === t)} disabled={!writable} onClick={() => setO('text', t)}>{t}</Button>)}</div>
+            <Field label={`Text size (${Math.round(sz * 100)} %)`}><Slider className="py-1.5" min={50} max={300} step={10} disabled={!writable} value={[Math.round(sz * 100)]} onValueChange={([n]) => { const v = n / 100; setO('size', Math.abs(v - 1) < 1e-6 ? undefined : v); }} /></Field>
+            <div className="flex flex-wrap gap-1.5">{[.75, 1, 1.25, 1.5, 2].map(v => <Button type="button" variant="outline" size="xs" key={v} className={chipCls(Math.abs(sz - v) < 1e-6)} disabled={!writable} onClick={() => setO('size', v === 1 ? undefined : v)}>{v * 100}%</Button>)}</div>
+            <div className="flex flex-wrap items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={!writable || !(o.dx || o.dy)} onClick={() => resetPosition(selected)}>Reset position</Button>
+              <Button type="button" variant="outline" size="sm" disabled={!writable} onClick={() => toggleFlag(selected, 'hidden')}>{o.hidden ? 'Show dimension' : 'Hide dimension'}</Button></div>
+            <small className={hintCls}>Drag the value to move it — the extension line stays on the feature and stretches with a jog. Arrow keys nudge (Shift ×10).</small>
           </div>; })()}
-        {group?.kind === 'callout' && <><label>Callout text<textarea aria-label="Callout text" rows={9} disabled={!writable} value={currentText} onChange={e => patch({ text: e.target.value })} /></label>
-          <small>{edits.objects[selected]?.text !== undefined ? 'User-specified callout. Source measurements below are unchanged.' : 'Generated from STEP geometry.'}</small>
-          <div className="placed-actions"><button type="button" disabled={!writable} className={edits.objects[selected]?.flip ? 'selected' : ''} title="Arrow on the other side of the feature (or click the arrowhead on the sheet)" onClick={() => toggleFlag(selected, 'flip')}>Flip arrow</button>
-            <button type="button" disabled={!writable} onClick={() => toggleFlag(selected, 'hidden')}>{edits.objects[selected]?.hidden ? 'Show callout' : 'Hide callout'}</button>
-            <button type="button" disabled={!writable || !(edits.objects[selected]?.dx || edits.objects[selected]?.dy)} onClick={() => resetPosition(selected)}>Reset position</button></div>
-          <button disabled={!writable} onClick={() => { const next = clone(edits); delete next.objects[selected]; change(next); }}><RotateCcw size={15} />Reset to generated callout</button>
-          {group.measurements?.[0]?.hole_ids && <><details><summary>Thread specification</summary><p>Choose only after confirming the intended thread. A bore diameter does not establish a thread or tolerance class.</p>
-            <label>Thread<input aria-label="Thread" disabled={!writable} value={thread} onChange={e => setThread(e.target.value)} list="thread-options" /><datalist id="thread-options">{['M3','M4','M5','M6','M8','M10','M12'].map(t => <option key={t}>{t}</option>)}</datalist></label>
-            <label>Class<input value={threadClass} disabled={!writable} onChange={e => setThreadClass(e.target.value)} /></label><label>Thread depth (mm) or THRU<input aria-label="Thread depth" disabled={!writable} value={threadDepth} onChange={e => setThreadDepth(e.target.value)} /></label>
-            <button disabled={!writable} onClick={applyThread}>Apply specified thread</button></details>
-            <details><summary>Fit / press-fit note</summary><label>Fit designation<input aria-label="Fit designation" placeholder="e.g. H7" value={fit} disabled={!writable} onChange={e => setFit(e.target.value)} /></label><label>Manufacturing note<input aria-label="Fit note" placeholder="PRESS FIT FOR DOWEL" disabled={!writable} value={fitNote} onChange={e => setFitNote(e.target.value)} /></label><button disabled={!writable} onClick={applyFit}>Apply fit and note</button></details></>}
-          <details open><summary>Read-only source measurements</summary>{group.measurements?.map((m: Any, i: number) => <div className="drawing-measurement" key={i}>{m.hole_ids ? <><strong>{m.hole_ids.join(' + ')}</strong><span>Diameter {m.diameter.toFixed(3)} mm · {m.through ? 'THRU' : `Cylindrical depth ${m.depth.toFixed(3)} mm`}</span>{m.entrances?.map((a: Any, j: number) => <span key={j}>Chamfer Ø{a.diameter.toFixed(3)} × {a.angle.toFixed(1)}°</span>)}</> : <span>Chamfer {m.length?.toFixed(3)} mm × {m.angle?.toFixed(1)}°</span>}</div>)}</details></>}
-        {note && <><label>Note<textarea aria-label="Note text" rows={7} disabled={!writable} value={note.text} onChange={e => notePatch({ text: e.target.value })} /></label><label>Font size<input type="number" min="5" max="24" disabled={!writable} value={note.size} onChange={e => notePatch({ size: Number(e.target.value) })} /></label><button disabled={!writable} onClick={() => { change({ ...edits, notes: edits.notes.filter(n => n.id !== selected) }); select(''); }}>Delete note</button></>}
+        {group?.kind === 'callout' && <><Field label="Callout text"><Textarea aria-label="Callout text" className="resize-y font-mono text-xs field-sizing-fixed" rows={9} disabled={!writable} value={currentText} onChange={e => patch({ text: e.target.value })} /></Field>
+          <small className={hintCls}>{edits.objects[selected]?.text !== undefined ? 'User-specified callout. Source measurements below are unchanged.' : 'Generated from STEP geometry.'}</small>
+          <div className="flex flex-wrap items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={!writable} className={toolOn(!!edits.objects[selected]?.flip)} title="Arrow on the other side of the feature (or click the arrowhead on the sheet)" onClick={() => toggleFlag(selected, 'flip')}>Flip arrow</Button>
+            <Button type="button" variant="outline" size="sm" disabled={!writable} onClick={() => toggleFlag(selected, 'hidden')}>{edits.objects[selected]?.hidden ? 'Show callout' : 'Hide callout'}</Button>
+            <Button type="button" variant="outline" size="sm" disabled={!writable || !(edits.objects[selected]?.dx || edits.objects[selected]?.dy)} onClick={() => resetPosition(selected)}>Reset position</Button></div>
+          <Button variant="outline" size="sm" className="self-start" disabled={!writable} onClick={() => { const next = clone(edits); delete next.objects[selected]; change(next); }}><RotateCcw />Reset to generated callout</Button>
+          {group.measurements?.[0]?.hole_ids && <><details className={detailsCls}><summary className={summaryCls}>Thread specification</summary><div className="mt-3 grid gap-3"><p className={hintCls}>Choose only after confirming the intended thread. A bore diameter does not establish a thread or tolerance class.</p>
+            <Field label="Thread"><Combo aria-label="Thread" disabled={!writable} value={thread} onChange={setThread} suggestions={['M3', 'M4', 'M5', 'M6', 'M8', 'M10', 'M12']} /></Field>
+            <Field label="Class"><Input value={threadClass} disabled={!writable} onChange={e => setThreadClass(e.target.value)} /></Field><Field label="Thread depth (mm) or THRU"><Input aria-label="Thread depth" disabled={!writable} value={threadDepth} onChange={e => setThreadDepth(e.target.value)} /></Field>
+            <Button variant="outline" size="sm" className="justify-self-start" disabled={!writable} onClick={applyThread}>Apply specified thread</Button></div></details>
+            <details className={detailsCls}><summary className={summaryCls}>Fit / press-fit note</summary><div className="mt-3 grid gap-3"><Field label="Fit designation"><Input aria-label="Fit designation" placeholder="e.g. H7" value={fit} disabled={!writable} onChange={e => setFit(e.target.value)} /></Field><Field label="Manufacturing note"><Input aria-label="Fit note" placeholder="PRESS FIT FOR DOWEL" disabled={!writable} value={fitNote} onChange={e => setFitNote(e.target.value)} /></Field><Button variant="outline" size="sm" className="justify-self-start" disabled={!writable} onClick={applyFit}>Apply fit and note</Button></div></details></>}
+          <details className={detailsCls} open><summary className={summaryCls}>Read-only source measurements</summary>{group.measurements?.map((m: Any, i: number) => <div className="mt-2.5 flex flex-col gap-1 rounded-md bg-subtle p-2.5 text-2xs" key={i}>{m.hole_ids ? <><span className="font-medium">{m.hole_ids.join(' + ')}</span><span>Diameter {m.diameter.toFixed(3)} mm · {m.through ? 'THRU' : `Cylindrical depth ${m.depth.toFixed(3)} mm`}</span>{m.entrances?.map((a: Any, j: number) => <span key={j}>Chamfer Ø{a.diameter.toFixed(3)} × {a.angle.toFixed(1)}°</span>)}</> : <span>Chamfer {m.length?.toFixed(3)} mm × {m.angle?.toFixed(1)}°</span>}</div>)}</details></>}
+        {note && <><Field label="Note"><Textarea aria-label="Note text" className="resize-y font-mono text-xs field-sizing-fixed" rows={7} disabled={!writable} value={note.text} onChange={e => notePatch({ text: e.target.value })} /></Field><Field label="Font size"><Input type="number" min="5" max="24" disabled={!writable} value={note.size} onChange={e => notePatch({ size: Number(e.target.value) })} /></Field><Button variant="outline" size="sm" className="self-start text-destructive hover:text-destructive" disabled={!writable} onClick={() => { change({ ...edits, notes: edits.notes.filter(n => n.id !== selected) }); select(''); }}>Delete note</Button></>}
       </aside></div>}
   </section></div>;
 }

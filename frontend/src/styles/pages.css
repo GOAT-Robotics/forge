@@ -1,0 +1,3 @@
+/* Pages (wizards, dialogs). A modal Radix dialog sets `pointer-events: none` on <body>; the Combo / Select
+   suggestion lists are portalled into #popover-root outside the dialog, so they must opt back in to stay clickable. */
+#popover-root { pointer-events: auto; }

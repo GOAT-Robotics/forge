@@ -1,0 +1,13 @@
+/* Drawing editor: the SVG paper internals that utilities cannot reach. The paper itself is an engineering drawing
+   (black linework on white) in both app themes, so these colours are deliberately not theme tokens. */
+
+/* Drawing text uses the same face as the PDF (Barlow Semi Condensed, registered as ForgeDim). */
+@font-face { font-family: 'ForgeDim'; src: url('/fonts/BarlowSemiCondensed-Regular.ttf') format('truetype'); font-display: block; }
+
+/* hover outline of a movable item (view, callout, dimension value) */
+[data-drawing-paper] g:hover > .dwg-hit { stroke: #f08a24; stroke-dasharray: none; }
+/* clickable arrowhead (flip inside / outside) */
+[data-drawing-paper] .dwg-arrow-handle:hover { fill: #f59e0b44; stroke: #f59e0b; }
+/* inspection balloons */
+[data-drawing-paper] .dwg-balloon:hover circle, [data-drawing-paper] .dwg-balloon:hover polygon { fill: #fff4e0; }
+[data-drawing-paper] .dwg-balloon-candidate { opacity: .75; }

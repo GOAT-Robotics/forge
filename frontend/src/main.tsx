@@ -11,8 +11,8 @@ import Viewer from './Viewer';
 import DrawingEditor from './DrawingEditor';
 import type { PartAppearance } from './Viewer';
 import { api, asset, download, vendorId, headers } from './api';
-import { Badge, Modal, DocumentPreview, FlatPattern, SpecEditor, Swatch, ProductionChecklist, GroupPanel, GroupSpecEditor, ExcludeDialog, ask, DialogHost } from './components';
-import { Sidebar, TopBar, PageHeader, initTheme, LogoMark, Progress, type Page } from './shell';
+import { Badge, Modal, ModalFooter, DocumentPreview, FlatPattern, SpecEditor, Swatch, ProductionChecklist, GroupPanel, GroupSpecEditor, ExcludeDialog, ask, DialogHost } from './components';
+import { Sidebar, TopBar, PageHeader, initTheme, LogoMark, Progress, Empty, Avatar, type Page } from './shell';
 import { PricingPage, PartCost } from './pricing';
 import { surfaceLook } from './surface';
 import { Dashboard, JobOrdersPage, JobOrderDialog, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, StatusBadge } from './pages';
@@ -29,8 +29,39 @@ import WeldConfig, { WeldAssemblies } from './weldConfig';
 import PressBrake from './pressBrake';
 import AssemblySteps from './assemblySteps';
 import { usePrefs, comboOf, ShortcutsDialog, KeyChip } from './prefs';
-import './style.css';
-import './cad.css';
+import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Toaster } from '@/components/ui/sonner';
+import './index.css';
+
+/** Hint for an icon-only button (outside the dense canvas toolbars). */
+function Tip({ label, children }: { label: React.ReactNode; children: React.ReactElement }) {
+  return <Tooltip><TooltipTrigger asChild>{children}</TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>;
+}
+/** Part-type glyph tint (navigator rows, inspector title). */
+const glyphTone: Record<string, string> = { machining: 'bg-machining/10 text-machining', sheet_metal: 'bg-sheet/10 text-sheet', purchased: 'bg-purchased/10 text-purchased', other: 'bg-other/10 text-other' };
+/** Selected state of a ghost button in the canvas toolbars and the HUD. */
+const onTone = 'bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground';
+const eyebrow = 'text-2xs font-medium uppercase tracking-wider text-muted-foreground';
+const field = 'grid gap-1.5 leading-normal select-auto';
+const kv = 'flex min-h-[30px] items-center justify-between gap-3 border-b border-border/60 py-1.5 text-sm last:border-b-0';
+const kvValue = 'min-w-0 text-right text-foreground [overflow-wrap:anywhere]';
+const pageWrap = 'mx-auto w-full max-w-7xl px-6 py-6';
+const pageTitle = 'mb-5 flex items-center justify-between gap-4 max-[900px]:flex-col max-[900px]:items-start';
+const formGrid = 'grid grid-cols-2 gap-x-3.5 gap-y-3 max-[560px]:grid-cols-1';
+const checkRow = 'flex items-start gap-2.5 text-sm leading-normal font-normal select-auto';
+const docRow = 'mb-2 flex items-center justify-between gap-3 rounded-lg border p-3 text-muted-foreground';
+const modalHeading = 'mt-5 mb-2 text-sm font-semibold';
 
 type ViewMode = '3d' | 'flat3d' | 'flat2d';
 const TABS = ['parts', 'rules', 'assembly', 'steps', 'joborders', 'production', 'review', 'qc', 'audit'];
@@ -76,7 +107,6 @@ function App() {
   const [mode, setMode] = useState<ViewMode>('3d');
   const [modal, setModal] = useState('');
   const [error, setError] = useState('');
-  const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
   const [config, setConfig] = useState<Any>(null);
   const [revisionOpen, setRevisionOpen] = useState(false);
@@ -94,6 +124,7 @@ function App() {
   const [preview, setPreview] = useState<{ blob: Blob; name: string; title: string } | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [overview, setOverview] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [layout, setLayoutState] = useState<{ left: boolean; right: boolean; focus: boolean }>(() => { try { return { left: true, right: true, ...JSON.parse(localStorage.getItem('forge-layout') || '{}'), focus: false }; } catch { return { left: true, right: true, focus: false }; } });
   const setLayout = (patch: Partial<typeof layout>) => setLayoutState(l => { const n = { ...l, ...patch }; try { localStorage.setItem('forge-layout', JSON.stringify({ left: n.left, right: n.right })); } catch { /* ignore */ } return n; });
   const [weldView, setWeldView] = useState(() => { try { return localStorage.getItem('forge-nav-weld') === '1'; } catch { return false; } });
@@ -148,7 +179,7 @@ function App() {
     // Safari says "Load failed", Chrome "Failed to fetch": the request never reached Forge (connection or server restart)
     setError(/^(load failed|failed to fetch|networkerror)/i.test(msg) ? 'Couldn’t reach the Forge server — check your connection and try again.' : msg);
   };
-  const notify = (s: string) => { setToast(s); setTimeout(() => setToast(''), 5000); };
+  const notify = (s: string) => { toast.success(s, { duration: 5000 }); };
   /** A short, easy name for a part, shown beside the CAD name and searchable (job orders and nesting use it too). */
   const editAlias = async (p: Any) => {
     const v = await ask({ title: 'Part alias', message: `${p.name} — a short name you and the shop can use. Leave empty to remove it.`, confirm: 'Save', input: { label: 'Alias', placeholder: 'e.g. BASE PLATE, SM-12', initial: p.alias || '' } });
@@ -256,9 +287,10 @@ function App() {
 
   useEffect(() => {
     if (multi.length < 2) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !modal && !preview && !document.querySelector('.overlay') && !document.getElementById('popover-root')?.childElementCount) setMulti(selected ? [selected] : []); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !modal && !preview && !document.querySelector('[data-slot="dialog-content"], [role="menu"], [role="listbox"], [data-slot="popover-content"]')) setMulti(selected ? [selected] : []); };
+    // capture phase: runs before Radix closes an open dialog or menu on Escape, so that Escape only closes it
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [multi.length, modal, preview, selected]);
 
   // Keep the navigator row of the selected part in view when it is picked from the 3D scene.
@@ -422,7 +454,7 @@ function App() {
   const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (event: KeyboardEvent) => {
     const target = event.target as HTMLElement | null;
-    if (page !== 'project' || modal || preview || drawingPart || shortcutsOpen || document.querySelector('.overlay')) return;
+    if (page !== 'project' || modal || preview || drawingPart || shortcutsOpen || document.querySelector('[data-slot="dialog-content"], [role="menu"], [role="listbox"], [data-slot="popover-content"]')) return;
     if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
     const hit = actionFor(comboOf(event)); if (!hit) return;
     const id = hit.id;
@@ -455,7 +487,7 @@ function App() {
       case 'layout.focus': return run(() => setLayoutState(l => ({ ...l, focus: !l.focus })));
     }
   };
-  useEffect(() => { const h = (e: KeyboardEvent) => shortcutRef.current(e); window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, []);
+  useEffect(() => { const h = (e: KeyboardEvent) => shortcutRef.current(e); window.addEventListener('keydown', h, true); return () => window.removeEventListener('keydown', h, true); }, []);
   /** Navigator click: plain = select, shift = range from the anchor, ctrl/cmd = toggle. */
   const clickRow = (id: string, ev: React.MouseEvent) => {
     if (ev.shiftKey && anchor.current) {
@@ -470,19 +502,23 @@ function App() {
   };
   const partById = useMemo(() => new Map<string, Any>(parts.map((x: Any) => [x.id, x])), [parts]);
   // rows read the current part (the grouped tree is memoised on structure, not on every edit)
-  const renderRow = (p0: Any) => { const p = partById.get(p0.id) || p0; return (
-                          <div key={p.id} data-part={p.id} className={'part-row ' + (p.id === selected ? 'chosen' : multi.includes(p.id) ? 'multi' : '') + (p.hidden ? ' is-hidden' : '') + (p.excluded ? ' is-excluded' : '')}>
-                            <button type="button" className="row-main" onClick={ev => clickRow(p.id, ev)}>
-                              <span className={'part-glyph ' + p.category} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers size={17} /> : <Box size={17} />}</span>
-                              <span><strong title={p.alias ? `${p.alias} — ${p.name}` : p.name}>{p.alias && <span className="alias-chip">{p.alias}</span>}{p.name}</strong><small>{p.excluded ? <b className="excluded-tag">Not for production</b> : categories[p.category]} <span>· Qty {p.quantity}</span>{p.spec.material && !p.excluded && <span> · {p.spec.material}</span>}</small></span>
-                              {jointDraft?.kind === 'weld' && (() => { const check = weldability(p); return <span className={'weld-candidate ' + check.level} title={`${check.label}: ${check.reason}`}><Flame size={12} /></span>; })()}
-                              {p.excluded || p.category === 'purchased' ? <span className="ready-mark na" title={p.excluded ? 'Not for production' : 'Purchased — no release needed'} />
-                                : partReady(p) ? <CheckCircle2 size={15} className="green" aria-label="Production ready" />
-                                : <span className={'ready-mark ' + (p.reviewed || p.doc_reviewed ? 'half' : '')} title={[!p.reviewed && 'design review', !p.doc_reviewed && 'drawing review', p.reviewed && p.doc_reviewed && 'open specification items'].filter(Boolean).join(' + ') + ' still to do'} />}
-                            </button>
-                            {!vendor && <button type="button" className="icon row-eye" title={p.hidden ? 'Show in viewer' : 'Hide in viewer'} onClick={() => setFlags(p.id, { hidden: !p.hidden })}>{p.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}
+  const renderRow = (p0: Any) => { const p = partById.get(p0.id) || p0; const chosen = p.id === selected; const inMulti = !chosen && multi.includes(p.id); return (
+                          <div key={p.id} data-part={p.id} className={cn('group/row relative mx-1.5 flex min-h-11 items-center rounded-md', chosen ? 'bg-selection shadow-[inset_2px_0_0_var(--color-primary)]' : inMulti ? 'bg-selection' : 'hover:bg-accent')}>
+                            <Button type="button" variant="ghost" className={cn('h-auto min-w-0 flex-1 justify-start gap-2.5 px-2 py-1.5 text-left font-normal whitespace-normal select-none hover:bg-transparent group-focus-within/row:pr-10 group-hover/row:pr-10 dark:hover:bg-transparent', p.hidden && 'pr-10 opacity-55', p.excluded && 'pr-10')} onClick={ev => clickRow(p.id, ev)}>
+                              <span className={cn('grid size-[26px] shrink-0 place-items-center rounded-md', glyphTone[p.category] || glyphTone.other)} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers className="size-4" /> : <Box className="size-4" />}</span>
+                              <span className="min-w-0 flex-1"><span className={cn('block truncate text-sm font-medium text-foreground', p.excluded && 'text-muted-foreground line-through')} title={p.alias ? `${p.alias} — ${p.name}` : p.name}>{p.alias && <span className="mr-1.5 inline-block rounded bg-selection px-1.5 align-[1px] text-2xs leading-[17px] font-medium text-selection-foreground">{p.alias}</span>}{p.name}</span><span className="mt-0.5 block truncate text-2xs text-muted-foreground">{p.excluded ? <span className="font-medium text-destructive">Not for production</span> : categories[p.category]} <span className="text-faint">· Qty {p.quantity}</span>{p.spec.material && !p.excluded && <span className="text-faint"> · {p.spec.material}</span>}</span></span>
+                              {jointDraft?.kind === 'weld' && (() => { const check = weldability(p); return <span className={cn('grid size-5 shrink-0 place-items-center rounded-full', check.level === 'good' ? 'bg-success-soft text-success' : check.level === 'blocked' ? 'bg-danger-soft text-destructive' : 'bg-warning-soft text-warning')} title={`${check.label}: ${check.reason}`}><Flame className="size-3" /></span>; })()}
+                              {p.excluded || p.category === 'purchased' ? <span className="size-[9px] shrink-0 rounded-full border-2 border-dashed border-faint/60" title={p.excluded ? 'Not for production' : 'Purchased — no release needed'} />
+                                : partReady(p) ? <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-label="Production ready" />
+                                : <span className={cn('size-[9px] shrink-0 rounded-full border-2 border-warning', (p.reviewed || p.doc_reviewed) && 'bg-[linear-gradient(90deg,var(--color-warning)_50%,transparent_50%)]')} title={[!p.reviewed && 'design review', !p.doc_reviewed && 'drawing review', p.reviewed && p.doc_reviewed && 'open specification items'].filter(Boolean).join(' + ') + ' still to do'} />}
+                            </Button>
+                            {!vendor && <Button type="button" variant="ghost" size="icon-xs" className={cn('absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100', p.hidden && 'opacity-100')} title={p.hidden ? 'Show in viewer' : 'Hide in viewer'} onClick={() => setFlags(p.id, { hidden: !p.hidden })}>{p.hidden ? <EyeOff /> : <Eye />}</Button>}
                           </div>
                         ); };
+  /** Hover actions on a sub-assembly / weld-assembly row (always shown while active). */
+  const asmAction = (active: boolean) => cn('size-7 bg-card text-muted-foreground opacity-0 shadow-none group-focus-within/asm:opacity-100 group-hover/asm:opacity-100', active && 'border-primary/30 bg-selection text-primary opacity-100 hover:bg-selection');
+  const asmRow = (chosen: boolean) => cn('group/asm relative mx-1 flex min-h-10 items-center gap-0.5 rounded-md pr-1.5', chosen ? 'bg-selection' : 'hover:bg-accent');
+  const asmName = 'h-auto min-w-0 flex-1 justify-start gap-1.5 px-1 py-1.5 text-left font-normal text-foreground hover:bg-transparent group-focus-within/asm:pr-[70px] group-hover/asm:pr-[70px] dark:hover:bg-transparent';
   /** STEP assembly tree: sub-assemblies first, then the parts directly in this level. */
   const renderTree = (node: Any, depth: number): React.ReactNode => (
     <React.Fragment key={'n:' + node.key}>
@@ -493,16 +529,18 @@ function App() {
         const allHidden = flattenTree(g).every((p: Any) => p.hidden);
         const chosen = ids.length > 0 && ids.every((id: string) => multi.includes(id));
         return (
-          <div key={g.key} className="asm-node" style={{ ['--depth' as Any]: depth }}>
-            <div className={'asm-row' + (chosen ? ' chosen' : '')}>
-              <button type="button" className="icon asm-toggle" aria-label={open ? 'Collapse' : 'Expand'} onClick={() => setCollapsed(c => { const n = new Set(c); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
-              <button type="button" className="asm-name" title="Select the whole sub-assembly" onClick={() => { setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; if (mode !== '3d') setMode('3d'); }}>
-                <Folder size={15} /><strong>{g.name}</strong><small>{ids.length} part{ids.length === 1 ? '' : 's'} · {cats.length === 1 ? categories[cats[0]] : 'mixed'}</small>
-              </button>
-              <button type="button" className={'icon row-eye' + (chosen && isolate ? ' selected' : '')} title="Isolate this sub-assembly (show only its parts)" onClick={() => { if (chosen && isolate) { setIsolate(false); return; } setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; setIsolate(true); if (mode !== '3d') setMode('3d'); }}><Target size={14} /></button>
-              {!vendor && <button type="button" className="icon row-eye" title={allHidden ? 'Show sub-assembly in viewer' : 'Hide sub-assembly in viewer'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids, hidden: !allHidden }); await loadRevision(rev.id); })}>{allHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}
+          <div key={g.key}>
+            <div className={asmRow(chosen)} style={{ paddingLeft: 4 + depth * 12 }}>
+              <Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground" aria-label={open ? 'Collapse' : 'Expand'} onClick={() => setCollapsed(c => { const n = new Set(c); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>{open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}</Button>
+              <Button type="button" variant="ghost" className={asmName} title="Select the whole sub-assembly" onClick={() => { setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; if (mode !== '3d') setMode('3d'); }}>
+                <Folder className="size-4 text-warning" /><span className="min-w-0 truncate text-sm font-medium">{g.name}</span><span className="ml-auto text-2xs whitespace-nowrap text-muted-foreground">{ids.length} part{ids.length === 1 ? '' : 's'} · {cats.length === 1 ? categories[cats[0]] : 'mixed'}</span>
+              </Button>
+              <span className="absolute top-1/2 right-1.5 flex -translate-y-1/2 gap-1">
+                <Button type="button" variant="outline" size="icon-sm" className={asmAction(chosen && isolate)} title="Isolate this sub-assembly (show only its parts)" onClick={() => { if (chosen && isolate) { setIsolate(false); return; } setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; setIsolate(true); if (mode !== '3d') setMode('3d'); }}><Target className="size-3.5" /></Button>
+                {!vendor && <Button type="button" variant="outline" size="icon-sm" className={asmAction(false)} title={allHidden ? 'Show sub-assembly in viewer' : 'Hide sub-assembly in viewer'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids, hidden: !allHidden }); await loadRevision(rev.id); })}>{allHidden ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}</Button>}
+              </span>
             </div>
-            {open && <div className="asm-children">{renderTree(g, depth + 1)}</div>}
+            {open && <div className="border-l border-dashed" style={{ marginLeft: 15 + depth * 12 }}>{renderTree(g, depth + 1)}</div>}
           </div>
         );
       })}
@@ -519,16 +557,18 @@ function App() {
       const ids = g.rows.map((p: Any) => p.id);
       const chosen = ids.every((id: string) => multi.includes(id));
       return (
-        <div key={g.key} className="asm-node weld-node" style={{ ['--depth' as Any]: 0 }}>
-          <div className={'asm-row' + (chosen ? ' chosen' : '')}>
-            <button type="button" className="icon asm-toggle" aria-label={open ? 'Collapse' : 'Expand'} onClick={() => setCollapsed(c => { const n = new Set(c); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
-            <button type="button" className="asm-name" title={g.w ? 'Select the parts of this weld assembly' : 'Select the parts that are not welded'} onClick={() => { setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; if (mode !== '3d') setMode('3d'); }}>
-              {g.w ? <Flame size={15} className="weld-glyph" /> : <Folder size={15} />}<strong>{g.w ? g.w.name : 'Not welded'}</strong><small>{ids.length} part{ids.length === 1 ? '' : 's'}{g.w ? ` · ${(g.w.welds || []).length} weld${(g.w.welds || []).length === 1 ? '' : 's'}` : ''}</small>
-            </button>
-            {g.w && <button type="button" className="icon row-eye" title="Weld configuration" onClick={() => openWeldment(g.w)}><Flame size={14} /></button>}
-            <button type="button" className={'icon row-eye' + (chosen && isolate ? ' selected' : '')} title="Isolate (show only these parts)" onClick={() => { if (chosen && isolate) { setIsolate(false); return; } setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; setIsolate(true); if (mode !== '3d') setMode('3d'); }}><Target size={14} /></button>
+        <div key={g.key}>
+          <div className={asmRow(chosen)} style={{ paddingLeft: 4 }}>
+            <Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground" aria-label={open ? 'Collapse' : 'Expand'} onClick={() => setCollapsed(c => { const n = new Set(c); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>{open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}</Button>
+            <Button type="button" variant="ghost" className={asmName} title={g.w ? 'Select the parts of this weld assembly' : 'Select the parts that are not welded'} onClick={() => { setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; if (mode !== '3d') setMode('3d'); }}>
+              {g.w ? <Flame className="size-4 text-pink-500" /> : <Folder className="size-4 text-warning" />}<span className="min-w-0 truncate text-sm font-medium">{g.w ? g.w.name : 'Not welded'}</span><span className="ml-auto text-2xs whitespace-nowrap text-muted-foreground">{ids.length} part{ids.length === 1 ? '' : 's'}{g.w ? ` · ${(g.w.welds || []).length} weld${(g.w.welds || []).length === 1 ? '' : 's'}` : ''}</span>
+            </Button>
+            <span className="absolute top-1/2 right-1.5 flex -translate-y-1/2 gap-1">
+              {g.w && <Button type="button" variant="outline" size="icon-sm" className={asmAction(false)} title="Weld configuration" onClick={() => openWeldment(g.w)}><Flame className="size-3.5" /></Button>}
+              <Button type="button" variant="outline" size="icon-sm" className={asmAction(chosen && isolate)} title="Isolate (show only these parts)" onClick={() => { if (chosen && isolate) { setIsolate(false); return; } setMulti(ids); setSelected(ids[0] || null); anchor.current = ids[0] || null; setIsolate(true); if (mode !== '3d') setMode('3d'); }}><Target className="size-3.5" /></Button>
+            </span>
           </div>
-          {open && <div className="asm-children">{g.rows.map(renderRow)}</div>}
+          {open && <div className="ml-[15px] border-l border-dashed">{g.rows.map(renderRow)}</div>}
         </div>
       );
     });
@@ -574,28 +614,30 @@ function App() {
     }
   };
 
-  if (!auth) return <div className="boot"><div className="brand-mark">F</div><span className="spinner" />Opening Forge…{error && <p>{error}</p>}</div>;
+  if (!auth) return <div className="flex min-h-screen items-center justify-center gap-4 text-base text-muted-foreground"><LogoMark size={32} /><LoaderCircle className="size-4 animate-spin text-primary" />Opening Forge…{error && <p className="text-destructive">{error}</p>}</div>;
 
   if (!auth.user && !vendor) {
     const providers = auth.providers || { local: true, entra: false, domains: [] };
     const signinError = new URLSearchParams(location.search).get('signin_error');
     const reasons: Record<string, string> = { DomainNotAllowed: `Only ${(providers.domains || []).join(', ')} accounts can use Forge.`, GuestsNotAllowed: 'Guest accounts cannot use Forge.', WrongTenant: 'That account belongs to another organisation.', AccessDisabled: 'Your Forge access is disabled. Ask an administrator.', AccountConflict: 'This e-mail is linked to a different Microsoft account.', SessionExpired: 'The sign-in took too long. Try again.', StateMismatch: 'The sign-in could not be verified. Try again.', TokenInvalid: 'Microsoft sign-in could not be verified. Try again.', EntraError: 'Microsoft sign-in was cancelled or failed.', NoEmail: 'Your Microsoft account has no e-mail address.' };
     return (
-      <div className="v-signin">
-        <div className="v-signin-card">
-          <div className="v-brand big"><LogoMark size={36} /><span><b>Forge</b><small>GOAT Robotics · CAD to shop floor</small></span></div>
-          <h1>{auth.configured || providers.entra ? 'Sign in' : 'Set up your workspace'}</h1>
-          <p className="muted">Drawings, design reviews, job orders and quality records — one revision-controlled workspace.</p>
-          {signinError && <p className="error-text">{reasons[signinError] || 'Sign-in failed.'}</p>}
+      <div className="grid min-h-screen place-items-center bg-background bg-[radial-gradient(1200px_500px_at_50%_-10%,var(--color-selection),transparent)] p-5">
+        <div className="flex w-full max-w-[380px] flex-col gap-3 rounded-xl border bg-card p-7 shadow-pop">
+          <div className="flex items-center gap-2.5"><LogoMark size={36} /><span className="grid"><span className="text-lg font-semibold leading-tight">Forge</span><span className="text-xs text-faint">GOAT Robotics · CAD to shop floor</span></span></div>
+          <h1 className="mt-3 text-xl font-semibold">{auth.configured || providers.entra ? 'Sign in' : 'Set up your workspace'}</h1>
+          <p className="text-sm text-muted-foreground">Drawings, design reviews, job orders and quality records — one revision-controlled workspace.</p>
+          {signinError && <p className="text-sm text-destructive">{reasons[signinError] || 'Sign-in failed.'}</p>}
           {providers.entra && (
-            <a className="button primary full ms" href={'/api/auth/entra/login?next=' + encodeURIComponent(location.pathname === '/' ? '/dashboard' : location.pathname + location.search)}>
-              <svg width="16" height="16" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022" /><rect x="11" y="1" width="9" height="9" fill="#7fba00" /><rect x="1" y="11" width="9" height="9" fill="#00a4ef" /><rect x="11" y="11" width="9" height="9" fill="#ffb900" /></svg>
-              Sign in with Microsoft
-            </a>
+            <Button asChild className="h-9 w-full gap-2.5">
+              <a href={'/api/auth/entra/login?next=' + encodeURIComponent(location.pathname === '/' ? '/dashboard' : location.pathname + location.search)}>
+                <svg width="16" height="16" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022" /><rect x="11" y="1" width="9" height="9" fill="#7fba00" /><rect x="1" y="11" width="9" height="9" fill="#00a4ef" /><rect x="11" y="11" width="9" height="9" fill="#ffb900" /></svg>
+                Sign in with Microsoft
+              </a>
+            </Button>
           )}
-          {providers.entra && <small className="center">{(providers.domains || []).join(', ')} accounts only</small>}
+          {providers.entra && <small className="text-center text-xs text-muted-foreground">{(providers.domains || []).join(', ')} accounts only</small>}
           {providers.local && (
-            <form onSubmit={e => {
+            <form className="grid gap-3" onSubmit={e => {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               action(async () => {
@@ -606,12 +648,12 @@ function App() {
                 await afterSignIn();
               });
             }}>
-              {providers.entra && <div className="v-or"><span>or local account</span></div>}
-              {!auth.configured && <label>Your name<input name="name" required autoComplete="name" /></label>}
-              <label>E-mail<input type="email" name="email" required autoComplete="username" /></label>
-              <label>Password<input name="password" type="password" required minLength={auth.configured ? 1 : 12} autoComplete={auth.configured ? 'current-password' : 'new-password'} /></label>
-              {error && <p className="error-text">{error}</p>}
-              <button className={providers.entra ? 'full' : 'primary full'} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <ArrowUpRight size={16} />} {auth.configured ? 'Sign in' : 'Create workspace'}</button>
+              {providers.entra && <div className="my-1.5 flex items-center gap-2 text-2xs text-faint before:flex-1 before:border-t before:content-[''] after:flex-1 after:border-t after:content-['']"><span>or local account</span></div>}
+              {!auth.configured && <Label className={field}>Your name<Input name="name" required autoComplete="name" /></Label>}
+              <Label className={field}>E-mail<Input type="email" name="email" required autoComplete="username" /></Label>
+              <Label className={field}>Password<Input name="password" type="password" required minLength={auth.configured ? 1 : 12} autoComplete={auth.configured ? 'current-password' : 'new-password'} /></Label>
+              {error && <p className="text-sm text-destructive">{error}</p>}
+              <Button variant={providers.entra ? 'outline' : 'default'} className="w-full" disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : <ArrowUpRight />} {auth.configured ? 'Sign in' : 'Create workspace'}</Button>
             </form>
           )}
         </div>
@@ -622,51 +664,60 @@ function App() {
   const goHome = () => { if (vendor) return; setProject(null); setRev(null); go('projects'); };
   // ---- CAD workspace chrome: heads-up info and the floating tool palette ------------------------
   const inspectorContent = !!(jointDraft || multi.length > 1 || part || overview);
+  const hudCard = 'glass pointer-events-auto inline-flex max-w-full items-center gap-2.5 rounded-xl py-1.5 pr-2 pl-3';
+  const hudText = 'flex min-w-0 flex-col';
+  const hudTitle = 'max-w-[360px] truncate text-sm font-semibold text-foreground';
+  const hudSub = 'truncate text-2xs text-muted-foreground';
+  const hudActions = 'ml-0.5 flex flex-none items-center gap-1 border-l pl-2';
   const canvasHud = !rev ? null : jointDraft ? (
-    <div className="hud-card"><Flame size={15} className="weld-title-icon" /><span><b>{jointDraft.id ? 'Edit weld' : 'Weld setup'}</b><small>{(jointDraft.parts || []).length} component{(jointDraft.parts || []).length === 1 ? '' : 's'} · {(jointDraft.faces || []).filter((f: Any) => f.selection === 'edge').length} seam(s)</small></span></div>
+    <div className={cn(hudCard, 'pr-3')}><Flame className="size-4 flex-none text-orange-600" /><span className={hudText}><span className={hudTitle}>{jointDraft.id ? 'Edit weld' : 'Weld setup'}</span><span className={hudSub}>{(jointDraft.parts || []).length} component{(jointDraft.parts || []).length === 1 ? '' : 's'} · {(jointDraft.faces || []).filter((f: Any) => f.selection === 'edge').length} seam(s)</span></span></div>
   ) : multi.length > 1 ? (
-    <div className="hud-card"><Layers size={15} /><span><b>{multi.length} parts selected</b><small>Shift-click a range · Ctrl/Cmd-click to toggle</small></span>
-      <span className="hud-actions">
-        <button type="button" className={isolate ? 'selected' : ''} title={`Show only the selected parts (${binding('part.isolate') || 'no key'})`} onClick={() => { setIsolate(!isolate); setMode('3d'); }}><Target size={14} />Isolate</button>
-        <button type="button" className={multi.every(x => transparentIds.includes(x)) ? 'selected' : ''} title={`See through the selected parts (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => multi.every(x => t.includes(x)) ? t.filter(x => !multi.includes(x)) : [...new Set([...t, ...multi])])}><Droplet size={14} />Transparent</button>
-        {!vendor && editable && <button type="button" title="Add the selected parts as the next assembly step" onClick={() => addToSteps([...multi])}><ListPlus size={14} />Add step</button>}
-        {!vendor && (project?.permissions || []).includes('joborder.create') && <button type="button" title="New job order for just these parts (from the production-ready revision)" onClick={() => setJoSelection(parts.filter((p: Any) => multi.includes(p.id)).map((p: Any) => ({ id: p.id, name: p.name })))}><ClipboardList size={14} />Job order</button>}
-        <button type="button" className="icon" title="Clear selection" onClick={() => choosePart(null)}><X size={14} /></button>
+    <div className={hudCard}><Layers className="size-4 flex-none text-muted-foreground" /><span className={hudText}><span className={hudTitle}>{multi.length} parts selected</span><span className={hudSub}>Shift-click a range · Ctrl/Cmd-click to toggle</span></span>
+      <span className={hudActions}>
+        <Button type="button" variant="ghost" size="sm" className={cn(isolate && onTone)} title={`Show only the selected parts (${binding('part.isolate') || 'no key'})`} onClick={() => { setIsolate(!isolate); setMode('3d'); }}><Target /><span>Isolate</span></Button>
+        <Button type="button" variant="ghost" size="sm" className={cn(multi.every(x => transparentIds.includes(x)) && onTone)} title={`See through the selected parts (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => multi.every(x => t.includes(x)) ? t.filter(x => !multi.includes(x)) : [...new Set([...t, ...multi])])}><Droplet /><span>Transparent</span></Button>
+        {!vendor && editable && <Button type="button" variant="ghost" size="sm" title="Add the selected parts as the next assembly step" onClick={() => addToSteps([...multi])}><ListPlus /><span>Add step</span></Button>}
+        {!vendor && (project?.permissions || []).includes('joborder.create') && <Button type="button" variant="ghost" size="sm" title="New job order for just these parts (from the production-ready revision)" onClick={() => setJoSelection(parts.filter((p: Any) => multi.includes(p.id)).map((p: Any) => ({ id: p.id, name: p.name })))}><ClipboardList /><span>Job order</span></Button>}
+        <Button type="button" variant="ghost" size="icon-sm" title="Clear selection" aria-label="Clear selection" onClick={() => choosePart(null)}><X /></Button>
       </span></div>
   ) : part ? (
-    <div className="hud-card">
+    <div className={hudCard}>
       <Swatch hex={part.spec.coating_hex || categoryColors[part.category]} title={part.spec.coating_color || categories[part.category]} size={12} />
-      <span><b title={part.name}>{part.name}</b><small>{categories[part.category]} · Qty {part.quantity}{part.spec.material ? ` · ${part.spec.material}` : ''}</small></span>
-      <span className="hud-actions">
-        <button type="button" className={isolate ? 'selected' : ''} title="Isolate (or double-click the part)" onClick={() => { const on = !isolate; setIsolate(on); setSolo(on && part.quantity > 1 ? (lastOccurrence.current ?? 0) : null); setMode('3d'); }}><Target size={14} />Isolate</button>
-        {isolate && part.quantity > 1 && mode === '3d' && <span className="solo-step" title="This part is used more than once. Inspect one instance at a time; the view orbits around it.">
-          <button type="button" className="icon" aria-label="Previous instance" onClick={() => setSolo(v => ((v ?? 0) - 1 + part.quantity) % part.quantity)}><ChevronLeft size={14} /></button>
-          <button type="button" className={'solo-label' + (solo === null ? ' all' : '')} onClick={() => setSolo(v => v === null ? (lastOccurrence.current ?? 0) : null)}>{solo === null ? `All ${part.quantity}` : `${solo + 1} of ${part.quantity}`}</button>
-          <button type="button" className="icon" aria-label="Next instance" onClick={() => setSolo(v => ((v ?? -1) + 1) % part.quantity)}><ChevronRight size={14} /></button>
+      <span className={hudText}><span className={hudTitle} title={part.name}>{part.name}</span><span className={hudSub}>{categories[part.category]} · Qty {part.quantity}{part.spec.material ? ` · ${part.spec.material}` : ''}</span></span>
+      <span className={hudActions}>
+        <Button type="button" variant="ghost" size="sm" className={cn(isolate && onTone)} title="Isolate (or double-click the part)" onClick={() => { const on = !isolate; setIsolate(on); setSolo(on && part.quantity > 1 ? (lastOccurrence.current ?? 0) : null); setMode('3d'); }}><Target /><span>Isolate</span></Button>
+        {isolate && part.quantity > 1 && mode === '3d' && <span className="inline-flex h-7 items-center overflow-hidden rounded-md border" title="This part is used more than once. Inspect one instance at a time; the view orbits around it.">
+          <Button type="button" variant="ghost" size="icon-xs" className="h-[26px] w-6 rounded-none" aria-label="Previous instance" onClick={() => setSolo(v => ((v ?? 0) - 1 + part.quantity) % part.quantity)}><ChevronLeft /></Button>
+          <Button type="button" variant="ghost" size="xs" className={cn('h-[26px] min-w-[52px] rounded-none px-1.5 text-xs font-medium tabular-nums', solo === null && 'text-muted-foreground')} onClick={() => setSolo(v => v === null ? (lastOccurrence.current ?? 0) : null)}>{solo === null ? `All ${part.quantity}` : `${solo + 1} of ${part.quantity}`}</Button>
+          <Button type="button" variant="ghost" size="icon-xs" className="h-[26px] w-6 rounded-none" aria-label="Next instance" onClick={() => setSolo(v => ((v ?? -1) + 1) % part.quantity)}><ChevronRight /></Button>
         </span>}
         {part.category === 'sheet_metal' && <>
-          <button type="button" className={mode === 'flat2d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern (2D)'} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 size={14} />Flat</button>
-          <button type="button" className={mode === 'flat3d' ? 'selected' : ''} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern in 3D'} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan size={14} />Flat 3D</button>
+          <Button type="button" variant="ghost" size="sm" className={cn(mode === 'flat2d' && onTone)} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern (2D)'} onClick={() => setMode(mode === 'flat2d' ? '3d' : 'flat2d')}><Grid2x2 /><span>Flat</span></Button>
+          <Button type="button" variant="ghost" size="sm" className={cn(mode === 'flat3d' && onTone)} disabled={part.geometry.flat_status !== 'supported'} title={part.geometry.flat_message || 'Flat pattern in 3D'} onClick={() => setMode(mode === 'flat3d' ? '3d' : 'flat3d')}><Scan /><span>Flat 3D</span></Button>
         </>}
-        {!vendor && editable && <button type="button" title="Add this part as the next assembly step" onClick={() => addToSteps([part.id])}><ListPlus size={14} />Add step</button>}
-        <button type="button" className={'icon' + (transparentIds.includes(part.id) ? ' selected' : '')} title={`See through this part (${binding('part.transparent') || 'no key'})`} onClick={() => setTransparentIds(t => t.includes(part.id) ? t.filter(x => x !== part.id) : [...t, part.id])}><Droplet size={14} /></button>
-        <button type="button" className="icon" title="Clear selection (Esc)" onClick={() => choosePart(null)}><X size={14} /></button>
+        {!vendor && editable && <Button type="button" variant="ghost" size="sm" title="Add this part as the next assembly step" onClick={() => addToSteps([part.id])}><ListPlus /><span>Add step</span></Button>}
+        <Button type="button" variant="ghost" size="icon-sm" className={cn(transparentIds.includes(part.id) && onTone)} title={`See through this part (${binding('part.transparent') || 'no key'})`} aria-label="See through this part" onClick={() => setTransparentIds(t => t.includes(part.id) ? t.filter(x => x !== part.id) : [...t, part.id])}><Droplet /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" title="Clear selection (Esc)" aria-label="Clear selection" onClick={() => choosePart(null)}><X /></Button>
       </span>
     </div>
   ) : (
-    <div className="hud-card quiet"><Box size={15} /><span><b>{project?.name || rev.filename}</b><small>{parts.length} parts · {rev.manifest?.occurrences || 0} instances{blocking ? ` · ${blocking} release blockers` : ''}</small></span></div>
+    null
   );
   const canvasToolsStart = !rev ? null : <>
-    {!vendor && editable && <button type="button" className={jointDraft ? 'selected' : ''} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame size={16} /><span>Weld</span></button>}
-    {part && part.geometry.holes.length > 0 && part.category !== 'purchased' && multi.length < 2 && <button type="button" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot size={16} /><span>Holes</span></button>}
-    {part && multi.length < 2 && showBend(part) && <button type="button" title={part.bend_sim ? 'Forming simulation (press brake and rolling)' : 'Forming simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical size={16} /><span>Bending</span></button>}
+    {!vendor && editable && <Button type="button" variant="ghost" size="sm" className={cn(jointDraft && onTone)} disabled={!!jointDraft} title={multi.length > 1 ? 'Weld the selected parts' : part ? 'Weld this part (to itself or to parts you click)' : 'Start a weld: click two faces'} onClick={() => startWeld(multi.length > 1 ? [...multi] : part ? [part.id] : [])}><Flame /><span>Weld</span></Button>}
+    {part && part.geometry.holes.length > 0 && part.category !== 'purchased' && multi.length < 2 && <Button type="button" variant="ghost" size="sm" title="Hole hardware: inserts, studs, standoffs, taps, countersinks" onClick={() => setHoleCfg(part.id)}><CircleDot /><span>Holes</span></Button>}
+    {part && multi.length < 2 && showBend(part) && <Button type="button" variant="ghost" size="sm" title={part.bend_sim ? 'Forming simulation (press brake and rolling)' : 'Forming simulation (preview — not shared with vendors)'} onClick={() => setBendSim(part.id)}><FoldVertical /><span>Bending</span></Button>}
   </>;
-  const canvasToolsEnd = !rev ? null : <>
-    <button type="button" className={overview && !part && multi.length < 2 && !jointDraft ? 'selected' : ''} title="Revision overview: drawing sets, readiness, part types" onClick={() => { setOverview(o => !o); if (part || multi.length > 1) choosePart(null); setLayout({ right: true, focus: false }); }}><PanelRight size={16} /><span>Overview</span></button>
-    <button type="button" className="icon-only" title={layout.left && !layout.focus ? 'Hide model tree' : 'Show model tree'} onClick={() => setLayout({ left: !(layout.left && !layout.focus), focus: false })}>{layout.left && !layout.focus ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button>
-    <button type="button" className={'icon-only' + (layout.focus ? ' selected' : '')} title={layout.focus ? 'Exit full canvas (Esc)' : `Full canvas (${binding('layout.focus')})`} onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
-    <button type="button" className="icon-only" title={`Shortcuts & navigation (${binding('help.shortcuts')})`} onClick={() => setShortcutsOpen(true)}><Keyboard size={16} /></button>
-    {transparentIds.length > 0 && <button type="button" title={`${transparentIds.length} transparent part(s) — make all opaque`} onClick={() => setTransparentIds([])}><Droplet size={16} /><span>{transparentIds.length}</span></button>}
+  const canvasToolsEnd = !rev || !transparentIds.length ? null : <>
+    <Button type="button" variant="ghost" size="sm" title={`${transparentIds.length} transparent part(s) — make all opaque`} onClick={() => setTransparentIds([])}><Droplet /><span>{transparentIds.length}</span></Button>
+  </>;
+  const rightOpen = layout.right && !layout.focus && inspectorContent;
+  const leftOpen = layout.left && !layout.focus;
+  const cornerBtn = (on: boolean) => cn('text-muted-foreground', on && 'text-foreground');
+  const canvasCorner = !rev ? null : <>
+    <Button type="button" variant="ghost" size="icon-sm" className={cornerBtn(leftOpen)} title={leftOpen ? 'Hide the part navigator' : 'Show the part navigator'} aria-label="Part navigator" onClick={() => setLayout({ left: !leftOpen, focus: false })}>{leftOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</Button>
+    <Button type="button" variant="ghost" size="icon-sm" className={cornerBtn(!!rightOpen)} title={rightOpen ? 'Hide the side panel' : 'Show the side panel (revision overview when nothing is selected)'} aria-label="Side panel" onClick={() => { if (rightOpen) { setLayout({ right: false }); return; } if (!part && multi.length < 2 && !jointDraft) setOverview(true); setLayout({ right: true, focus: false }); }}>{rightOpen ? <PanelRightClose /> : <PanelRightOpen />}</Button>
+    <Button type="button" variant="ghost" size="icon-sm" className={cornerBtn(layout.focus)} title={layout.focus ? 'Exit full canvas (Esc)' : `Full canvas (${binding('layout.focus')})`} aria-label="Full canvas" onClick={() => setLayout({ focus: !layout.focus })}>{layout.focus ? <Minimize2 /> : <Maximize2 />}</Button>
   </>;
   const workspaceTab = (page === 'project' || !!vendor) && tab === 'parts' && !!rev && rev.status !== 'processing';
   if (rev && tab === 'parts' && rev.status !== 'processing') modelSeen.current = rev.id;
@@ -674,15 +725,30 @@ function App() {
   const activeJobs = projects.reduce((n: number, p: Any) => n + (p.open_job_orders || 0), 0);
   const signOut = () => action(async () => { await api('/auth/logout', 'POST'); setAuth(await api('/auth/status')); });
 
+  const canvasFocus = layout.focus && tab === 'parts' && page === 'project';
+  const docTab = 'relative h-full gap-1.5 rounded-none px-3 text-sm font-medium text-muted-foreground after:absolute after:inset-x-1.5 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary after:opacity-0 hover:bg-transparent hover:text-foreground dark:hover:bg-transparent group-[.t1:not(.t2)]/doc:px-2.5 group-[.t2:not(.t4)]/doc:px-2 group-[.t4]/doc:px-1.5 group-[.t4]/doc:text-xs';
+  const statusTone: Record<string, string> = { warning: 'bg-warning-soft text-warning hover:bg-warning-soft hover:text-warning', success: 'bg-success-soft text-success hover:bg-success-soft hover:text-success', danger: 'bg-danger-soft text-destructive hover:bg-danger-soft hover:text-destructive', neutral: 'bg-muted text-muted-foreground hover:bg-muted hover:text-muted-foreground' };
+  const statusPill = 'doc-status inline-flex h-6 min-w-0 shrink items-center gap-1.5 overflow-hidden rounded-full px-2.5 text-2xs font-medium whitespace-nowrap group-[.t3]/doc:gap-0 group-[.t3]/doc:px-2';
+  const statusDot = 'size-1.5 shrink-0 rounded-full bg-current group-[.t3]/doc:size-2';
+  const banner = 'flex shrink-0 items-center gap-2.5 border-b px-6 py-2.5 text-sm [&>svg]:shrink-0';
+  const notice = 'mb-4 flex items-center gap-2.5 rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning [&>svg]:shrink-0';
+  const pill = 'fixed bottom-[84px] left-1/2 z-[150] flex max-w-[min(560px,90vw)] -translate-x-1/2 items-center gap-2.5 rounded-full border bg-card/90 py-2 pr-2.5 pl-3.5 text-xs text-foreground shadow-pop backdrop-blur-md';
+  const emptyPage = 'flex min-h-[450px] flex-col items-center justify-center gap-3.5 px-6 py-16 text-center text-muted-foreground [&>p]:max-w-[420px]';
+  const cols = leftOpen && rightOpen ? 'grid-cols-[280px_minmax(360px,1fr)_344px] min-[1700px]:grid-cols-[304px_minmax(400px,1fr)_368px]'
+    : leftOpen ? 'grid-cols-[280px_minmax(360px,1fr)_0] min-[1700px]:grid-cols-[304px_minmax(400px,1fr)_0]'
+    : rightOpen ? 'grid-cols-[0_minmax(360px,1fr)_344px] min-[1700px]:grid-cols-[0_minmax(400px,1fr)_368px]'
+    : 'grid-cols-[0_1fr_0]';
+
   return (
-    <div className={'app' + (vendor ? ' vendor' : '')}>
+    <TooltipProvider delayDuration={300}>
+    <div className="flex h-screen overflow-hidden bg-background">
       {!vendor && <Sidebar page={page} go={go} user={auth.user} perms={perms} badges={{ joborders: activeJobs }} onSignOut={signOut} />}
 
-      <main className={(workspaceTab ? 'fixed' : '') + (layout.focus && tab === 'parts' && page === 'project' ? ' canvas-focus' : '')}>
+      <main className={cn('flex h-screen min-w-0 flex-1 flex-col', workspaceTab ? 'overflow-hidden' : 'overflow-y-auto')}>
         {vendor && (
-          <header className="v-header">
-            <div className="v-crumbs"><LogoMark size={22} /><b>Forge</b><ChevronRight size={14} /><span>Vendor workspace · read only</span>{rev && <><ChevronRight size={14} /><span className="crumb-rev">Rev {rev.number} · {rev.filename}</span></>}</div>
-            <div className="v-header-right">{rev && <button type="button" className="mini" onClick={copyLink}><Link size={13} />Copy link</button>}</div>
+          <header className="flex h-12 shrink-0 items-center gap-3 border-b bg-card px-4">
+            <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><LogoMark size={22} /><span className="font-medium text-foreground">Forge</span><ChevronRight className="size-3.5 shrink-0" /><span className="whitespace-nowrap">Vendor workspace · read only</span>{rev && <><ChevronRight className="size-3.5 shrink-0 max-[1200px]:hidden" /><span className="max-w-[360px] truncate max-[1200px]:hidden">Rev {rev.number} · {rev.filename}</span></>}</div>
+            <div className="ml-auto flex items-center gap-2">{rev && <Button type="button" variant="outline" size="xs" onClick={copyLink}><Link />Copy link</Button>}</div>
           </header>
         )}
         {!vendor && page === 'dashboard' ? <Dashboard ctx={ctx} openJobOrder={openJobOrder} openProject={openProjectId} />
@@ -692,40 +758,38 @@ function App() {
         : !vendor && page === 'pricing' ? <PricingPage ctx={ctx} />
         : !vendor && page === 'admin' ? <AdminPage ctx={ctx} me={auth.user} />
         : !vendor && (page === 'projects' || !project) ? (
-          <div className="v-page">
+          <div className={pageWrap}>
             <PageHeader title="Projects" description="From the first CAD upload to the final quality check." actions={<>
-              {perms.has('users.manage') && <button onClick={() => { setModal('settings'); api('/settings').then(setSettings).catch(fail); }}><Settings size={15} />Workspace defaults</button>}
-              {perms.has('project.create') && <button className="primary" onClick={() => setModal('project')}><Plus size={15} />New project</button>}
+              {perms.has('users.manage') && <Button variant="outline" onClick={() => { setModal('settings'); api('/settings').then(setSettings).catch(fail); }}><Settings />Workspace defaults</Button>}
+              {perms.has('project.create') && <Button onClick={() => setModal('project')}><Plus />New project</Button>}
             </>} />
-            <div className="v-body">
+            <div className="flex flex-col gap-4">
               {!projectsLoaded ? (
-                <div className="empty-page loading-page"><LoaderCircle size={30} className="spin" /><p>Loading projects…</p></div>
+                <div className={emptyPage}><LoaderCircle className="size-7 animate-spin" /><p>Loading projects…</p></div>
               ) : projects.length ? (
-                <div className="v-card flush">
-                  <table className="v-table">
-                    <thead><tr><th>Project</th><th>Active revision</th><th>Status</th><th>Job orders</th><th>Created</th></tr></thead>
-                    <tbody>{projects.map(p => (
-                      <tr key={p.id} className="click" onClick={() => action(() => openProject(p))}>
-                        <td><span className="flex"><span className="project-icon sm"><Box size={16} /></span><span><b>{p.code ? p.code + ' · ' : ''}{p.name}</b><small>{p.description || 'CAD, drawings and manufacturing records'}</small></span></span></td>
-                        <td>{p.active_revision ? 'Rev ' + p.active_revision : '—'}<small>{p.revision_count} revisions</small></td>
-                        <td>{p.active_status ? <Badge kind={p.active_status === 'released' ? 'success' : p.active_status === 'failed' ? 'danger' : 'warning'}>{p.active_status === 'released' ? 'Production ready' : p.active_status === 'ready' ? 'In design review' : p.active_status.replace('_', ' ')}</Badge> : <Badge kind="neutral">No CAD</Badge>}</td>
-                        <td className="tabular">{p.open_job_orders || 0} open</td>
-                        <td>{date(p.created)}<small>{p.created_by}</small></td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
+                <div className="overflow-hidden rounded-lg border bg-card">
+                  <Table>
+                    <TableHeader className="bg-subtle"><TableRow><TableHead>Project</TableHead><TableHead>Active revision</TableHead><TableHead>Status</TableHead><TableHead>Job orders</TableHead><TableHead>Created</TableHead></TableRow></TableHeader>
+                    <TableBody>{projects.map(p => (
+                      <TableRow key={p.id} className="cursor-pointer" onClick={() => action(() => openProject(p))}>
+                        <TableCell><span className="flex items-center gap-2.5"><span className="grid size-[30px] shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"><Box className="size-4" /></span><span className="min-w-0"><span className="block font-medium">{p.code ? p.code + ' · ' : ''}{p.name}</span><span className="block text-2xs text-faint">{p.description || 'CAD, drawings and manufacturing records'}</span></span></span></TableCell>
+                        <TableCell>{p.active_revision ? 'Rev ' + p.active_revision : '—'}<span className="block text-2xs text-faint">{p.revision_count} revisions</span></TableCell>
+                        <TableCell>{p.active_status ? <Badge kind={p.active_status === 'released' ? 'success' : p.active_status === 'failed' ? 'danger' : 'warning'}>{p.active_status === 'released' ? 'Production ready' : p.active_status === 'ready' ? 'In design review' : p.active_status.replace('_', ' ')}</Badge> : <Badge kind="neutral">No CAD</Badge>}</TableCell>
+                        <TableCell className="tabular-nums">{p.open_job_orders || 0} open</TableCell>
+                        <TableCell>{date(p.created)}<span className="block text-2xs text-faint">{p.created_by}</span></TableCell>
+                      </TableRow>
+                    ))}</TableBody>
+                  </Table>
                 </div>
               ) : (
-                <div className="v-empty">
-                  <Upload />
-                  <h3>Start with your CAD</h3>
-                  <p>Create a project, set its naming, title block and templates, then upload a STEP assembly.</p>
-                  {perms.has('project.create') && <button className="primary" onClick={() => setModal('project')}><Plus size={15} />New project</button>}
-                </div>
+                <Empty icon={<Upload />} title="Start with your CAD">
+                  <p className="max-w-md text-xs">Create a project, set its naming, title block and templates, then upload a STEP assembly.</p>
+                  {perms.has('project.create') && <Button className="mt-2" onClick={() => setModal('project')}><Plus />New project</Button>}
+                </Empty>
               )}
-              <div className="workflow-strip">
+              <div className="mt-12 grid grid-cols-4 gap-6 border-t pt-6 max-[900px]:grid-cols-2 max-[900px]:gap-4">
                 {[['01', 'Upload & analyze', 'STEP in; parts, features, materials and bends out.'], ['02', 'Check & review', 'Design checks and drawing review, part by part.'], ['03', 'Production ready', 'Release locks the documents for the shop floor.'], ['04', 'Job orders', 'Process checklists with counts and timestamps.']].map(([n, t, sub]) => (
-                  <div key={n}><span>{n}</span><h3>{t}</h3><p>{sub}</p></div>
+                  <div key={n}><span className="text-xs font-medium text-primary tabular-nums">{n}</span><h3 className="mt-2 text-base font-semibold">{t}</h3><p className="mt-1 text-sm text-muted-foreground">{sub}</p></div>
                 ))}
               </div>
             </div>
@@ -733,99 +797,122 @@ function App() {
         ) : null}
         {(vendor || project) && (
           // The open project stays mounted while other pages are shown, so coming back is instant (no model reload).
-          <div className={'project-host' + (vendor || (page === 'project' && project) ? '' : ' kept-hidden')}>
-            <header className="doc-bar" ref={docBar}>
-              <div className="doc-id">
-                {!vendor && <><button type="button" className="doc-crumb" onClick={goHome}>Projects</button><ChevronRight size={13} className="doc-sep" /></>}
-                <span className="doc-name" title={project?.name || rev?.filename}>{project?.code && <em>{project.code}</em>}{project?.name || rev?.filename || 'Shared design'}</span>
-                {rev && <div className="revision-picker doc-rev">
-                  <button type="button" onClick={() => setRevisionOpen(!revisionOpen)} title="Switch revision"><GitBranch size={13} />Rev {rev.number}{!vendor && <ChevronDown size={13} />}</button>
-                  {revisionOpen && !vendor && (
-                    <div className="dropdown">
-                      {project?.revisions.map((r: Any) => <button key={r.id} onClick={() => { setRevisionOpen(false); choosePart(null); loadRevision(r.id).catch(fail); }}>Rev {r.number}<Badge>{r.state}</Badge></button>)}
-                      {project?.revisions.length > 1 && <button onClick={() => action(async () => { const other = project.revisions.find((r: Any) => r.id !== rev.id); setComparison(await api(`/revisions/${rev.id}/compare/${other.id}`)); setModal('compare'); setRevisionOpen(false); })}>Compare with previous</button>}
-                    </div>
-                  )}
-                </div>}
+          <div className={vendor || (page === 'project' && project) ? 'contents' : 'hidden'}>
+            <header className={cn('group/doc sticky top-0 z-20 flex h-12 flex-none items-center gap-4 border-b bg-card pr-3.5 pl-4 [&.t1]:gap-3', canvasFocus && 'hidden')} ref={docBar}>
+              <div className="flex min-w-[180px] shrink items-center gap-2">
+                {!vendor && <><Button type="button" variant="link" className="h-auto p-0 font-normal text-muted-foreground hover:text-primary hover:no-underline group-[.t2]/doc:hidden" onClick={goHome}>Projects</Button><ChevronRight className="size-3.5 flex-none text-faint group-[.t2]/doc:hidden" /></>}
+                <span className="flex min-w-0 max-w-[300px] shrink items-center gap-2 text-base font-semibold text-foreground group-[.t3:not(.t4)]/doc:max-w-40 group-[.t4]/doc:max-w-[110px]" title={project?.name || rev?.filename}>{project?.code && <span className="flex-none rounded border bg-muted px-1.5 py-px font-mono text-2xs font-medium tracking-wide text-muted-foreground">{project.code}</span>}<span className="truncate">{project?.name || rev?.filename || 'Shared design'}</span></span>
+                {rev && <DropdownMenu open={revisionOpen && !vendor} onOpenChange={setRevisionOpen}>
+                  <DropdownMenuTrigger asChild>
+                    <Button type="button" variant="outline" size="xs" className="h-7 flex-none gap-1 bg-subtle px-2 text-xs shadow-none" title="Switch revision"><GitBranch className="size-3.5" />Rev {rev.number}{!vendor && <ChevronDown className="size-3.5" />}</Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="min-w-[200px]">
+                    {project?.revisions.map((r: Any) => <DropdownMenuItem key={r.id} className="justify-between" onClick={() => { setRevisionOpen(false); choosePart(null); loadRevision(r.id).catch(fail); }}>Rev {r.number}<Badge>{r.state}</Badge></DropdownMenuItem>)}
+                    {project?.revisions.length > 1 && <DropdownMenuItem onClick={() => action(async () => { const other = project.revisions.find((r: Any) => r.id !== rev.id); setComparison(await api(`/revisions/${rev.id}/compare/${other.id}`)); setModal('compare'); setRevisionOpen(false); })}>Compare with previous</DropdownMenuItem>}
+                  </DropdownMenuContent>
+                </DropdownMenu>}
                 {rev && (() => {
                   const allReady = rev.status === 'ready' && releaseParts.length > 0 && readyCount === releaseParts.length;
                   const label = rev.state === 'archived' ? 'Archived' : rev.status === 'released' ? 'Released' : rev.status === 'ready' ? (allReady ? 'Ready to release' : 'In design review') : rev.status.replace('_', ' ');
                   const tone = rev.state === 'archived' ? 'neutral' : rev.status === 'released' || allReady ? 'success' : rev.status === 'failed' ? 'danger' : 'warning';
                   const openRelease = () => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); });
-                  if (allReady && !vendor && rev.state === 'active') return <span className="doc-release">
-                    <span className="doc-status success" title={`All ${releaseParts.length} part${releaseParts.length === 1 ? '' : 's'} production ready — release the revision to start job orders.`}><i />Ready to release</span>
-                    <button type="button" className="primary" disabled={!!job || !can('revision.release')} title={can('revision.release') ? 'Final check, then release this revision for production' : 'You need the release permission'} onClick={openRelease}><ShieldCheck size={14} />Release revision</button>
+                  if (allReady && !vendor && rev.state === 'active') return <span className="inline-flex flex-none items-center gap-2">
+                    <span className={cn(statusPill, statusTone.success)} title={`All ${releaseParts.length} part${releaseParts.length === 1 ? '' : 's'} production ready — release the revision to start job orders.`}><i className={statusDot} /><span className="group-[.t3]/doc:hidden">Ready to release</span></span>
+                    <Button type="button" size="sm" className="rounded-full max-[1180px]:w-7 max-[1180px]:px-0" disabled={!!job || !can('revision.release')} title={can('revision.release') ? 'Final check, then release this revision for production' : 'You need the release permission'} onClick={openRelease}><ShieldCheck /><span className="max-[1180px]:hidden">Release revision</span></Button>
                   </span>;
-                  return <button type="button" className={'doc-status ' + tone} onClick={() => { choosePart(null); setOverview(true); setLayout({ right: true, focus: false }); }}
+                  return <Button type="button" variant="ghost" size="xs" className={cn(statusPill, statusTone[tone], 'hover:ring-1 hover:ring-current hover:ring-inset')} onClick={() => { choosePart(null); setOverview(true); setLayout({ right: true, focus: false }); }}
                     title={rev.status === 'released' ? 'This revision is released for production.' : `Revision status — ${readyCount} of ${releaseParts.length} parts production ready. The revision leaves design review when every part is ready and it is released from Overview.`}>
-                    <i />{label}{rev.status === 'ready' && !allReady && <small>{readyCount}/{releaseParts.length} ready</small>}</button>;
+                    <i className={statusDot} /><span className="group-[.t3]/doc:hidden">{label}</span>{rev.status === 'ready' && !allReady && <span className="font-normal tabular-nums opacity-80 group-[.t1]/doc:hidden">{readyCount}/{releaseParts.length} ready</span>}</Button>;
                 })()}
               </div>
-              {rev && <nav className="doc-tabs" aria-label="Revision views">
+              {rev && <nav className="doc-tabs flex flex-none items-stretch gap-0.5 self-stretch" aria-label="Revision views">
                 {[['parts', 'Model', Box], ['rules', 'Checks', ShieldCheck], ['assembly', 'Assembly', Layers], ...(vendor ? [['production', 'Drawings', Factory]] : [['joborders', 'Jobs', Factory]]), ['review', 'Review', MessageSquare], ['qc', 'Quality', ClipboardCheck], ...(!vendor ? [['audit', 'History', Clock]] : [])].map(([id, label, Icon]: Any) => (
-                  <button type="button" className={tab === id ? 'active' : ''} key={id} onClick={() => setTab(id)}><Icon size={15} />{label}{id === 'rules' && blocking > 0 && <b>{blocking}</b>}</button>
+                  <Button type="button" variant="ghost" className={cn(docTab, tab === id && 'text-foreground after:opacity-100')} key={id} onClick={() => setTab(id)}><Icon className="size-4 group-[.t1]/doc:hidden" />{label}{id === 'rules' && blocking > 0 && <Badge kind="danger" className="h-4 px-1.5 tabular-nums">{blocking}</Badge>}</Button>
                 ))}
               </nav>}
-              <div className="doc-actions">
-                {vendor && <span className="doc-note">Supplier review · read only</span>}
-                {!vendor && rev && <button type="button" className="icon" onClick={copyLink} title="Copy a link to this view"><Link size={15} /></button>}
-                {!vendor && project && (project.permissions || []).includes('project.settings') && <button type="button" className="icon" title="Project settings" onClick={() => setModal('project-settings')}><Settings size={15} /></button>}
-                {!vendor && (project?.permissions || []).includes('revision.upload') && <button type="button" className={importingRevision ? '' : 'icon'} title={importingRevision ? 'View import progress' : 'Upload a new revision'} onClick={() => importingRevision ? showImport() : setModal('upload')}>{importingRevision ? <><LoaderCircle size={15} className="spin" />{importingRevision.progress || 0}%</> : <Upload size={15} />}</button>}
-                {rev && can('cad.download') && <button type="button" className="icon" onClick={() => doc(`/revisions/${rev.id}/assets/manufacturing-pack.zip`, 'manufacturing-pack.zip')} disabled={!rev.assets?.includes('manufacturing-pack.zip')} title={rev.assets?.includes('manufacturing-pack.zip') ? 'Download the manufacturing pack' : 'Generate the manufacturing pack first (Overview)'}><Download size={15} /></button>}
-                {rev && !vendor && can('share.manage') && <button type="button" className="primary" disabled={!['ready', 'released'].includes(rev.status)} onClick={() => { setSharePath(''); setModal('share'); }}><Send size={14} />Share</button>}
+              <div className="ml-auto flex flex-none items-center gap-1.5 group-[.t4]/doc:gap-0.5">
+                {vendor && <span className="text-xs text-muted-foreground">Supplier review · read only</span>}
+                {!vendor && importingRevision && <Button type="button" variant="ghost" title="View import progress" onClick={showImport}><LoaderCircle className="animate-spin" />{importingRevision.progress || 0}%</Button>}
+                {!vendor && <DropdownMenu open={moreOpen} onOpenChange={setMoreOpen}>
+                  <Tip label="More">
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="ghost" size="icon" className="text-muted-foreground" aria-label="More" aria-expanded={moreOpen}><MoreHorizontal /></Button>
+                    </DropdownMenuTrigger>
+                  </Tip>
+                  <DropdownMenuContent align="end" className="min-w-[250px]" onClick={() => setMoreOpen(false)}>
+                    {rev && <DropdownMenuItem onClick={copyLink}><Link />Copy link to this view</DropdownMenuItem>}
+                    {(project?.permissions || []).includes('revision.upload') && !importingRevision && <DropdownMenuItem onClick={() => setModal('upload')}><Upload />Upload a new revision</DropdownMenuItem>}
+                    {rev && can('cad.download') && <DropdownMenuItem disabled={!rev.assets?.includes('manufacturing-pack.zip')} title={rev.assets?.includes('manufacturing-pack.zip') ? '' : 'Generate the manufacturing pack first (side panel, nothing selected)'} onClick={() => doc(`/revisions/${rev.id}/assets/manufacturing-pack.zip`, 'manufacturing-pack.zip')}><Download />Download manufacturing pack</DropdownMenuItem>}
+                    <DropdownMenuItem onClick={() => setShortcutsOpen(true)}><Keyboard />Shortcuts &amp; navigation</DropdownMenuItem>
+                    {project && (project.permissions || []).includes('project.settings') && <><DropdownMenuSeparator /><DropdownMenuItem onClick={() => setModal('project-settings')}><Settings />Project settings</DropdownMenuItem></>}
+                  </DropdownMenuContent>
+                </DropdownMenu>}
+                {vendor && rev && can('cad.download') && <Tip label="Download the manufacturing pack"><Button type="button" variant="ghost" size="icon" className="text-muted-foreground" aria-label="Download the manufacturing pack" onClick={() => doc(`/revisions/${rev.id}/assets/manufacturing-pack.zip`, 'manufacturing-pack.zip')} disabled={!rev.assets?.includes('manufacturing-pack.zip')}><Download /></Button></Tip>}
+                {rev && !vendor && can('share.manage') && <Button type="button" className="max-[1180px]:w-8 max-[1180px]:px-0 group-[.t3]/doc:w-8 group-[.t3]/doc:px-0" disabled={!['ready', 'released'].includes(rev.status)} onClick={() => { setSharePath(''); setModal('share'); }}><Send /><span className="max-[1180px]:hidden group-[.t3]/doc:hidden">Share</span></Button>}
               </div>
             </header>
 
-            {importingRevision && <div className="job-pill" role="status" aria-live="polite">
-              <LoaderCircle size={16} className="spin" />
-              <span>Revision {importingRevision.number} · {importingRevision.message || 'Import queued'}</span>
-              <progress aria-label="CAD import progress" max="100" value={importingRevision.progress || 0} />
-              <b>{importingRevision.progress || 0}%</b>
-              {rev?.id !== importingRevision.id && <button className="mini" onClick={showImport}>View import</button>}
+            {importingRevision && <div className={pill} role="status" aria-live="polite">
+              <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
+              <span className="min-w-0 truncate">Revision {importingRevision.number} · {importingRevision.message || 'Import queued'}</span>
+              <span className="w-[90px] shrink-0" role="progressbar" aria-label="CAD import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={importingRevision.progress || 0}><Progress value={importingRevision.progress || 0} /></span>
+              <span className="min-w-[30px] text-right text-2xs text-muted-foreground tabular-nums">{importingRevision.progress || 0}%</span>
+              {rev?.id !== importingRevision.id && <Button variant="outline" size="xs" className="rounded-full" onClick={showImport}>View import</Button>}
             </div>}
 
             {!rev && vendor ? (
-              <div className="empty-page"><LoaderCircle className="spin" /><p>Loading shared revision…</p></div>
+              <div className={emptyPage}><LoaderCircle className="animate-spin" /><p>Loading shared revision…</p></div>
             ) : !rev && (project?.revisions?.length || project?.active_revision || revLoading) ? (
-              <div className="empty-page loading-page"><LoaderCircle size={34} className="spin" /><h2>Opening {project?.name || 'project'}…</h2><p>Loading the latest revision, parts and drawings. Large assemblies take a few seconds.</p></div>
+              <div className={emptyPage}><LoaderCircle className="size-8 animate-spin" /><h2 className="text-xl font-semibold text-foreground">Opening {project?.name || 'project'}…</h2><p>Loading the latest revision, parts and drawings. Large assemblies take a few seconds.</p></div>
             ) : !rev ? (
-              <div className="empty-page"><Upload size={42} /><h2>Every part starts here.</h2><p>Upload STEP, IGES or BREP. Assemblies and multi-body parts stay connected.</p><button className="primary" onClick={() => setModal('upload')}>Upload CAD file</button></div>
+              <div className={emptyPage}><Upload className="size-10 text-faint" /><h2 className="text-xl font-semibold text-foreground">Every part starts here.</h2><p>Upload STEP, IGES or BREP. Assemblies and multi-body parts stay connected.</p><Button onClick={() => setModal('upload')}>Upload CAD file</Button></div>
             ) : (
               <>
-                {job && !importingRevision && <div className="job-pill" role="status" aria-live="polite"><LoaderCircle size={15} className="spin" /><span>{job.status === 'cancelling' ? 'Stopping…' : rev.message || 'Job queued'}</span><progress max="100" value={Math.min(rev.progress, 99)} /><b>{Math.min(rev.progress, 99)}%</b>
-                  {job.kind !== 'import' && can('drawing.edit') && job.status !== 'cancelling' && <button type="button" className="job-cancel" title="Stop this run — parts not reached yet keep their current drawings" onClick={async () => {
+                {job && !importingRevision && <div className={pill} role="status" aria-live="polite"><LoaderCircle className="size-4 shrink-0 animate-spin text-primary" /><span className="min-w-0 truncate">{job.status === 'cancelling' ? 'Stopping…' : rev.message || 'Job queued'}</span><span className="w-[90px] shrink-0" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(rev.progress, 99)}><Progress value={Math.min(rev.progress, 99)} /></span><span className="min-w-[30px] text-right text-2xs text-muted-foreground tabular-nums">{Math.min(rev.progress, 99)}%</span>
+                  {job.kind !== 'import' && can('drawing.edit') && job.status !== 'cancelling' && <Button type="button" variant="outline" size="xs" className="flex-none rounded-full border-destructive/30 text-destructive hover:bg-danger-soft hover:text-destructive" title="Stop this run — parts not reached yet keep their current drawings" onClick={async () => {
                     if ((await ask({ title: 'Stop drawing generation?', message: 'Parts already being drawn by this run are marked for regeneration; the others keep their current drawings.', confirm: 'Stop', danger: true })) === null) return;
                     try { await api(`/jobs/${job.id}/cancel`, 'POST'); await loadRevision(rev.id); } catch (e: unknown) { notify((e as Error).message); }
-                  }}><X size={13} />Stop</button>}</div>}
-                {!job && rev.jobs?.[0]?.status === 'cancelled' && dismissedJob !== rev.jobs[0].id && <div className="notice job-cancelled"><Info size={15} /><span>Generation stopped{rev.jobs[0].error ? ` (${rev.jobs[0].error.toLowerCase()})` : ''}. Parts it had started need Regenerate; the others kept their drawings.</span><button type="button" className="icon" aria-label="Dismiss" onClick={() => setDismissedJob(rev.jobs[0].id)}><X size={14} /></button></div>}
-                {!job && rev.jobs?.[0]?.status === 'failed' && rev.jobs[0].kind !== 'import' && <div className="error-banner">Document generation failed: {rev.jobs[0].error || 'Retry generation.'}</div>}
-                {rev.status === 'failed' && <div className="error-banner">Import failed: {rev.message}. The previous active revision is preserved.</div>}
-                {rev.state === 'archived' && <div className="notice"><Archive size={15} />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
+                  }}><X />Stop</Button>}</div>}
+                {!job && rev.jobs?.[0]?.status === 'cancelled' && dismissedJob !== rev.jobs[0].id && <div className="fixed bottom-[84px] left-1/2 z-[150] flex max-w-[min(620px,90vw)] -translate-x-1/2 items-center gap-2.5 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning shadow-pop [&>svg]:shrink-0"><Info className="size-4" /><span>Generation stopped{rev.jobs[0].error ? ` (${rev.jobs[0].error.toLowerCase()})` : ''}. Parts it had started need Regenerate; the others kept their drawings.</span><Button type="button" variant="ghost" size="icon-xs" className="text-warning hover:bg-warning/10 hover:text-warning" aria-label="Dismiss" onClick={() => setDismissedJob(rev.jobs[0].id)}><X /></Button></div>}
+                {!job && rev.jobs?.[0]?.status === 'failed' && rev.jobs[0].kind !== 'import' && <div className={cn(banner, 'bg-danger-soft text-destructive')}>Document generation failed: {rev.jobs[0].error || 'Retry generation.'}</div>}
+                {rev.status === 'failed' && <div className={cn(banner, 'bg-danger-soft text-destructive')}>Import failed: {rev.message}. The previous active revision is preserved.</div>}
+                {rev.state === 'archived' && <div className={cn(banner, 'border-warning/30 bg-warning-soft text-warning')}><Archive className="size-4" />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
 
                 {(tab === 'parts' || modelSeen.current === rev.id) && (
-                  <div className={(tab === 'parts' ? '' : 'kept-hidden ') + 'workspace cad' + (layout.left && !layout.focus ? '' : ' no-left') + (layout.right && !layout.focus && inspectorContent ? '' : ' no-right')}>
-                    <aside className="part-list">
-                      <div className={'list-heading' + (multi.length > 1 ? ' multi' : '')}><h3>{multi.length > 1 ? `${multi.length} selected` : 'Part navigator'}</h3><div className="flex">{multi.length > 1 && <button type="button" className="mini" onClick={() => choosePart(null)}><X size={12} />Clear</button>}{suppressedIds.length > 0 && <button type="button" className={'mini' + (showHidden ? ' selected' : '')} title={showHidden ? 'Hide purchased and hidden parts' : 'Override: show purchased and hidden parts'} onClick={() => setShowHidden(!showHidden)}>{showHidden ? <Eye size={13} /> : <EyeOff size={13} />}{suppressedIds.length}</button>}{(rev?.weldments || []).length > 0 && <button type="button" className={'mini' + (weldView ? ' selected' : '')} title={weldView ? 'Stop grouping by weld assembly' : 'Group by weld assembly'} onClick={() => { const v = !weldView; setWeldView(v); try { localStorage.setItem('forge-nav-weld', v ? '1' : '0'); } catch { /* ignore */ } }}><Flame size={13} /></button>}{hasTree && <button type="button" className={'mini' + (treeView && !weldView ? ' selected' : '')} title={treeView ? 'Show a flat list' : 'Show the CAD assembly tree'} onClick={() => { const v = weldView ? true : !treeView; setWeldView(false); try { localStorage.setItem('forge-nav-weld', '0'); } catch { /* ignore */ } setTreeView(v); try { localStorage.setItem('forge-nav-tree', v ? 'tree' : 'list'); } catch { /* ignore */ } }}><ListTree size={13} /></button>}<span>{parts.length}</span></div></div>
-                      <div className="search"><Search size={16} /><input aria-label="Search parts" placeholder="Find a part…" value={query} onChange={e => setQuery(e.target.value)} /></div>
-                      <div className="nav-filter"><div className="nav-filter-select"><Select size="sm" aria-label="Filter part type" value={category} onChange={value => { setCategory(value); choosePart(null); }} options={[
+                  <div className={cn('grid min-h-0 flex-1 bg-background transition-[grid-template-columns] duration-200', cols, tab !== 'parts' && 'hidden')}>
+                    <aside className={cn('flex min-h-0 flex-col border-r bg-card', !leftOpen && 'invisible overflow-hidden border-0')}>
+                      {(() => {
+                        const navMode = weldView && (rev?.weldments || []).length ? 'welds' : treeView && hasTree ? 'tree' : 'list';
+                        const setNav = (m: string) => {
+                          setWeldView(m === 'welds'); try { localStorage.setItem('forge-nav-weld', m === 'welds' ? '1' : '0'); } catch { /* ignore */ }
+                          if (m !== 'welds') { setTreeView(m === 'tree'); try { localStorage.setItem('forge-nav-tree', m === 'tree' ? 'tree' : 'list'); } catch { /* ignore */ } }
+                        };
+                        const modes = [hasTree && ['tree', 'Tree', 'CAD assembly tree'], ['list', 'List', 'Flat list of part definitions'], (rev?.weldments || []).length > 0 && ['welds', 'Welds', 'Grouped by weld assembly']].filter(Boolean) as string[][];
+                        return <div className="flex min-w-0 items-center justify-between gap-2 px-3 pt-2.5 pb-1.5">
+                          <h3 className={cn('inline-flex min-w-0 items-center gap-1.5 truncate', eyebrow)}>{multi.length > 1 ? `${multi.length} selected` : 'Parts'}{multi.length < 2 && <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs font-medium tracking-normal tabular-nums">{parts.length}</span>}</h3>
+                          {multi.length > 1 ? <Button type="button" variant="ghost" size="xs" onClick={() => choosePart(null)}><X />Clear</Button>
+                            : modes.length > 1 && <Tabs value={navMode} onValueChange={setNav}><TabsList aria-label="Navigator view" className="h-7">{modes.map(([m, label, tip]) => <TabsTrigger key={m} value={m} title={tip} className="px-2 text-2xs">{label}</TabsTrigger>)}</TabsList></Tabs>}
+                        </div>;
+                      })()}
+                      <div className="relative mx-2.5 mb-1.5"><Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-faint" /><Input aria-label="Search parts" placeholder="Find a part…" className="h-[30px] bg-subtle pl-8 shadow-none" value={query} onChange={e => setQuery(e.target.value)} /></div>
+                      <div className="mx-2.5 mb-1.5 flex items-center gap-1"><div className="min-w-0 flex-1"><Select size="sm" aria-label="Filter part type" value={category} onChange={value => { setCategory(value); choosePart(null); }} options={[
                         { value: 'all', label: 'All part types', hint: String(parts.length) },
                         ...Object.entries(categories).map(([k, v]) => ({ value: k, label: v, hint: String(parts.filter((p: Any) => p.category === k).length) })),
                         { value: 'hidden', label: 'Hidden in viewer', hint: String(hiddenIds.length) },
                         { value: 'excluded', label: 'Not for production', hint: String(parts.filter((p: Any) => p.excluded).length) },
                       ]} /></div>
-                        {editable && <button type="button" className="icon" title="Make many parts production ready (all sheet metal, all machining or the selection)" onClick={() => setBulkReady(true)}><Sparkles size={14} /></button>}
-                        <button type="button" className="icon" onClick={() => stepPart(-1)} disabled={!filtered.length} title="Previous part (↑)"><ArrowUp size={14} /></button><button type="button" className="icon" onClick={() => stepPart(1)} disabled={!filtered.length} title="Next part (↓)"><ArrowDown size={14} /></button></div>
-                      <button className={'assembly-root ' + (!selected ? 'chosen' : '')} onClick={() => choosePart(null)}>
-                        <Layers size={18} /><span>Complete assembly<small>{rev.manifest.occurrences || 0} body instances</small></span>
-                      </button>
-                      <div className="part-scroll" ref={listRef}>
+                        {editable && <Tip label="Make many parts production ready (all sheet metal, all machining or the selection)"><Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Make many parts production ready" onClick={() => setBulkReady(true)}><ListChecks /></Button></Tip>}</div>
+                      <Button variant="outline" className={cn('mx-1.5 mb-1 h-auto justify-start gap-2.5 bg-subtle px-2.5 py-1.5 text-left font-medium shadow-none', !selected && 'border-primary/30 bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground')} onClick={() => choosePart(null)}>
+                        <Layers className="size-[18px]" /><span className="grid">Complete assembly<span className="text-2xs font-normal text-muted-foreground">{rev.manifest.occurrences || 0} body instances</span></span>
+                      </Button>
+                      <div className="min-h-0 flex-1 overflow-y-auto" ref={listRef}>
                         {weldView && (rev.weldments || []).length ? renderWeldGroups() : treeView && hasTree ? renderTree(tree, 0) : filtered.map(renderRow)}
-                        {!filtered.length && <p className="muted padded">{job ? 'Analyzing components…' : 'No matching parts.'}</p>}
+                        {!filtered.length && <p className="p-5 text-sm text-muted-foreground">{job ? 'Analyzing components…' : 'No matching parts.'}</p>}
                       </div>
-                      <div className="list-footer"><span title="Shift-click selects a range, Ctrl/Cmd-click toggles">{hiddenIds.length ? `${hiddenIds.length} hidden` : `${holes} named bores`} · ⇧ range</span><span title="Parts production ready (design review + drawing review + specification complete)">{readyCount}/{releaseParts.length} ready</span></div>
+                      <div className="flex items-center justify-between border-t px-3 py-2 text-2xs text-muted-foreground">{suppressedIds.length > 0 ? <Button type="button" variant="link" size="xs" className="h-auto gap-1 p-0 text-2xs font-normal has-[>svg]:px-0" title={showHidden ? 'Hide purchased and hidden parts again' : 'Show purchased and hidden parts in the viewer'} onClick={() => setShowHidden(!showHidden)}>{showHidden ? <EyeOff /> : <Eye />}{showHidden ? 'Hide' : 'Show'} {suppressedIds.length} hidden</Button> : <span title="Shift-click selects a range, Ctrl/Cmd-click toggles">⇧ range · ⌘ toggle</span>}<span className="tabular-nums" title="Parts production ready (design review + drawing review + specification complete)">{readyCount}/{releaseParts.length} ready</span></div>
                     </aside>
 
-                    <div className="canvas-panel">
+                    <div className="@container/canvas relative flex min-h-0 min-w-0 flex-col bg-viewer">
                       {rev.status !== 'processing' && rev.status !== 'failed' ? (
                         mode === 'flat2d' && part ? (
                           <FlatPattern partId={part.id} thickness={part.geometry.thickness} kFactor={part.spec.k_factor} approved={!!part.spec.k_factor_approved} name={part.name} />
@@ -836,6 +923,7 @@ function App() {
                             hud={canvasHud}
                             toolbarStart={canvasToolsStart}
                             toolbarEnd={canvasToolsEnd}
+                            corner={canvasCorner}
                             pickMode={jointDraft && !addingParts ? pickMode : null}
                             jointPreview={weldDraftPreview}
                             welds={mode === '3d' ? savedWelds : []}
@@ -965,16 +1053,16 @@ function App() {
                           />
                         )
                       ) : (
-                        <div className="processing">
-                          <div className="cad-orbit"><Box size={72} /></div>
-                          <h2>{rev.status === 'failed' ? 'CAD import needs attention' : 'Reading your design'}</h2>
-                          <p>{rev.message}</p>
-                          <small>Geometry processing runs independently of the website.</small>
+                        <div className="flex min-h-[370px] flex-1 flex-col items-center justify-center gap-3.5 bg-viewer px-6 py-16 text-center text-muted-foreground">
+                          <div className="m-2.5 grid size-[140px] place-items-center rounded-full border border-dashed border-input text-faint"><Box className="size-[72px]" strokeWidth={1.25} /></div>
+                          <h2 className="text-xl font-semibold text-foreground">{rev.status === 'failed' ? 'CAD import needs attention' : 'Reading your design'}</h2>
+                          <p className="max-w-[550px]">{rev.message}</p>
+                          <small className="text-xs text-faint">Geometry processing runs independently of the website.</small>
                         </div>
                       )}
                     </div>
 
-                    <aside className="inspector">
+                    <aside className={cn('flex min-h-0 flex-col border-l bg-card', !rightOpen && 'invisible overflow-hidden border-0')}>
                       {jointDraft ? (
                         <JointPanel draft={jointDraft} setDraft={d => { setWeldPreviewStatus(null); setJointDraft(d); }} parts={parts} options={jointOptions} pickMode={pickMode} setPickMode={setPickMode} busy={busy} previewStatus={weldPreviewStatus}
                           studio={{ seams: seamsTagged, detecting, detectMessage, onDetect: () => detectSeams(jointDraft, !(jointDraft.faces || []).length), hoverSeam, setHoverSeam, addingParts, setAddingParts, seamSide, setSeamSide }}
@@ -999,77 +1087,92 @@ function App() {
                         const asmKey = path.join(' / ');
                         const siblings = path.length ? parts.filter((p: Any) => (p.assembly_path || []).slice(0, path.length).join(' / ') === asmKey) : [];
                         const differ = siblings.filter((p: Any) => p.category !== part.category);
-                        const missing = (k: string) => editable ? <button type="button" className="pi-add" onClick={() => setReadyFor(part.id)}>Add</button> : <span className="muted">—</span>;
-                        const row = (label: string, value: Any, opt = false) => (opt && !value) ? null : <div className="pi-kv" key={label}><span>{label}</span><b>{value || missing(label)}</b></div>;
+                        const missing = (k: string) => editable ? <Button type="button" variant="outline" size="xs" className="h-5 border-dashed px-2 text-2xs text-primary shadow-none hover:border-primary hover:bg-transparent hover:text-primary" onClick={() => setReadyFor(part.id)}>Add</Button> : <span className="text-muted-foreground">—</span>;
+                        const row = (label: string, value: Any, opt = false) => (opt && !value) ? null : <div className={kv} key={label}><span className="shrink-0 text-muted-foreground">{label}</span><span className={kvValue}>{value || missing(label)}</span></div>;
+                        const card = 'mx-4 mb-3 flex gap-2.5 rounded-lg border p-3';
+                        const cardText = 'mt-0.5 mb-2 text-xs leading-relaxed text-muted-foreground';
+                        const section = 'grid';
+                        const sectionTitle = cn('mb-1 flex items-center justify-between', eyebrow);
+                        const linkBtn = 'h-auto p-0 text-xs font-medium normal-case tracking-normal has-[>svg]:px-0';
+                        const step = (done: boolean) => cn('flex items-center gap-1.5 text-2xs whitespace-nowrap', done ? 'text-foreground' : 'text-muted-foreground');
+                        const stepDot = (done: boolean) => cn('grid size-[18px] shrink-0 place-items-center rounded-full border-[1.5px] text-[10px] font-medium not-italic', done ? 'border-success bg-success text-white' : 'text-muted-foreground');
+                        const propRow = 'grid grid-cols-[74px_1fr] items-center gap-2 text-sm font-normal';
+                        const fileBtn = 'h-auto w-full justify-start gap-2.5 rounded-none border-b px-3 py-2 text-left font-normal whitespace-normal last:border-b-0';
+                        const ext = 'grid h-[22px] w-[34px] shrink-0 place-items-center rounded bg-muted text-[9.5px] font-medium uppercase text-muted-foreground';
                         return (
-                        <div className="pi">
-                          <header className="pi-head">
-                            <div className="pi-title">
-                              <span className={'pi-type ' + part.category}><span className={'part-glyph ' + part.category} style={part.spec.coating_hex ? { background: part.spec.coating_hex, color: '#fff' } : undefined}>{part.category === 'sheet_metal' ? <Layers size={14} /> : <Box size={14} />}</span>{categories[part.category]}{part.geometry.carried_from && <em title="Carried over from an earlier revision">rev {part.geometry.carried_from.revision}</em>}</span>
-                              <h2 title={part.name}>{part.name}</h2>
-                              {(part.alias || (!vendor && can('part.edit'))) && <button type="button" className={'pi-alias' + (part.alias ? '' : ' empty')} disabled={vendor || !can('part.edit')} title={part.alias ? 'Alias — click to change' : 'Give this part a short, easy name'} onClick={() => editAlias(part)}><Tag size={12} />{part.alias || 'Add alias'}</button>}
-                              <small>{part.id.slice(-10).toUpperCase()} · Qty {part.quantity}{part.geometry.mass_kg !== undefined ? ` · ${fmt(part.geometry.mass_kg)} kg` : ''}</small>
+                        <div className="flex h-full min-h-0 flex-col">
+                          <header className="flex items-start gap-2 px-4 pt-3.5 pb-2.5">
+                            <div className="grid min-w-0 flex-1 gap-0.5">
+                              <span className={cn('inline-flex items-center gap-1.5', eyebrow)}><span className={cn('grid size-5 place-items-center rounded-md', glyphTone[part.category] || glyphTone.other)} style={part.spec.coating_hex ? { background: part.spec.coating_hex, color: '#fff' } : undefined}>{part.category === 'sheet_metal' ? <Layers className="size-3.5" /> : <Box className="size-3.5" />}</span>{categories[part.category]}{part.geometry.carried_from && <span className="rounded-full bg-muted px-1.5 py-px font-normal normal-case tracking-normal" title="Carried over from an earlier revision">rev {part.geometry.carried_from.revision}</span>}</span>
+                              <h2 className="truncate text-base font-semibold" title={part.name}>{part.name}</h2>
+                              {(part.alias || (!vendor && can('part.edit'))) && <Button type="button" variant="outline" size="xs" className={cn('my-0.5 w-fit max-w-full self-start shadow-none disabled:opacity-100', part.alias ? 'border-primary/30 bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground' : 'border-dashed bg-transparent font-normal text-muted-foreground')} disabled={vendor || !can('part.edit')} title={part.alias ? 'Alias — click to change' : 'Give this part a short, easy name'} onClick={() => editAlias(part)}><Tag />{part.alias || 'Add alias'}</Button>}
+                              <small className="text-2xs text-muted-foreground tabular-nums">{part.id.slice(-10).toUpperCase()} · Qty {part.quantity}{part.geometry.mass_kg !== undefined ? ` · ${fmt(part.geometry.mass_kg)} kg` : ''}</small>
                             </div>
-                            {!vendor && <div className="pi-menu">
-                              <button type="button" className="icon" aria-label="More actions" onClick={() => setPartMenu(v => !v)}><MoreHorizontal size={18} /></button>
-                              {partMenu && <div className="pi-scrim" onClick={() => setPartMenu(false)} />}
-                              {partMenu && <div className="dropdown pi-dropdown">
-                                <button type="button" onClick={() => { setPartMenu(false); setFlags(part.id, { hidden: !part.hidden }); }}>{part.hidden ? <Eye size={14} /> : <EyeOff size={14} />}{part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'}</button>
-                                {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings size={14} />All manufacturing details</button>}
-                                {editable && !part.excluded && <button type="button" onClick={() => { setPartMenu(false); startWeld([part.id]); }}><Flame size={14} />Weld this component</button>}
-                                {editable && <button type="button" onClick={() => { setPartMenu(false); addToSteps([part.id]); }}><ListPlus size={14} />Add as assembly step</button>}
-                                {part.geometry.holes.length > 0 && <button type="button" onClick={() => { setPartMenu(false); setHoleCfg(part.id); }}><CircleDot size={14} />Holes &amp; hardware…</button>}
-                                {canBend(part) && <button type="button" onClick={() => { setPartMenu(false); setBendSim(part.id); }}><FoldVertical size={14} />Bending simulation…</button>}
-                                {editable && canBend(part) && <button type="button" onClick={() => { setPartMenu(false); setBendSharing([part.id], part.bend_sim ? 'off' : 'on'); }}>{part.bend_sim ? <EyeOff size={14} /> : <Eye size={14} />}{part.bend_sim ? 'Stop sharing bending simulation' : 'Share bending simulation'}</button>}
-                                {editable && canBend(part) && part.drawing_options?.bend_sim !== undefined && <button type="button" onClick={() => { setPartMenu(false); setBendSharing([part.id], 'inherit'); }}><Undo2 size={14} />Bending simulation: use project default</button>}
+                            {!vendor && <DropdownMenu open={partMenu} onOpenChange={setPartMenu}>
+                              <Tip label="More actions">
+                                <DropdownMenuTrigger asChild>
+                                  <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="More actions"><MoreHorizontal /></Button>
+                                </DropdownMenuTrigger>
+                              </Tip>
+                              <DropdownMenuContent align="end" className="min-w-[230px]">
+                                <DropdownMenuItem onClick={() => { setPartMenu(false); setFlags(part.id, { hidden: !part.hidden }); }}>{part.hidden ? <Eye /> : <EyeOff />}{part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'}</DropdownMenuItem>
+                                {editable && !part.excluded && <DropdownMenuItem onClick={() => { setPartMenu(false); setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings />All manufacturing details</DropdownMenuItem>}
+                                {editable && !part.excluded && <DropdownMenuItem onClick={() => { setPartMenu(false); startWeld([part.id]); }}><Flame />Weld this component</DropdownMenuItem>}
+                                {editable && <DropdownMenuItem onClick={() => { setPartMenu(false); addToSteps([part.id]); }}><ListPlus />Add as assembly step</DropdownMenuItem>}
+                                {part.geometry.holes.length > 0 && <DropdownMenuItem onClick={() => { setPartMenu(false); setHoleCfg(part.id); }}><CircleDot />Holes &amp; hardware…</DropdownMenuItem>}
+                                {canBend(part) && <DropdownMenuItem onClick={() => { setPartMenu(false); setBendSim(part.id); }}><FoldVertical />Bending simulation…</DropdownMenuItem>}
+                                {editable && canBend(part) && <DropdownMenuItem onClick={() => { setPartMenu(false); setBendSharing([part.id], part.bend_sim ? 'off' : 'on'); }}>{part.bend_sim ? <EyeOff /> : <Eye />}{part.bend_sim ? 'Stop sharing bending simulation' : 'Share bending simulation'}</DropdownMenuItem>}
+                                {editable && canBend(part) && part.drawing_options?.bend_sim !== undefined && <DropdownMenuItem onClick={() => { setPartMenu(false); setBendSharing([part.id], 'inherit'); }}><Undo2 />Bending simulation: use project default</DropdownMenuItem>}
                                 {editable && (part.excluded
-                                  ? <button type="button" onClick={() => { setPartMenu(false); setFlags(part.id, { excluded: false }); }}><Undo2 size={14} />Restore to production</button>
-                                  : <button type="button" className="danger" onClick={() => { setPartMenu(false); setExcluding([part]); }}><Ban size={14} />Not for production…</button>)}
-                              </div>}
-                            </div>}
+                                  ? <DropdownMenuItem onClick={() => { setPartMenu(false); setFlags(part.id, { excluded: false }); }}><Undo2 />Restore to production</DropdownMenuItem>
+                                  : <DropdownMenuItem variant="destructive" onClick={() => { setPartMenu(false); setExcluding([part]); }}><Ban />Not for production…</DropdownMenuItem>)}
+                              </DropdownMenuContent>
+                            </DropdownMenu>}
                           </header>
 
                           {(() => { const wm = weldmentOf(part.id); if (!wm) return null; return (
-                            <div className="pi-card weld-asm"><Flame size={16} /><div><b>{wm.name}</b><p>Weld assembly · {wm.parts.length} part{wm.parts.length === 1 ? '' : 's'} · {(wm.welds || []).length} weld{(wm.welds || []).length === 1 ? '' : 's'}</p>
-                              <div className="flex"><button type="button" className="mini" onClick={() => openWeldment(wm)}><Flame size={13} />Weld configuration</button>
-                                {!vendor && (project?.permissions || []).includes('joborder.create') && <button type="button" className="mini" onClick={() => weldmentJobOrder(wm)}><ClipboardList size={13} />Job order</button>}</div></div></div>); })()}
+                            <div className={card}><Flame className="mt-px size-4 flex-none text-pink-500" /><div className="min-w-0"><div className="text-sm font-medium">{wm.name}</div><p className={cardText}>Weld assembly · {wm.parts.length} part{wm.parts.length === 1 ? '' : 's'} · {(wm.welds || []).length} weld{(wm.welds || []).length === 1 ? '' : 's'}</p>
+                              <div className="flex flex-wrap items-center gap-1.5"><Button type="button" variant="outline" size="xs" onClick={() => openWeldment(wm)}><Flame />Weld configuration</Button>
+                                {!vendor && (project?.permissions || []).includes('joborder.create') && <Button type="button" variant="outline" size="xs" onClick={() => weldmentJobOrder(wm)}><ClipboardList />Job order</Button>}</div></div></div>); })()}
                           {part.excluded ? (
-                            <div className="pi-card muted-card"><Ban size={16} /><div><b>Not for production</b><p>{(part.exclusion_reason || 'Excluded from this revision').replace(/[.]?$/, '.')} Skipped in release checks, drawing packs and the vendor checklist.</p>{editable && <button type="button" className="mini" onClick={() => setFlags(part.id, { excluded: false })}><Undo2 size={13} />Restore</button>}</div></div>
+                            <div className={card}><Ban className="mt-px size-4 flex-none text-muted-foreground" /><div className="min-w-0"><div className="text-sm font-medium">Not for production</div><p className={cardText}>{(part.exclusion_reason || 'Excluded from this revision').replace(/[.]?$/, '.')} Skipped in release checks, drawing packs and the vendor checklist.</p>{editable && <Button type="button" variant="outline" size="xs" onClick={() => setFlags(part.id, { excluded: false })}><Undo2 />Restore</Button>}</div></div>
                           ) : part.category === 'purchased' ? (
-                            <div className="pi-card muted-card"><Box size={16} /><div><b>Purchased part</b><p>Bought complete — no drawing release needed.</p>
-                              <label className="pi-switch"><input type="checkbox" checked={!!part.drawing_options?.assembly_show} disabled={busy || !editable} onChange={e => { const show = e.target.checked; action(async () => { await api(`/revisions/${rev.id}/parts/assembly-drawing`, 'POST', { ids: [part.id], show }); await loadRevision(rev.id); }); }} /><span />Show on the assembly drawing</label></div></div>
+                            <div className={card}><Box className="mt-px size-4 flex-none text-muted-foreground" /><div className="min-w-0"><div className="text-sm font-medium">Purchased part</div><p className={cardText}>Bought complete — no drawing release needed.</p>
+                              <Label className="cursor-pointer text-xs font-normal"><Switch checked={!!part.drawing_options?.assembly_show} disabled={busy || !editable} onCheckedChange={show => { action(async () => { await api(`/revisions/${rev.id}/parts/assembly-drawing`, 'POST', { ids: [part.id], show }); await loadRevision(rev.id); }); }} />Show on the assembly drawing</Label></div></div>
                           ) : (
-                            <div className={'pi-card ready-card' + (ready ? ' ok' : '')}>
-                              <div className="pi-steps">
-                                <span className={specDone ? 'done' : ''} title={specDone ? 'Specification complete' : `${openFindings.length} open specification items`}><i>{specDone ? <Check size={11} /> : openFindings.length}</i>Spec</span>
-                                <span className={part.reviewed ? 'done' : ''}><i>{part.reviewed ? <Check size={11} /> : '2'}</i>Design</span>
-                                <span className={part.doc_reviewed ? 'done' : ''}><i>{part.doc_reviewed ? <Check size={11} /> : '3'}</i>Drawing</span>
+                            <div className={cn(card, 'flex-col bg-subtle', ready && 'border-success/40')}>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                <span className={step(specDone)} title={specDone ? 'Specification complete' : `${openFindings.length} open specification items`}><i className={stepDot(specDone)}>{specDone ? <Check className="size-[11px]" /> : openFindings.length}</i>Spec</span>
+                                <span className={step(!!part.reviewed)}><i className={stepDot(!!part.reviewed)}>{part.reviewed ? <Check className="size-[11px]" /> : '2'}</i>Design</span>
+                                <span className={step(!!part.doc_reviewed)}><i className={stepDot(!!part.doc_reviewed)}>{part.doc_reviewed ? <Check className="size-[11px]" /> : '3'}</i>Drawing</span>
                               </div>
-                              {editable ? <button type="button" className={ready ? '' : 'primary'} onClick={() => setReadyFor(part.id)}>{ready ? <><CheckCircle2 size={15} />Production ready</> : <><Sparkles size={15} />Make production ready</>}</button>
-                                : <p className="pi-ready-note">{ready ? <><CheckCircle2 size={14} />Production ready</> : 'Engineering is still completing this part — manufacture only from released drawings.'}</p>}
+                              {editable ? <Button type="button" variant={ready ? 'outline' : 'default'} className={cn('w-full', ready && 'text-success hover:text-success')} onClick={() => setReadyFor(part.id)}>{ready ? <><CheckCircle2 />Production ready</> : <><Sparkles />Make production ready</>}</Button>
+                                : <p className="flex items-center gap-1.5 text-xs leading-snug text-muted-foreground">{ready ? <><CheckCircle2 className="size-3.5 text-success" />Production ready</> : 'Engineering is still completing this part — manufacture only from released drawings.'}</p>}
                             </div>
                           )}
 
-                          {editable && !part.excluded && <div className="pi-props">
-                            <label><span>Type</span><Select size="sm" value={part.category} disabled={busy} onChange={v => action(async () => { if (v === part.category) return; await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: [part.id], category: v }); await loadRevision(rev.id); notify(`${part.name} is now ${categories[v]}`); })} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} /></label>
-                            <label><span>Process</span><Select size="sm" value={part.process_template_id || ''} disabled={busy} onChange={v => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: [part.id], template_id: v }); await loadRevision(rev.id); })} options={[{ value: '', label: 'Custom' }, ...templates.filter((t: Any) => t.kind === 'process').map((t: Any) => ({ value: t.id, label: t.name }))]} /></label>
-                            {siblings.length > 1 && <div className="pi-asm"><span>Assembly</span><div><Folder size={13} /><b title={asmKey}>{path[path.length - 1]}</b><small>{siblings.length} parts</small>
-                              <button type="button" className="link" onClick={() => { setMulti(siblings.map((p: Any) => p.id)); setSelected(part.id); }}>Select</button>
-                              {differ.length > 0 && <button type="button" className="link" disabled={busy} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: siblings.map((p: Any) => p.id), category: part.category }); await loadRevision(rev.id); notify(`${path[path.length - 1]}: ${siblings.length} parts are now ${categories[part.category]}`); })}>Make all {categories[part.category].toLowerCase()}</button>}</div></div>}
+                          {editable && !part.excluded && <div className="grid gap-1.5 px-4 pb-3">
+                            <Label className={propRow}><span className="text-muted-foreground">Type</span><Select size="sm" value={part.category} disabled={busy} onChange={v => action(async () => { if (v === part.category) return; await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: [part.id], category: v }); await loadRevision(rev.id); notify(`${part.name} is now ${categories[v]}`); })} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} /></Label>
+                            <Label className={propRow}><span className="text-muted-foreground">Process</span><Select size="sm" value={part.process_template_id || ''} disabled={busy} onChange={v => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: [part.id], template_id: v }); await loadRevision(rev.id); })} options={[{ value: '', label: 'Custom' }, ...templates.filter((t: Any) => t.kind === 'process').map((t: Any) => ({ value: t.id, label: t.name }))]} /></Label>
+                            {siblings.length > 1 && <div className={propRow}><span className="text-muted-foreground">Assembly</span><div className="flex min-w-0 flex-wrap items-center gap-1.5"><Folder className="size-3.5 text-muted-foreground" /><span className="max-w-[130px] truncate font-medium" title={asmKey}>{path[path.length - 1]}</span><span className="text-xs text-muted-foreground">{siblings.length} parts</span>
+                              <Button type="button" variant="link" size="xs" className={linkBtn} onClick={() => { setMulti(siblings.map((p: Any) => p.id)); setSelected(part.id); }}>Select</Button>
+                              {differ.length > 0 && <Button type="button" variant="link" size="xs" className={linkBtn} disabled={busy} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: siblings.map((p: Any) => p.id), category: part.category }); await loadRevision(rev.id); notify(`${path[path.length - 1]}: ${siblings.length} parts are now ${categories[part.category]}`); })}>Make all {categories[part.category].toLowerCase()}</Button>}</div></div>}
                           </div>}
 
-                          <nav className="pi-tabs" role="tablist">{[['details', 'Details'], ['features', `Features${part.geometry.holes.length + part.geometry.bends.length ? ' ' + (part.geometry.holes.length + part.geometry.bends.length) : ''}`], ['documents', 'Documents'], ...(canCost && !part.excluded && part.category !== 'purchased' ? [['cost', 'Cost']] : [])].map(([t, l]) => <button type="button" role="tab" aria-selected={detail === t} key={t} className={detail === t ? 'active' : ''} onClick={() => setDetail(t)}>{l}</button>)}</nav>
+                          <Tabs value={detail} onValueChange={setDetail} className="mx-4 gap-0">
+                            <TabsList className="w-full">{[['details', 'Details'], ['features', `Features${part.geometry.holes.length + part.geometry.bends.length ? ' ' + (part.geometry.holes.length + part.geometry.bends.length) : ''}`], ['documents', 'Documents'], ...(canCost && !part.excluded && part.category !== 'purchased' ? [['cost', 'Cost']] : [])].map(([t, l]) => <TabsTrigger key={t} value={t} className="text-xs">{l}</TabsTrigger>)}</TabsList>
+                          </Tabs>
 
-                          <div className="pi-body">
+                          <div className="grid min-h-0 flex-1 content-start gap-3.5 overflow-auto px-4 pt-3 pb-5">
                             {detail === 'details' ? (
                               <>
-                                <div className="pi-dims">{['X', 'Y', 'Z'].map((a, i) => <div key={a}><span>{a}</span><b>{fmt(part.geometry.dimensions[i])}<small> mm</small></b></div>)}</div>
-                                <section className="pi-section">
-                                  <h4>Specification{editable && !part.excluded && <button type="button" className="link" onClick={() => { setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}>Edit</button>}</h4>
+                                <div className="grid grid-cols-3 gap-1.5">{['X', 'Y', 'Z'].map((a, i) => <div key={a} className="flex items-baseline gap-1.5 rounded-md border px-2 py-1.5"><span className="text-2xs font-medium text-muted-foreground">{a}</span><span className="text-sm tabular-nums">{fmt(part.geometry.dimensions[i])}<small className="text-2xs text-muted-foreground"> mm</small></span></div>)}</div>
+                                <section className={section}>
+                                  <h4 className={sectionTitle}>Specification{editable && !part.excluded && <Button type="button" variant="link" size="xs" className={linkBtn} onClick={() => { setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}>Edit</Button>}</h4>
                                   {row('Material', part.spec.material)}
                                   {row('Process', part.spec.process)}
                                   {row('Finish', part.spec.finish)}
-                                  {(part.spec.coating_color || part.spec.coating_hex) && <div className="pi-kv"><span>Colour</span><b className="flex end">{part.spec.coating_hex && <Swatch hex={part.spec.coating_hex} />}{part.spec.coating_color || part.spec.coating_hex}</b></div>}
+                                  {(part.spec.coating_color || part.spec.coating_hex) && <div className={kv}><span className="shrink-0 text-muted-foreground">Colour</span><span className={cn(kvValue, 'flex items-center justify-end gap-2')}>{part.spec.coating_hex && <Swatch hex={part.spec.coating_hex} />}{part.spec.coating_color || part.spec.coating_hex}</span></div>}
                                   {row('Coating', part.spec.paint, true)}
                                   {row('Tolerance', part.spec.general_tolerance)}
                                   {row('Datums', part.spec.datums)}
@@ -1080,61 +1183,61 @@ function App() {
                                   {row('Masking', part.spec.masking, true)}
                                   {row('Marking', part.spec.marking, true)}
                                 </section>
-                                <section className="pi-section">
-                                  <h4>Geometry</h4>
-                                  <div className="pi-kv"><span>Solid</span><b className={part.geometry.valid ? 'green' : 'red'}>{part.geometry.valid ? 'Valid' : 'Invalid — repair in CAD'}</b></div>
-                                  {part.geometry.thickness > 0 && <div className="pi-kv"><span>Thickness</span><b>{fmt(part.geometry.thickness)} mm</b></div>}
-                                  {part.geometry.mass_kg !== undefined && <div className="pi-kv"><span>Mass</span><b>{fmt(part.geometry.mass_kg)} kg <small>{part.geometry.mass_basis}</small></b></div>}
-                                  {part.geometry.step && Object.keys(part.geometry.step).length > 0 && <div className="pi-kv"><span>From STEP</span><b className="flex end">{part.geometry.step.color && <Swatch hex={part.geometry.step.color} title="CAD appearance" />}{[part.geometry.step.material, part.geometry.step.density && part.geometry.step.density + ' g/cm³'].filter(Boolean).join(' · ') || 'appearance only'}</b></div>}
-                                  <div className="pi-kv"><span>Classified by</span><b>{part.geometry.classification_confidence}</b></div>
-                                  {part.category === 'sheet_metal' && <div className="pi-kv"><span>Flat pattern</span><b className={part.geometry.flat_status === 'supported' ? 'green' : 'red'}>{part.geometry.flat_status === 'supported' ? 'Available' : 'Needs review'}</b></div>}
-                                  {canBend(part) && <div className="pi-kv"><span>Bending simulation</span><b className="flex end">{part.bend_sim ? 'Shared' : 'Not shared'}{showBend(part) && <button type="button" className="mini" onClick={() => setBendSim(part.id)}><FoldVertical size={13} />Play</button>}</b></div>}
+                                <section className={section}>
+                                  <h4 className={sectionTitle}>Geometry</h4>
+                                  <div className={kv}><span className="shrink-0 text-muted-foreground">Solid</span><span className={cn(kvValue, part.geometry.valid ? 'text-success' : 'text-destructive')}>{part.geometry.valid ? 'Valid' : 'Invalid — repair in CAD'}</span></div>
+                                  {part.geometry.thickness > 0 && <div className={kv}><span className="shrink-0 text-muted-foreground">Thickness</span><span className={kvValue}>{fmt(part.geometry.thickness)} mm</span></div>}
+                                  {part.geometry.mass_kg !== undefined && <div className={kv}><span className="shrink-0 text-muted-foreground">Mass</span><span className={kvValue}>{fmt(part.geometry.mass_kg)} kg <small className="text-muted-foreground">{part.geometry.mass_basis}</small></span></div>}
+                                  {part.geometry.step && Object.keys(part.geometry.step).length > 0 && <div className={kv}><span className="shrink-0 text-muted-foreground">From STEP</span><span className={cn(kvValue, 'flex items-center justify-end gap-2')}>{part.geometry.step.color && <Swatch hex={part.geometry.step.color} title="CAD appearance" />}{[part.geometry.step.material, part.geometry.step.density && part.geometry.step.density + ' g/cm³'].filter(Boolean).join(' · ') || 'appearance only'}</span></div>}
+                                  <div className={kv}><span className="shrink-0 text-muted-foreground">Classified by</span><span className={kvValue}>{part.geometry.classification_confidence}</span></div>
+                                  {part.category === 'sheet_metal' && <div className={kv}><span className="shrink-0 text-muted-foreground">Flat pattern</span><span className={cn(kvValue, part.geometry.flat_status === 'supported' ? 'text-success' : 'text-destructive')}>{part.geometry.flat_status === 'supported' ? 'Available' : 'Needs review'}</span></div>}
+                                  {canBend(part) && <div className={kv}><span className="shrink-0 text-muted-foreground">Bending simulation</span><span className={cn(kvValue, 'flex items-center justify-end gap-2')}>{part.bend_sim ? 'Shared' : 'Not shared'}{showBend(part) && <Button type="button" variant="outline" size="xs" onClick={() => setBendSim(part.id)}><FoldVertical />Play</Button>}</span></div>}
                                 </section>
-                                {part.spec.operations?.length > 0 && <section className="pi-section"><h4>Process steps</h4><ol className="pi-ops">{part.spec.operations.map((o: Any, i: number) => <li key={i}><b>{typeof o === 'string' ? o : o.name}</b>{o.detail && <small>{o.detail}</small>}</li>)}</ol></section>}
-                                {part.spec.notes && <section className="pi-section"><h4>Notes</h4><p className="note-text">{part.spec.notes}</p></section>}
-                                {part.geometry.carried_from && <p className="pi-foot">{part.geometry.carried_from.same_shape ? `Carried over from rev ${part.geometry.carried_from.revision} (identical shape) — re-approve for this revision.` : `Carried over from rev ${part.geometry.carried_from.revision}; shape changed, feature limits were reset.`}</p>}
+                                {part.spec.operations?.length > 0 && <section className={section}><h4 className={sectionTitle}>Process steps</h4><ol className="m-0 grid list-decimal gap-1 pl-[18px] text-sm">{part.spec.operations.map((o: Any, i: number) => <li key={i}><span className="font-medium">{typeof o === 'string' ? o : o.name}</span>{o.detail && <small className="block text-xs text-muted-foreground">{o.detail}</small>}</li>)}</ol></section>}
+                                {part.spec.notes && <section className={section}><h4 className={sectionTitle}>Notes</h4><p className="text-sm whitespace-pre-wrap">{part.spec.notes}</p></section>}
+                                {part.geometry.carried_from && <p className="text-2xs leading-relaxed text-muted-foreground">{part.geometry.carried_from.same_shape ? `Carried over from rev ${part.geometry.carried_from.revision} (identical shape) — re-approve for this revision.` : `Carried over from rev ${part.geometry.carried_from.revision}; shape changed, feature limits were reset.`}</p>}
                               </>
                             ) : detail === 'cost' && canCost ? (
                               <PartCost part={part} />
                             ) : detail === 'features' ? (
                               <>
-                                {part.geometry.holes.length > 0 && part.category !== 'purchased' && <button type="button" className="primary-soft pi-holes-btn" onClick={() => setHoleCfg(part.id)}><CircleDot size={15} />Configure holes &amp; hardware</button>}
-                                {part.geometry.holes.length > 0 && <section className="pi-section"><h4>Bores · {part.geometry.holes.length}</h4>{part.geometry.holes.map((h: Any) => (
-                                  <div className={'pi-feature' + (feature?.id === h.id ? ' hot' : '')} key={h.id} onMouseEnter={() => setFeature({ kind: 'hole', partId: part.id, ...h })} onMouseLeave={() => setFeature(null)}><em>{h.id}</em><span><b>Ø {fmt(h.diameter)}</b><small>{fmt(h.depth)} mm deep · {part.spec.feature_specs?.[h.id]?.hardware?.name || part.spec.feature_specs?.[h.id]?.designation || 'no hardware'}</small></span></div>
+                                {part.geometry.holes.length > 0 && part.category !== 'purchased' && <Button type="button" variant="outline" className="w-full border-primary/30 bg-selection text-selection-foreground hover:bg-selection/70 hover:text-selection-foreground" onClick={() => setHoleCfg(part.id)}><CircleDot />Configure holes &amp; hardware</Button>}
+                                {part.geometry.holes.length > 0 && <section className={section}><h4 className={sectionTitle}>Bores · {part.geometry.holes.length}</h4>{part.geometry.holes.map((h: Any) => (
+                                  <div className={cn('flex cursor-default items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-accent', feature?.id === h.id && 'bg-accent')} key={h.id} onMouseEnter={() => setFeature({ kind: 'hole', partId: part.id, ...h })} onMouseLeave={() => setFeature(null)}><span className="min-w-[30px] font-mono text-2xs font-medium text-primary">{h.id}</span><span className="grid text-sm"><span className="font-medium">Ø {fmt(h.diameter)}</span><small className="text-2xs text-muted-foreground">{fmt(h.depth)} mm deep · {part.spec.feature_specs?.[h.id]?.hardware?.name || part.spec.feature_specs?.[h.id]?.designation || 'no hardware'}</small></span></div>
                                 ))}</section>}
-                                {part.geometry.bends.length > 0 && <section className="pi-section"><h4>Bends · {part.geometry.bends.length}</h4>{part.geometry.bends.map((b: Any) => (
-                                  <div className={'pi-feature' + (feature?.id === b.id ? ' hot' : '')} key={b.id} onMouseEnter={() => setFeature({ kind: 'bend', partId: part.id, ...b })} onMouseLeave={() => setFeature(null)}><em>{b.id}</em><span><b>{fmt(b.angle)}° · R{fmt(b.radius)}</b><small>{fmt(b.length)} mm long</small></span></div>
+                                {part.geometry.bends.length > 0 && <section className={section}><h4 className={sectionTitle}>Bends · {part.geometry.bends.length}</h4>{part.geometry.bends.map((b: Any) => (
+                                  <div className={cn('flex cursor-default items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-accent', feature?.id === b.id && 'bg-accent')} key={b.id} onMouseEnter={() => setFeature({ kind: 'bend', partId: part.id, ...b })} onMouseLeave={() => setFeature(null)}><span className="min-w-[30px] font-mono text-2xs font-medium text-primary">{b.id}</span><span className="grid text-sm"><span className="font-medium">{fmt(b.angle)}° · R{fmt(b.radius)}</span><small className="text-2xs text-muted-foreground">{fmt(b.length)} mm long</small></span></div>
                                 ))}</section>}
-                                {!part.geometry.holes.length && !part.geometry.bends.length && <p className="pi-foot">No bores or bends recognised on this part.</p>}
-                                <p className="pi-foot">Hover a feature to find it on the model.</p>
+                                {!part.geometry.holes.length && !part.geometry.bends.length && <p className="text-2xs leading-relaxed text-muted-foreground">No bores or bends recognised on this part.</p>}
+                                <p className="text-2xs leading-relaxed text-muted-foreground">Hover a feature to find it on the model.</p>
                               </>
                             ) : (
                               <>
-                                <div className="pi-drawing">
-                                  <div><FileText size={18} /><span><b>Drawing</b><small className={part.doc_reviewed ? 'green' : ''}>{part.doc_reviewed ? `Reviewed by ${part.doc_reviewed_by}` : part.assets.includes('drawing.pdf') ? 'Not reviewed yet' : 'Not generated yet'}</small></span></div>
-                                  {part.assets.includes('drawing.pdf') && <button type="button" className="primary" onClick={() => setDrawingPart(part.id)}>Open editor</button>}
+                                <div className="flex items-center justify-between gap-2.5 rounded-lg border px-3 py-2.5">
+                                  <div className="flex min-w-0 items-center gap-2.5"><FileText className="size-[18px] shrink-0 text-primary" /><span className="grid text-sm"><span className="font-medium">Drawing</span><small className={cn('text-2xs', part.doc_reviewed ? 'text-success' : 'text-muted-foreground')}>{part.doc_reviewed ? `Reviewed by ${part.doc_reviewed_by}` : part.assets.includes('drawing.pdf') ? 'Not reviewed yet' : 'Not generated yet'}</small></span></div>
+                                  {part.assets.includes('drawing.pdf') && <Button type="button" size="sm" onClick={() => setDrawingPart(part.id)}>Open editor</Button>}
                                 </div>
-                                {editable && can('drawing.edit') && <div className="pi-props compact"><label><span>Sheet</span><Select size="sm" value={part.drawing_options?.template_id || part.drawing_options?.size || ''} disabled={busy || !!job} onChange={v => action(async () => {
+                                {editable && can('drawing.edit') && <div className="grid gap-1.5"><Label className={propRow}><span className="text-muted-foreground">Sheet</span><Select size="sm" value={part.drawing_options?.template_id || part.drawing_options?.size || ''} disabled={busy || !!job} onChange={v => action(async () => {
                                   const isTpl = templates.some((t: Any) => t.id === v);
                                   await api(`/revisions/${rev.id}/parts/drawing-options`, 'POST', { ids: [part.id], template_id: isTpl ? v : '', size: isTpl ? '' : v });
                                   await loadRevision(rev.id); notify('Regenerating the drawing with the new sheet…');
-                                })} options={[{ value: '', label: 'Project default' }, { value: 'A4', label: 'A4' }, { value: 'A3', label: 'A3' }, { value: 'A2', label: 'A2' }, ...templates.filter((t: Any) => t.kind === 'drawing').map((t: Any) => ({ value: t.id, label: t.name, hint: 'template' }))]} /></label></div>}
-                                <section className="pi-section">
-                                  <h4>Files</h4>
-                                  <div className="pi-files">{[['drawing.pdf', 'Drawing', 'PDF', true], ['drawing.dxf', 'Drawing', 'DXF · editable', false], ['review.pdf', 'Engineering review', 'PDF', true], ['flat.dxf', 'Flat pattern', 'DXF', false], ['part.step', 'Part model', 'STEP', false]].filter(([file]: Any) => !['drawing.dxf', 'flat.dxf', 'part.step'].includes(file) || can('cad.download')).filter(([file]: Any) => file !== 'flat.dxf' || part.category === 'sheet_metal').map(([file, title, sub, previewable]: Any) => {
+                                })} options={[{ value: '', label: 'Project default' }, { value: 'A4', label: 'A4' }, { value: 'A3', label: 'A3' }, { value: 'A2', label: 'A2' }, ...templates.filter((t: Any) => t.kind === 'drawing').map((t: Any) => ({ value: t.id, label: t.name, hint: 'template' }))]} /></Label></div>}
+                                <section className={section}>
+                                  <h4 className={sectionTitle}>Files</h4>
+                                  <div className="grid overflow-hidden rounded-lg border">{[['drawing.pdf', 'Drawing', 'PDF', true], ['drawing.dxf', 'Drawing', 'DXF · editable', false], ['review.pdf', 'Engineering review', 'PDF', true], ['flat.dxf', 'Flat pattern', 'DXF', false], ['part.step', 'Part model', 'STEP', false]].filter(([file]: Any) => !['drawing.dxf', 'flat.dxf', 'part.step'].includes(file) || can('cad.download')).filter(([file]: Any) => file !== 'flat.dxf' || part.category === 'sheet_metal').map(([file, title, sub, previewable]: Any) => {
                                     const has = part.assets.includes(file);
-                                    return <button type="button" className="pi-file" key={file} disabled={!has} onClick={() => doc(`/parts/${part.id}/assets/${file}`, part.name + '_' + file, title + ' — ' + part.name)}>
-                                      <span className="ext">{String(file).split('.').pop()}</span><span><b>{title}</b><small>{has ? sub : 'Not generated'}</small></span>{has && (previewable ? <Eye size={15} /> : <Download size={15} />)}
-                                    </button>;
+                                    return <Button type="button" variant="ghost" className={fileBtn} key={file} disabled={!has} onClick={() => doc(`/parts/${part.id}/assets/${file}`, part.name + '_' + file, title + ' — ' + part.name)}>
+                                      <span className={ext}>{String(file).split('.').pop()}</span><span className="grid flex-1 text-sm"><span>{title}</span><small className="text-2xs text-muted-foreground">{has ? sub : 'Not generated'}</small></span>{has && (previewable ? <Eye className="text-muted-foreground" /> : <Download className="text-muted-foreground" />)}
+                                    </Button>;
                                   })}
                                     {(() => { const has = part.assets.includes('drawing.pdf'); return <>
-                                      <button type="button" className="pi-file" disabled={!has} onClick={() => doc(`/parts/${part.id}/inspection.pdf`, part.name + '_inspection.pdf', 'Inspection drawing — ' + part.name)}>
-                                        <span className="ext">pdf</span><span><b>Inspection drawing</b><small>{has ? 'Ballooned · characteristics' : 'Not generated'}</small></span>{has && <Eye size={15} />}</button>
-                                      <button type="button" className="pi-file" disabled={!has} onClick={() => doc(`/parts/${part.id}/characteristics.csv`, part.name + '_characteristics.csv')}>
-                                        <span className="ext">csv</span><span><b>Characteristics</b><small>{has ? 'Inspection plan' : 'Not generated'}</small></span>{has && <Download size={15} />}</button></>; })()}
+                                      <Button type="button" variant="ghost" className={fileBtn} disabled={!has} onClick={() => doc(`/parts/${part.id}/inspection.pdf`, part.name + '_inspection.pdf', 'Inspection drawing — ' + part.name)}>
+                                        <span className={ext}>pdf</span><span className="grid flex-1 text-sm"><span>Inspection drawing</span><small className="text-2xs text-muted-foreground">{has ? 'Ballooned · characteristics' : 'Not generated'}</small></span>{has && <Eye className="text-muted-foreground" />}</Button>
+                                      <Button type="button" variant="ghost" className={fileBtn} disabled={!has} onClick={() => doc(`/parts/${part.id}/characteristics.csv`, part.name + '_characteristics.csv')}>
+                                        <span className={ext}>csv</span><span className="grid flex-1 text-sm"><span>Characteristics</span><small className="text-2xs text-muted-foreground">{has ? 'Inspection plan' : 'Not generated'}</small></span>{has && <Download className="text-muted-foreground" />}</Button></>; })()}
                                   </div>
                                 </section>
-                                {!vendor && <button type="button" className="pi-generate" disabled={!!job || rev.status !== 'ready'} onClick={() => generate(part.id)}><RefreshCw size={14} className={job ? 'spin' : ''} />{job ? 'Generating…' : 'Regenerate documents'}</button>}
+                                {!vendor && <Button type="button" variant="outline" size="sm" className="w-full" disabled={!!job || rev.status !== 'ready'} onClick={() => generate(part.id)}><RefreshCw className={job ? 'animate-spin' : ''} />{job ? 'Generating…' : 'Regenerate documents'}</Button>}
                               </>
                             )}
                           </div>
@@ -1143,21 +1246,21 @@ function App() {
                       })(
                       ) : (
                         <>
-                          <div className="inspector-top"><span className="eyebrow">REVISION OVERVIEW</span><h2>Design to delivery</h2><p className="muted">Every manufacturing decision stays with this revision.</p></div>
-                          <div className="inspector-body">
-                            <div className="overview-stats"><div><b>{parts.length}</b><span>Part definitions</span></div><div><b>{holes}</b><span>Named bores</span></div></div>
-                            <div className="property-list">{Object.entries(categories).map(([k, v]) => <div key={k}><span className="flex"><Swatch hex={categoryColors[k]} /> {v}</span><b>{parts.filter((p: Any) => p.category === k).length}</b></div>)}</div>
-                            <div className="status-card"><ShieldCheck size={20} /><div><b>{blocking} release blockers</b><p>Includes missing specifications and manual engineering checks.</p></div></div>
-                            <h4>Drawing sets</h4>
+                          <div className="px-4 pt-3 pb-2.5"><span className="block text-2xs font-medium tracking-wider text-faint">REVISION OVERVIEW</span><h2 className="mt-2 mb-1 text-base font-semibold [overflow-wrap:anywhere]">Design to delivery</h2><p className="text-xs text-muted-foreground">Every manufacturing decision stays with this revision.</p></div>
+                          <div className="flex-1 overflow-auto px-4 pt-3 pb-5">
+                            <div className="grid grid-cols-2 gap-2.5"><div className="rounded-lg border bg-subtle px-3 py-3.5"><span className="block text-2xl font-semibold tabular-nums">{parts.length}</span><span className="text-xs text-muted-foreground">Part definitions</span></div><div className="rounded-lg border bg-subtle px-3 py-3.5"><span className="block text-2xl font-semibold tabular-nums">{holes}</span><span className="text-xs text-muted-foreground">Named bores</span></div></div>
+                            <div className="mt-1.5 mb-3.5">{Object.entries(categories).map(([k, v]) => <div key={k} className={kv}><span className="flex items-center gap-2 text-muted-foreground"><Swatch hex={categoryColors[k]} /> {v}</span><span className={cn(kvValue, 'font-medium tabular-nums')}>{parts.filter((p: Any) => p.category === k).length}</span></div>)}</div>
+                            <div className="my-3.5 flex gap-2.5 rounded-lg border border-warning/30 bg-warning-soft p-3 text-warning"><ShieldCheck className="size-5 shrink-0" /><div><div className="text-sm font-medium">{blocking} release blockers</div><p className="mt-0.5 text-sm leading-relaxed">Includes missing specifications and manual engineering checks.</p></div></div>
+                            <h4 className={cn('mb-2', eyebrow)}>Drawing sets</h4>
                             {[['machining-drawings.pdf', 'All machining drawings', 'One PDF · every machined part'], ['sheet-metal-drawings.pdf', 'All sheet-metal drawings', 'One PDF · flat patterns and bend tables'], ['assembly.pdf', 'Assembly & mating record', 'PDF · assembly view and fits']].map(([file, title, sub]) => (
-                              <button className="document" key={file} disabled={!rev.assets?.includes(file)} onClick={() => doc(`/revisions/${rev.id}/assets/${file}`, file, title)}><Files size={22} /><span><strong>{title}</strong><small>{rev.assets?.includes(file) ? sub : 'Generate the manufacturing pack first'}</small></span><Eye size={16} /></button>
+                              <Button variant="outline" className="mb-2 h-auto w-full justify-between gap-3 p-3 text-left font-normal whitespace-normal text-muted-foreground shadow-none" key={file} disabled={!rev.assets?.includes(file)} onClick={() => doc(`/revisions/${rev.id}/assets/${file}`, file, title)}><Files className="size-[22px]" /><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-foreground">{title}</span><span className="mt-0.5 block text-2xs">{rev.assets?.includes(file) ? sub : 'Generate the manufacturing pack first'}</span></span><Eye /></Button>
                             ))}
-                            {!vendor && <>
-                              <button className="primary full" disabled={!!job || rev.status !== 'ready'} onClick={() => generate()}><FileText size={16} />Generate manufacturing pack</button>
-                              <button className="full" disabled={rev.status !== 'ready' || !!job} onClick={() => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); })}><ShieldCheck size={16} />Production readiness</button>
-                              {editable && <button className="full" title="Re-run make/buy name rules and hide small bought-in items on parts you have not classified yet" onClick={() => action(async () => { const r = await api(`/revisions/${rev.id}/reclassify`, 'POST'); await loadRevision(rev.id); notify(`Re-classified ${r.recategorised} parts, hid ${r.hidden} bought-in items. Reviewed parts were left alone.`); })}><RefreshCw size={16} />Re-run classification</button>}
-                            </>}
-                            <div className="info-card"><Palette size={18} /><p>Parts are coloured by their specified coating colour; uncoated parts use a neutral tone per category. Pick a part in the viewer or navigator to inspect it.</p></div>
+                            {!vendor && <div className="mt-1 grid gap-2">
+                              <Button className="w-full" disabled={!!job || rev.status !== 'ready'} onClick={() => generate()}><FileText />Generate manufacturing pack</Button>
+                              <Button variant="outline" className="w-full" disabled={rev.status !== 'ready' || !!job} onClick={() => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); })}><ShieldCheck />Production readiness</Button>
+                              {editable && <Button variant="outline" className="w-full" title="Re-run make/buy name rules and hide small bought-in items on parts you have not classified yet" onClick={() => action(async () => { const r = await api(`/revisions/${rev.id}/reclassify`, 'POST'); await loadRevision(rev.id); notify(`Re-classified ${r.recategorised} parts, hid ${r.hidden} bought-in items. Reviewed parts were left alone.`); })}><RefreshCw />Re-run classification</Button>}
+                            </div>}
+                            <div className="my-3.5 flex gap-2.5 rounded-lg border bg-subtle p-3 text-muted-foreground"><Palette className="size-[18px] shrink-0" /><p className="text-sm leading-relaxed">Parts are coloured by their specified coating colour; uncoated parts use a neutral tone per category. Pick a part in the viewer or navigator to inspect it.</p></div>
                           </div>
                         </>
                       )}
@@ -1169,24 +1272,26 @@ function App() {
 
                 {tab === 'joborders' && !vendor && project && (
                   rev.status !== 'released' && !project.revisions.some((r: Any) => r.status === 'released')
-                    ? <section className="content-page"><div className="notice"><ShieldCheck size={17} />Job orders open once a revision is production ready: every part design-reviewed and drawing-reviewed, all design checks covered, then <b>Release</b> in the revision overview.</div><JobOrdersPage projects={projects} projectId={project.id} ctx={{ busy, action, notify }} perms={new Set(project.permissions || [])} openJobOrder={openJobOrder} /></section>
+                    ? <section className={pageWrap}><div className={notice}><ShieldCheck className="size-4" /><span>Job orders open once a revision is production ready: every part design-reviewed and drawing-reviewed, all design checks covered, then <b>Release</b> in the revision overview.</span></div><JobOrdersPage projects={projects} projectId={project.id} ctx={{ busy, action, notify }} perms={new Set(project.permissions || [])} openJobOrder={openJobOrder} /></section>
                     : <JobOrdersPage projects={projects} projectId={project.id} ctx={{ busy, action, notify }} perms={new Set(project.permissions || [])} openJobOrder={openJobOrder} />
                 )}
 
-                {(tab === 'assembly' || tab === 'steps') && <div className="asm-wrap">
-                  <div className="asm-switch v-segment" role="tablist">
-                    <button type="button" className={asmView === 'steps' ? 'active' : ''} onClick={() => setAsmView('steps')}><ListOrdered size={14} />Build steps</button>
-                    <button type="button" className={asmView === 'welds' ? 'active' : ''} onClick={() => setAsmView('welds')}><Flame size={14} />Weld assemblies <small>{(rev.weldments || []).length}</small></button>
-                  </div>
+                {(tab === 'assembly' || tab === 'steps') && <div className="flex h-[calc(100vh-48px)] min-h-0 flex-col">
+                  <Tabs value={asmView} onValueChange={v => setAsmView(v as 'steps' | 'welds')} className="mx-3 mt-3 self-start">
+                    <TabsList>
+                      <TabsTrigger value="steps" className="px-2.5 text-xs"><ListOrdered className="size-3.5" />Build steps</TabsTrigger>
+                      <TabsTrigger value="welds" className="px-2.5 text-xs"><Flame className="size-3.5" />Weld assemblies <span className="font-normal text-muted-foreground tabular-nums">{(rev.weldments || []).length}</span></TabsTrigger>
+                    </TabsList>
+                  </Tabs>
                 {asmView === 'steps' ? <AssemblySteps page revision={rev.id} parts={parts} editable={editable} navStyle={prefs.navStyle} addParts={stepsAdd?.ids} addKey={stepsAdd?.n} close={() => setTab('parts')} /> : (
-                  <section className="content-page">
-                    <div className="page-title">
-                      <div><h2>Weld assemblies</h2><p>Each weld assembly is a set of parts welded into one unit. Open one to add or remove its welds; select a part in the model to see its assembly.</p></div>
-                      <div className="flex">
-                        <button onClick={() => doc(`/revisions/${rev.id}/assets/assembly.pdf`, 'assembly.pdf', 'Assembly & mating record')}><Eye size={16} />Assembly document</button>
+                  <section className={cn(pageWrap, 'min-h-0 flex-1 overflow-auto')}>
+                    <div className={pageTitle}>
+                      <div><h2 className="text-xl font-semibold">Weld assemblies</h2><p className="mt-1 text-sm text-muted-foreground">Each weld assembly is a set of parts welded into one unit. Open one to add or remove its welds; select a part in the model to see its assembly.</p></div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="outline" onClick={() => doc(`/revisions/${rev.id}/assets/assembly.pdf`, 'assembly.pdf', 'Assembly & mating record')}><Eye />Assembly document</Button>
                         <JobDocButton key={(rev.joints || []).map((j: Any) => j.id + j.updated).join()} revision={rev.id} kind="welding" label="Welding document" icon={<Flame size={16} />} notify={notify}
                           disabled={!(rev.joints || []).some((j: Any) => j.kind === 'weld')} open={path => doc(path, 'welding.pdf', 'Welding document')} />
-                        {editable && <button onClick={() => { if (!multi.length && !selected) { setTab('parts'); notify('Select the parts to weld in the model (Ctrl/⌘-click for several), then Weld.'); return; } startWeld(multi.length ? [...multi] : [selected!]); }}><Plus size={16} />New weld assembly</button>}
+                        {editable && <Button variant="outline" onClick={() => { if (!multi.length && !selected) { setTab('parts'); notify('Select the parts to weld in the model (Ctrl/⌘-click for several), then Weld.'); return; } startWeld(multi.length ? [...multi] : [selected!]); }}><Plus />New weld assembly</Button>}
                       </div>
                     </div>
                     <WeldAssemblies weldments={rev.weldments || []} parts={parts} editable={editable} canJobOrder={!vendor && (project?.permissions || []).includes('joborder.create')}
@@ -1201,15 +1306,15 @@ function App() {
                 </div>}
 
                 {tab === 'production' && (
-                  <section className="content-page">
-                    <div className="page-title">
-                      <div><h2>Production checklist</h2><p>{vendor ? 'Tick each item as it is produced; quantities and remarks are recorded against this revision.' : 'Shared with vendors through the review link. Parts marked not for production are left out.'}</p></div>
-                      <div className="flex">
-                        <button onClick={() => doc(`/revisions/${rev.id}/assets/machining-drawings.pdf`, 'machining-drawings.pdf', 'All machining drawings')} disabled={!rev.assets?.includes('machining-drawings.pdf')}><Files size={16} />Machining set</button>
-                        <button onClick={() => doc(`/revisions/${rev.id}/assets/sheet-metal-drawings.pdf`, 'sheet-metal-drawings.pdf', 'All sheet-metal drawings')} disabled={!rev.assets?.includes('sheet-metal-drawings.pdf')}><Files size={16} />Sheet-metal set</button>
+                  <section className={pageWrap}>
+                    <div className={pageTitle}>
+                      <div><h2 className="text-xl font-semibold">Production checklist</h2><p className="mt-1 text-sm text-muted-foreground">{vendor ? 'Tick each item as it is produced; quantities and remarks are recorded against this revision.' : 'Shared with vendors through the review link. Parts marked not for production are left out.'}</p></div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="outline" onClick={() => doc(`/revisions/${rev.id}/assets/machining-drawings.pdf`, 'machining-drawings.pdf', 'All machining drawings')} disabled={!rev.assets?.includes('machining-drawings.pdf')}><Files />Machining set</Button>
+                        <Button variant="outline" onClick={() => doc(`/revisions/${rev.id}/assets/sheet-metal-drawings.pdf`, 'sheet-metal-drawings.pdf', 'All sheet-metal drawings')} disabled={!rev.assets?.includes('sheet-metal-drawings.pdf')}><Files />Sheet-metal set</Button>
                       </div>
                     </div>
-                    {rev.status !== 'released' && <div className="notice"><ShieldCheck size={17} />This revision is not released yet — quantities recorded here are for planning; manufacture only from released documents.</div>}
+                    {rev.status !== 'released' && <div className={notice}><ShieldCheck className="size-4" />This revision is not released yet — quantities recorded here are for planning; manufacture only from released documents.</div>}
                     <ProductionChecklist parts={parts} rows={related} busy={busy} canEdit={!vendor && can('joborder.update')}
                       onPreview={p => doc(`/parts/${p.id}/assets/drawing.pdf`, p.name + '_drawing.pdf', 'Drawing sheet — ' + p.name)}
                       onSave={async (pid, r) => { await action(async () => { await api(`/revisions/${rev.id}/production/${pid}`, 'PUT', r); await refreshRelated('production'); }); }} />
@@ -1217,29 +1322,29 @@ function App() {
                 )}
 
                 {tab === 'review' && (
-                  <section className="content-page review-page">
-                    <div className="page-title"><div><h2>Review together</h2><p>Questions and decisions tied to parts, features and this exact revision.</p></div><Badge>{related.filter(r => !r.resolved).length} open threads</Badge></div>
-                    {!vendor && <form className="comment-form" onSubmit={e => {
+                  <section className={pageWrap}>
+                    <div className={pageTitle}><div><h2 className="text-xl font-semibold">Review together</h2><p className="mt-1 text-sm text-muted-foreground">Questions and decisions tied to parts, features and this exact revision.</p></div><Badge>{related.filter(r => !r.resolved).length} open threads</Badge></div>
+                    {!vendor && <form className="grid gap-3 rounded-lg border bg-card p-5" onSubmit={e => {
                       e.preventDefault();
                       const f = new FormData(e.currentTarget); const form = e.currentTarget;
                       action(async () => { await api(`/revisions/${rev.id}/comments`, 'POST', { body: f.get('body'), part_id: f.get('part_id') || null, feature: f.get('feature') || '' }); form.reset(); await refreshRelated('comments'); });
                     }}>
-                      <div className="form-row">
-                        <label>Part<Select name="part_id" defaultValue="" options={[{ value: '', label: 'Assembly / general' }, ...parts.map((p: Any) => ({ value: p.id, label: p.name }))]} /></label>
-                        <label>Feature reference<input name="feature" placeholder="e.g. H003 or B001" /></label>
+                      <div className="flex gap-4 max-[560px]:flex-col">
+                        <Label className={cn(field, 'flex-1')}>Part<Select name="part_id" defaultValue="" options={[{ value: '', label: 'Assembly / general' }, ...parts.map((p: Any) => ({ value: p.id, label: p.name }))]} /></Label>
+                        <Label className={cn(field, 'flex-1')}>Feature reference<Input name="feature" placeholder="e.g. H003 or B001" /></Label>
                       </div>
-                      <textarea name="body" required placeholder="Ask a question, request a change, or record a review decision…" />
-                      <button className="primary" disabled={busy}><Send size={15} />Post review</button>
+                      <Textarea name="body" required className="min-h-[90px]" placeholder="Ask a question, request a change, or record a review decision…" />
+                      <Button className="justify-self-start" disabled={busy}><Send />Post review</Button>
                     </form>}
-                    <div className="comment-list">
+                    <div className="mt-6">
                       {related.map(c => (
-                        <article key={c.id} className="comment">
-                          <div className="avatar">{(c.author || '?')[0]}</div>
-                          <div>
-                            <header><strong>{c.author}</strong><span>{date(c.created)}</span><Badge kind={c.resolved ? 'success' : 'warning'}>{c.resolved ? 'Resolved' : 'Open'}</Badge></header>
-                            <small>{parts.find((p: Any) => p.id === c.part_id)?.name || 'Assembly'} {c.feature && ' / ' + c.feature}</small>
-                            <p>{c.body}</p>
-                            {!vendor && !c.resolved && can('design.review') && <button onClick={() => action(async () => { await api('/comments/' + c.id + '/resolve', 'POST'); await refreshRelated('comments'); })}><Check size={14} />Resolve</button>}
+                        <article key={c.id} className="flex gap-3 border-b py-5">
+                          <Avatar name={c.author || '?'} size={32} />
+                          <div className="min-w-0 flex-1">
+                            <header className="mb-1 flex items-center gap-3"><span className="text-base font-medium">{c.author}</span><span className="text-xs text-muted-foreground">{date(c.created)}</span><Badge kind={c.resolved ? 'success' : 'warning'}>{c.resolved ? 'Resolved' : 'Open'}</Badge></header>
+                            <small className="block text-xs text-muted-foreground">{parts.find((p: Any) => p.id === c.part_id)?.name || 'Assembly'} {c.feature && ' / ' + c.feature}</small>
+                            <p className="mt-1 text-sm whitespace-pre-wrap">{c.body}</p>
+                            {!vendor && !c.resolved && can('design.review') && <Button variant="outline" size="sm" className="mt-2" onClick={() => action(async () => { await api('/comments/' + c.id + '/resolve', 'POST'); await refreshRelated('comments'); })}><Check />Resolve</Button>}
                           </div>
                         </article>
                       ))}
@@ -1250,15 +1355,15 @@ function App() {
                 {tab === 'qc' && <QualityPage rev={rev} vendor={!!vendor} can={can} action={fn => { void action(fn); }} notify={notify} doc={doc} onPlan={pid => { setBalloonMode(true); setDrawingPart(pid); }} />}
 
                 {tab === 'audit' && (
-                  <section className="content-page">
-                    <div className="page-title"><div><h2>Revision history</h2><p>Uploads, specification changes, reviews, releases and measurements.</p></div></div>
-                    <div className="timeline">
+                  <section className={pageWrap}>
+                    <div className={pageTitle}><div><h2 className="text-xl font-semibold">Revision history</h2><p className="mt-1 text-sm text-muted-foreground">Uploads, specification changes, reviews, releases and measurements.</p></div></div>
+                    <div className="mx-4 my-5 border-l-2">
                       {related.map(a => (
-                        <div key={a.id}>
-                          <span className="timeline-dot" />
-                          <time>{date(a.created)} · {new Date(a.created).toLocaleTimeString()}</time>
-                          <h3>{a.action.replaceAll('.', ' / ')}</h3><p>{a.actor}</p>
-                          <details><summary>Recorded detail</summary><pre>{JSON.stringify(JSON.parse(a.detail), null, 2)}</pre></details>
+                        <div key={a.id} className="relative pb-6 pl-7">
+                          <span className="absolute top-[5px] -left-[6px] size-2.5 rounded-full border-2 border-background bg-primary" />
+                          <time className="text-xs text-muted-foreground">{date(a.created)} · {new Date(a.created).toLocaleTimeString()}</time>
+                          <h3 className="mt-1.5 text-base font-semibold capitalize">{a.action.replaceAll('.', ' / ')}</h3><p className="text-sm">{a.actor}</p>
+                          <details className="text-sm text-muted-foreground"><summary className="cursor-pointer">Recorded detail</summary><pre className="mt-2 max-h-[300px] overflow-auto rounded-md border bg-card p-3.5 text-xs whitespace-pre-wrap">{JSON.stringify(JSON.parse(a.detail), null, 2)}</pre></details>
                         </div>
                       ))}
                     </div>
@@ -1270,8 +1375,9 @@ function App() {
         )}
       </main>
 
-      {error && <div className="error-toast" role="alert"><AlertTriangle size={18} /><span>{error}</span><button onClick={() => setError('')}><X size={17} /></button></div>}
+      {error && <div className="fixed bottom-6 left-1/2 z-[3200] flex max-w-[85vw] -translate-x-1/2 items-center gap-3 rounded-lg border border-destructive/20 bg-danger-soft px-4 py-3 text-sm text-destructive shadow-pop" role="alert"><AlertTriangle className="size-[18px] shrink-0" /><span className="max-h-[180px] overflow-auto">{error}</span><Button variant="ghost" size="icon-xs" className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label="Dismiss" onClick={() => setError('')}><X /></Button></div>}
       <DialogHost />
+      <Toaster />
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
       {bulkReady && rev && <BulkReady revision={rev.id} parts={parts} selection={multi.length > 1 ? multi : category === 'sheet_metal' || category === 'machining' ? parts.filter((p: Any) => p.category === category).map((p: Any) => p.id) : []}
         canDesign={can('design.review')} canDrawing={can('drawing.review')} close={() => setBulkReady(false)} done={() => loadRevision(rev.id)} />}
@@ -1283,7 +1389,6 @@ function App() {
         canJobOrder={!vendor && (project?.permissions || []).includes('joborder.create')}
         onJobOrder={w => { setWeldCfg(null); refreshJoints(rev.id).catch(fail); weldmentJobOrder(w); }}
         close={() => { setWeldCfg(null); refreshJoints(rev.id).catch(fail); }} />}
-      {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}
       {excluding && <ExcludeDialog parts={excluding} busy={busy} close={() => setExcluding(null)} onConfirm={reason => action(async () => {
         if (excluding.length === 1) await api('/parts/' + excluding[0].id + '/flags', 'PATCH', { excluded: true, exclusion_reason: reason });
         else await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: excluding.map((p: Any) => p.id), excluded: true, exclusion_reason: reason });
@@ -1310,18 +1415,18 @@ function App() {
 
       {modal === 'upload' && (
         <Modal title="Upload a CAD revision" close={() => !busy && setModal('')}>
-          {importingRevision ? <div role="status" aria-live="polite">
-            <h3>Revision {importingRevision.number} is processing · {importingRevision.progress || 0}%</h3>
-            <p>{importingRevision.message || 'Import queued'}</p>
-            <progress aria-label="CAD import progress" max="100" value={importingRevision.progress || 0} />
-            <p className="muted">Progress updates automatically. You can upload the next revision after this import finishes.</p>
-            <button className="primary full" onClick={showImport}>View import progress</button>
-          </div> : <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const file = f.get('file') as File; action(() => uploadFile(file, String(f.get('notes') || ''))); }}>
-            <label className="dropzone"><Upload size={32} /><b>Choose your part or assembly</b><span>STEP · STP · BREP · IGES / up to 1 GB</span><input name="file" type="file" accept=".step,.stp,.brep,.brp,.igs,.iges" required /></label>
-            <label>Revision notes<textarea name="notes" placeholder="What changed in this version?" /></label>
-            <p className="muted">The previous revision stays active until this file processes successfully. No review approvals carry over automatically.</p>
-            {uploadPercent !== null && <progress max="100" value={uploadPercent} />}
-            <button className="primary full" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <Upload size={16} />}Upload & analyze {uploadPercent !== null && uploadPercent + '%'}</button>
+          {importingRevision ? <div className="grid gap-3" role="status" aria-live="polite">
+            <h3 className="text-base font-semibold">Revision {importingRevision.number} is processing · {importingRevision.progress || 0}%</h3>
+            <p className="text-sm">{importingRevision.message || 'Import queued'}</p>
+            <span role="progressbar" aria-label="CAD import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={importingRevision.progress || 0}><Progress value={importingRevision.progress || 0} /></span>
+            <p className="text-sm text-muted-foreground">Progress updates automatically. You can upload the next revision after this import finishes.</p>
+            <ModalFooter><Button onClick={showImport}>View import progress</Button></ModalFooter>
+          </div> : <form className="grid gap-4" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const file = f.get('file') as File; action(() => uploadFile(file, String(f.get('notes') || ''))); }}>
+            <Label className="flex cursor-pointer flex-col items-center gap-3 rounded-lg border border-dashed border-input bg-subtle p-7 font-normal leading-normal text-muted-foreground"><Upload className="size-8" /><span className="text-lg font-semibold text-foreground">Choose your part or assembly</span><span className="text-sm">STEP · STP · BREP · IGES / up to 1 GB</span><Input name="file" type="file" accept=".step,.stp,.brep,.brp,.igs,.iges" required className="h-auto max-w-[320px] border-0 bg-transparent shadow-none dark:bg-transparent" /></Label>
+            <Label className={field}>Revision notes<Textarea name="notes" placeholder="What changed in this version?" /></Label>
+            <p className="text-sm text-muted-foreground">The previous revision stays active until this file processes successfully. No review approvals carry over automatically.</p>
+            {uploadPercent !== null && <span role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={uploadPercent}><Progress value={uploadPercent} /></span>}
+            <ModalFooter><Button disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : <Upload />}Upload & analyze {uploadPercent !== null && uploadPercent + '%'}</Button></ModalFooter>
           </form>}
         </Modal>
       )}
@@ -1347,32 +1452,37 @@ function App() {
 
       {modal === 'share' && (
         <Modal title="Share this revision with a vendor" close={() => setModal('')}>
-          <p>Read-only access for a vendor: 3D view, part details, drawings and the review thread of this revision. Vendors cannot edit, comment or record production.</p>
-          {sharePath ? (
-            <>
-              <label>Vendor review link<input readOnly value={location.origin + sharePath} onFocus={e => e.target.select()} /></label>
-              <button className="primary" onClick={() => action(async () => { await navigator.clipboard.writeText(location.origin + sharePath); notify('Link copied'); })}>Copy link</button>
-              <p className="muted">This link stays pinned to revision {rev.number}. Treat it as a password.</p>
-            </>
-          ) : (
-            <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); action(async () => { const s = await api(`/revisions/${rev.id}/shares`, 'POST', { label: f.get('label'), days: Number(f.get('days')), allow_cad: f.get('allow_cad') === 'on' }); setSharePath(s.path); }); }}>
-              <label>Vendor name<input name="label" required placeholder="Vendor / reviewer" /></label>
-              <label>Expires in<Select name="days" defaultValue="14" options={[{ value: '7', label: '7 days' }, { value: '14', label: '14 days' }, { value: '30', label: '30 days' }]} /></label>
-              <label className="check"><input type="checkbox" name="allow_cad" />Allow DXF / STEP downloads (laser and CNC programming). 3D models are never downloadable.</label>
-              <button className="primary full" disabled={busy}><Link size={16} />Create read-only link</button>
-            </form>
-          )}
-          <button className="full" onClick={() => action(async () => { setModalRows(await api(`/revisions/${rev.id}/shares`)); setModal('shares'); })}>Manage existing links</button>
+          <div className="grid gap-3">
+            <p className="text-sm">Read-only access for a vendor: 3D view, part details, drawings and the review thread of this revision. Vendors cannot edit, comment or record production.</p>
+            {sharePath ? (
+              <>
+                <Label className={field}>Vendor review link<Input readOnly className="bg-subtle text-muted-foreground" value={location.origin + sharePath} onFocus={e => e.target.select()} /></Label>
+                <p className="text-sm text-muted-foreground">This link stays pinned to revision {rev.number}. Treat it as a password.</p>
+              </>
+            ) : (
+              <form id="share-form" className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); action(async () => { const s = await api(`/revisions/${rev.id}/shares`, 'POST', { label: f.get('label'), days: Number(f.get('days')), allow_cad: f.get('allow_cad') === 'on' }); setSharePath(s.path); }); }}>
+                <Label className={field}>Vendor name<Input name="label" required placeholder="Vendor / reviewer" /></Label>
+                <Label className={field}>Expires in<Select name="days" defaultValue="14" options={[{ value: '7', label: '7 days' }, { value: '14', label: '14 days' }, { value: '30', label: '30 days' }]} /></Label>
+                <Label className={checkRow}><Checkbox name="allow_cad" className="mt-0.5" />Allow DXF / STEP downloads (laser and CNC programming). 3D models are never downloadable.</Label>
+              </form>
+            )}
+          </div>
+          <ModalFooter>
+            <Button variant="outline" onClick={() => action(async () => { setModalRows(await api(`/revisions/${rev.id}/shares`)); setModal('shares'); })}>Manage existing links</Button>
+            {sharePath
+              ? <Button onClick={() => action(async () => { await navigator.clipboard.writeText(location.origin + sharePath); notify('Link copied'); })}>Copy link</Button>
+              : <Button type="submit" form="share-form" disabled={busy}><Link />Create read-only link</Button>}
+          </ModalFooter>
         </Modal>
       )}
 
       {modal === 'shares' && (
         <Modal title="Vendor access links" close={() => setModal('')}>
           {modalRows.map(s => (
-            <div className="document" key={s.id}>
-              <div><strong>{s.label}</strong><small>Expires {date(s.expires)}{s.allow_cad ? ' · CAD downloads' : ' · view only'}</small></div>
+            <div className={docRow} key={s.id}>
+              <div className="min-w-0 flex-1"><span className="block text-sm font-medium text-foreground">{s.label}</span><span className="mt-0.5 block text-2xs">Expires {date(s.expires)}{s.allow_cad ? ' · CAD downloads' : ' · view only'}</span></div>
               <Badge>{s.revoked ? 'Revoked' : 'Active'}</Badge>
-              {!s.revoked && <button onClick={() => action(async () => { await api('/shares/' + s.id, 'DELETE'); setModalRows(await api(`/revisions/${rev.id}/shares`)); })}>Revoke</button>}
+              {!s.revoked && <Button variant="outline" size="sm" onClick={() => action(async () => { await api('/shares/' + s.id, 'DELETE'); setModalRows(await api(`/revisions/${rev.id}/shares`)); })}>Revoke</Button>}
             </div>
           ))}
         </Modal>
@@ -1380,20 +1490,20 @@ function App() {
 
       {modal === 'fit' && editing && (
         <Modal title="Mating & fit specification" close={() => setModal('')}>
-          <form onSubmit={e => { e.preventDefault(); action(async () => { if (editing.id) await api('/fits/' + editing.id, 'PATCH', editing); else await api(`/revisions/${rev.id}/fits`, 'POST', editing); await refreshRelated('fits'); setModal(''); }); }}>
-            <div className="form-grid">
+          <form className="grid gap-3" onSubmit={e => { e.preventDefault(); action(async () => { if (editing.id) await api('/fits/' + editing.id, 'PATCH', editing); else await api(`/revisions/${rev.id}/fits`, 'POST', editing); await refreshRelated('fits'); setModal(''); }); }}>
+            <div className={formGrid}>
               {['part_a', 'part_b'].map(k => (
-                <label key={k}>{k.replace('_', ' ')}
+                <Label key={k} className={cn(field, 'capitalize')}>{k.replace('_', ' ')}
                   <Select disabled={!!editing.id} value={editing.data[k]} onChange={v => setEditing({ ...editing, data: { ...editing.data, [k]: v, [k + '_name']: parts.find((p: Any) => p.id === v)?.name } })} options={parts.map((p: Any) => ({ value: p.id, label: p.name }))} />
-                </label>
+                </Label>
               ))}
               {['label', 'feature_a', 'feature_b', 'fit', 'torque', 'hole_min', 'hole_max', 'shaft_min', 'shaft_max'].map(k => (
-                <label key={k}>{k.replaceAll('_', ' ')}<input type={k.includes('_min') || k.includes('_max') ? 'number' : 'text'} step="any" value={editing.data[k] ?? ''} onChange={e => setEditing({ ...editing, data: { ...editing.data, [k]: e.target.value } })} /></label>
+                <Label key={k} className={cn(field, 'capitalize')}>{k.replaceAll('_', ' ')}<Input type={k.includes('_min') || k.includes('_max') ? 'number' : 'text'} step="any" value={editing.data[k] ?? ''} onChange={e => setEditing({ ...editing, data: { ...editing.data, [k]: e.target.value } })} /></Label>
               ))}
             </div>
-            <label>Assembly instructions<textarea required value={editing.data.instructions} onChange={e => setEditing({ ...editing, data: { ...editing.data, instructions: e.target.value } })} placeholder="Sequence, orientation, press method, lubrication, retention and inspection" /></label>
-            {editing.id && <label className="check"><input type="checkbox" checked={editing.approved} onChange={e => setEditing({ ...editing, approved: e.target.checked })} />Approve interface and tolerance limits</label>}
-            <button className="primary full" disabled={busy}>Save mating record</button>
+            <Label className={field}>Assembly instructions<Textarea required value={editing.data.instructions} onChange={e => setEditing({ ...editing, data: { ...editing.data, instructions: e.target.value } })} placeholder="Sequence, orientation, press method, lubrication, retention and inspection" /></Label>
+            {editing.id && <Label className={checkRow}><Checkbox className="mt-0.5" checked={!!editing.approved} onCheckedChange={v => setEditing({ ...editing, approved: v === true })} />Approve interface and tolerance limits</Label>}
+            <ModalFooter><Button disabled={busy}>Save mating record</Button></ModalFooter>
           </form>
         </Modal>
       )}
@@ -1402,55 +1512,54 @@ function App() {
         <Modal title="Production readiness" close={() => setModal('')}>
           {release?.can_release ? (
             <>
-              <div className="release-ready"><ShieldCheck size={35} /><h3>Every part is reviewed and every check is covered</h3><p>Marking the revision production ready locks it, generates the final document pack and opens job orders. Engineering approval remains your responsibility.</p></div>
-              <button className="primary full" disabled={!can('revision.release')} title={can('revision.release') ? '' : 'You need the release permission'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/release`, 'POST'); await loadRevision(rev.id); setModal(''); })}>Release revision</button>
+              <div className="grid justify-items-center gap-2 p-6 text-center text-success"><ShieldCheck className="size-9" /><h3 className="text-base font-semibold">Every part is reviewed and every check is covered</h3><p className="text-sm text-muted-foreground">Marking the revision production ready locks it, generates the final document pack and opens job orders. Engineering approval remains your responsibility.</p></div>
+              <ModalFooter><Button disabled={!can('revision.release')} title={can('revision.release') ? '' : 'You need the release permission'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/release`, 'POST'); await loadRevision(rev.id); setModal(''); })}>Release revision</Button></ModalFooter>
             </>
           ) : (
-            <><p>{release?.reasons.length} unresolved release requirements.</p><ul className="release-list">{release?.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}</ul></>
+            <><p className="text-sm">{release?.reasons.length} unresolved release requirements.</p><ul className="mt-2 max-h-[430px] list-disc overflow-auto pl-5 text-sm leading-7 text-warning">{release?.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}</ul></>
           )}
         </Modal>
       )}
 
       {modal === 'rules' && (
         <Modal title="Rule library & drawing conventions" close={() => setModal('')}>
-          <p>Workshop rules are configurable starting values, not universal design limits. Standards references are documented; this software is not a certification engine.</p>
-          <div className="form-grid">
+          <p className="text-sm">Workshop rules are configurable starting values, not universal design limits. Standards references are documented; this software is not a certification engine.</p>
+          <div className={cn(formGrid, 'mt-4')}>
             {Object.entries(project?.rules || config?.default_rules || {}).map(([k, v]) => (
-              <label key={k}>{k.replaceAll('_', ' ')}<input type="number" step="any" readOnly={!project || vendor} value={String(v)} onChange={e => setProject({ ...project, rules: { ...project.rules, [k]: Number(e.target.value) } })} /></label>
+              <Label key={k} className={cn(field, 'capitalize')}>{k.replaceAll('_', ' ')}<Input type="number" step="any" readOnly={!project || vendor} className="read-only:bg-subtle read-only:text-muted-foreground" value={String(v)} onChange={e => setProject({ ...project, rules: { ...project.rules, [k]: Number(e.target.value) } })} /></Label>
             ))}
           </div>
-          {project && !vendor && <button className="primary full" onClick={() => action(async () => { await api('/projects/' + project.id + '/rules', 'PUT', project.rules); notify('Rules saved for future revisions. Existing revisions retain their snapshot.'); setModal(''); })}>Save for future revisions</button>}
-          <h3>Drawing references</h3>
-          {config?.standards.map((s: Any) => <a className="standard" href={s.url} target="_blank" rel="noreferrer" key={s.code}><span><b>{s.code}</b><small>{s.topic}</small></span><ExternalLink size={16} /></a>)}
-          <h3>Manual verification coverage</h3>
-          {Object.values(config?.manual_checks || {}).map((x: Any) => <p key={x} className="muted">• {x}</p>)}
+          <h3 className={modalHeading}>Drawing references</h3>
+          {config?.standards.map((s: Any) => <a className="my-2 flex items-center justify-between rounded-md border p-3 text-sm hover:bg-accent" href={s.url} target="_blank" rel="noreferrer" key={s.code}><span className="grid"><span className="font-medium">{s.code}</span><small className="mt-0.5 text-2xs text-muted-foreground">{s.topic}</small></span><ExternalLink className="size-4 text-muted-foreground" /></a>)}
+          <h3 className={modalHeading}>Manual verification coverage</h3>
+          {Object.values(config?.manual_checks || {}).map((x: Any) => <p key={x} className="text-sm text-muted-foreground">• {x}</p>)}
+          {project && !vendor && <ModalFooter><Button onClick={() => action(async () => { await api('/projects/' + project.id + '/rules', 'PUT', project.rules); notify('Rules saved for future revisions. Existing revisions retain their snapshot.'); setModal(''); })}>Save for future revisions</Button></ModalFooter>}
         </Modal>
       )}
 
       {modal === 'settings' && (
         <Modal title="Workspace defaults" subtitle="Starting values for new projects (each project keeps its own settings)" close={() => setModal('')}>
-          {!settings ? <p className="muted">Loading…</p> : (
-            <form onSubmit={e => { e.preventDefault(); action(async () => { const body = { ...settings, sheet_prefixes: splitList(settings.sheet_prefixes), machining_prefixes: splitList(settings.machining_prefixes), purchased_prefixes: splitList(settings.purchased_prefixes) }; setSettings(await api('/settings', 'PUT', body)); notify('Settings saved. Applies to new uploads; use Re-run classification for the current revision.'); setModal(''); }); }}>
-              <h3>Part-number prefixes</h3>
-              <p className="muted">Names starting with these prefixes are classified without guessing. Comma-separated, case-insensitive, e.g. <code>SM-, GT-SM</code>.</p>
-              <div className="form-grid">
-                <label>Sheet metal prefixes<input value={joinList(settings.sheet_prefixes)} placeholder="SM-, SHT-" onChange={e => setSettings({ ...settings, sheet_prefixes: e.target.value })} /></label>
-                <label>Machining prefixes<input value={joinList(settings.machining_prefixes)} placeholder="MC-, MACH-" onChange={e => setSettings({ ...settings, machining_prefixes: e.target.value })} /></label>
-                <label>Purchased prefixes (optional)<input value={joinList(settings.purchased_prefixes)} placeholder="PUR-, BO-" onChange={e => setSettings({ ...settings, purchased_prefixes: e.target.value })} /></label>
+          {!settings ? <p className="text-sm text-muted-foreground">Loading…</p> : (
+            <form className="grid gap-3" onSubmit={e => { e.preventDefault(); action(async () => { const body = { ...settings, sheet_prefixes: splitList(settings.sheet_prefixes), machining_prefixes: splitList(settings.machining_prefixes), purchased_prefixes: splitList(settings.purchased_prefixes) }; setSettings(await api('/settings', 'PUT', body)); notify('Settings saved. Applies to new uploads; use Re-run classification for the current revision.'); setModal(''); }); }}>
+              <h3 className={cn(modalHeading, 'mt-0')}>Part-number prefixes</h3>
+              <p className="text-sm text-muted-foreground">Names starting with these prefixes are classified without guessing. Comma-separated, case-insensitive, e.g. <code>SM-, GT-SM</code>.</p>
+              <div className={formGrid}>
+                <Label className={field}>Sheet metal prefixes<Input value={joinList(settings.sheet_prefixes)} placeholder="SM-, SHT-" onChange={e => setSettings({ ...settings, sheet_prefixes: e.target.value })} /></Label>
+                <Label className={field}>Machining prefixes<Input value={joinList(settings.machining_prefixes)} placeholder="MC-, MACH-" onChange={e => setSettings({ ...settings, machining_prefixes: e.target.value })} /></Label>
+                <Label className={field}>Purchased prefixes (optional)<Input value={joinList(settings.purchased_prefixes)} placeholder="PUR-, BO-" onChange={e => setSettings({ ...settings, purchased_prefixes: e.target.value })} /></Label>
               </div>
-              <label className="check"><input type="checkbox" checked={!!settings.prefix_strict} onChange={e => setSettings({ ...settings, prefix_strict: e.target.checked })} />Everything that matches no prefix is a purchased item (strict), unless it is named like a made part (plate, bracket, cover …). Prefixes are found anywhere in the name, so exporter noise such as 11GT-MC-… still matches. Off: fall back to name and geometry rules.</label>
-              <h3>Import behaviour</h3>
-              <label className="check"><input type="checkbox" checked={!!settings.hide_purchased_by_default} onChange={e => setSettings({ ...settings, hide_purchased_by_default: e.target.checked })} />Hide small bought-in items (terminals, lidars, connectors, fasteners, multi-body supplier models) in the viewer by default</label>
-              <label className="check"><input type="checkbox" checked={!!settings.carry_over_specs} onChange={e => setSettings({ ...settings, carry_over_specs: e.target.checked })} />Carry manufacturing specifications from the active revision into new uploads (matched by part name, then shape). Approvals and review status are never carried.</label>
-              <h3>Drawing title block</h3>
-              <p className="muted">Printed on every drawing sheet (GOAT A4/A3 template). Use <b>Generate documents</b> to refresh existing drawings.</p>
-              <div className="form-grid">
+              <Label className={checkRow}><Checkbox className="mt-0.5" checked={!!settings.prefix_strict} onCheckedChange={v => setSettings({ ...settings, prefix_strict: v === true })} />Everything that matches no prefix is a purchased item (strict), unless it is named like a made part (plate, bracket, cover …). Prefixes are found anywhere in the name, so exporter noise such as 11GT-MC-… still matches. Off: fall back to name and geometry rules.</Label>
+              <h3 className={modalHeading}>Import behaviour</h3>
+              <Label className={checkRow}><Checkbox className="mt-0.5" checked={!!settings.hide_purchased_by_default} onCheckedChange={v => setSettings({ ...settings, hide_purchased_by_default: v === true })} />Hide small bought-in items (terminals, lidars, connectors, fasteners, multi-body supplier models) in the viewer by default</Label>
+              <Label className={checkRow}><Checkbox className="mt-0.5" checked={!!settings.carry_over_specs} onCheckedChange={v => setSettings({ ...settings, carry_over_specs: v === true })} />Carry manufacturing specifications from the active revision into new uploads (matched by part name, then shape). Approvals and review status are never carried.</Label>
+              <h3 className={modalHeading}>Drawing title block</h3>
+              <p className="text-sm text-muted-foreground">Printed on every drawing sheet (GOAT A4/A3 template). Use <b>Generate documents</b> to refresh existing drawings.</p>
+              <div className={formGrid}>
                 {[['company', 'Company'], ['drawn_by', 'Drawn by (DRN)'], ['checked_by', 'Checked by (CHK)'], ['approved_by', 'Approved by (APD)'], ['module', 'Module'], ['master', 'Master'], ['note', 'General note'], ['surface_finish', 'Surface finish'], ['tol_1dec', 'Tolerance · 1 decimal'], ['tol_2dec', 'Tolerance · 2 decimals'], ['tol_3dec', 'Tolerance · 3 decimals'], ['hole_fit', 'Fit for holes'], ['shaft_fit', 'Fit for shafts'], ['position_tol', 'Diametric position tolerance']].map(([k, label]) => (
-                  <label key={k}>{label}<input value={settings.drawing?.[k] ?? ''} maxLength={80} onChange={e => setSettings({ ...settings, drawing: { ...(settings.drawing || {}), [k]: e.target.value } })} /></label>
+                  <Label key={k} className={field}>{label}<Input value={settings.drawing?.[k] ?? ''} maxLength={80} onChange={e => setSettings({ ...settings, drawing: { ...(settings.drawing || {}), [k]: e.target.value } })} /></Label>
                 ))}
               </div>
-              <p className="muted">Prefix rules apply on the next upload. For a revision already imported, use <b>Re-run classification</b> in its overview; parts you classified or reviewed by hand are left untouched.</p>
-              <div className="modal-actions"><button className="primary" disabled={busy || !perms.has('users.manage')}><Check size={16} />Save defaults</button></div>
+              <ModalFooter note={<>Prefix rules apply on the next upload. For a revision already imported, use <b>Re-run classification</b> in its overview; parts you classified or reviewed by hand are left untouched.</>}><Button disabled={busy || !perms.has('users.manage')}><Check />Save defaults</Button></ModalFooter>
             </form>
           )}
         </Modal>
@@ -1458,44 +1567,45 @@ function App() {
 
       {modal === 'qc' && (
         <Modal title="Record feature inspection" close={() => setModal('')}>
-          <form onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget)); action(async () => { await api(`/revisions/${rev.id}/qc`, 'POST', { ...f, nominal: Number(f.nominal), lower_limit: Number(f.lower_limit), upper_limit: Number(f.upper_limit), measured: Number(f.measured) }); await refreshRelated('qc'); setModal(''); }); }}>
-            <label>Part<Select name="part_id" required defaultValue={parts[0]?.id || ''} options={parts.map((p: Any) => ({ value: p.id, label: p.name }))} /></label>
-            <div className="form-grid">
+          <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget)); action(async () => { await api(`/revisions/${rev.id}/qc`, 'POST', { ...f, nominal: Number(f.nominal), lower_limit: Number(f.lower_limit), upper_limit: Number(f.upper_limit), measured: Number(f.measured) }); await refreshRelated('qc'); setModal(''); }); }}>
+            <Label className={field}>Part<Select name="part_id" required defaultValue={parts[0]?.id || ''} options={parts.map((p: Any) => ({ value: p.id, label: p.name }))} /></Label>
+            <div className={formGrid}>
               {['feature', 'serial', 'nominal', 'lower_limit', 'upper_limit', 'measured', 'instrument'].map(k => (
-                <label key={k}>{k.replaceAll('_', ' ')}<input name={k} required type={['nominal', 'lower_limit', 'upper_limit', 'measured'].includes(k) ? 'number' : 'text'} step="any" placeholder={k === 'feature' ? 'H001' : undefined} /></label>
+                <Label key={k} className={cn(field, 'capitalize')}>{k.replaceAll('_', ' ')}<Input name={k} required type={['nominal', 'lower_limit', 'upper_limit', 'measured'].includes(k) ? 'number' : 'text'} step="any" placeholder={k === 'feature' ? 'H001' : undefined} /></Label>
               ))}
             </div>
-            <label>Unit<Select name="unit" defaultValue="mm" options={[{ value: 'mm', label: 'mm — bores / linear dimensions' }, { value: 'deg', label: 'degrees — bend angle' }]} /></label>
-            <label>Inspection notes<textarea name="notes" /></label>
-            <p className="muted">Entered limits must match the approved feature limits. Results and operator identity are recorded automatically.</p>
-            <button className="primary full" disabled={busy}>Save inspection record</button>
+            <Label className={field}>Unit<Select name="unit" defaultValue="mm" options={[{ value: 'mm', label: 'mm — bores / linear dimensions' }, { value: 'deg', label: 'degrees — bend angle' }]} /></Label>
+            <Label className={field}>Inspection notes<Textarea name="notes" /></Label>
+            <p className="text-sm text-muted-foreground">Entered limits must match the approved feature limits. Results and operator identity are recorded automatically.</p>
+            <ModalFooter><Button disabled={busy}>Save inspection record</Button></ModalFooter>
           </form>
         </Modal>
       )}
 
       {modal === 'compare' && (
         <Modal title="Revision comparison" close={() => setModal('')}>
-          <p className="muted">{comparison?.matching}</p>
-          {comparison?.parts.map((p: Any) => <div className="document" key={p.name}><span><strong>{p.name}</strong><small>Qty {p.old_quantity} → {p.new_quantity}</small></span><Badge kind={p.change === 'unchanged' ? 'neutral' : 'warning'}>{p.change}</Badge></div>)}
+          <p className="mb-3 text-sm text-muted-foreground">{comparison?.matching}</p>
+          {comparison?.parts.map((p: Any) => <div className={docRow} key={p.name}><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-foreground">{p.name}</span><span className="mt-0.5 block text-2xs">Qty {p.old_quantity} → {p.new_quantity}</span></span><Badge kind={p.change === 'unchanged' ? 'neutral' : 'warning'}>{p.change}</Badge></div>)}
         </Modal>
       )}
 
       {modal === 'team' && (
         <Modal title="Team access" close={() => setModal('')}>
-          <div>{modalRows.map(u => <div className="document" key={u.id}><span><strong>{u.name}</strong><small>{u.email}</small></span><Badge>{u.role}</Badge></div>)}</div>
-          <h3>Add a team member</h3>
-          <form onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); action(async () => { await api('/users', 'POST', Object.fromEntries(f)); setModalRows(await api('/users')); notify('Team member created'); }); }}>
-            <div className="form-grid">
-              <label>Name<input name="name" required /></label>
-              <label>Email<input name="email" type="email" required /></label>
-              <label>Initial password<input name="password" type="password" minLength={12} required /></label>
-              <label>Role<Select name="role" defaultValue="engineer" options={[{ value: 'engineer', label: 'Engineer' }, { value: 'qc', label: 'QC inspector' }, { value: 'viewer', label: 'Viewer' }]} /></label>
+          <div>{modalRows.map(u => <div className={docRow} key={u.id}><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-foreground">{u.name}</span><span className="mt-0.5 block text-2xs">{u.email}</span></span><Badge>{u.role}</Badge></div>)}</div>
+          <h3 className={modalHeading}>Add a team member</h3>
+          <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); action(async () => { await api('/users', 'POST', Object.fromEntries(f)); setModalRows(await api('/users')); notify('Team member created'); }); }}>
+            <div className={formGrid}>
+              <Label className={field}>Name<Input name="name" required /></Label>
+              <Label className={field}>Email<Input name="email" type="email" required /></Label>
+              <Label className={field}>Initial password<Input name="password" type="password" minLength={12} required /></Label>
+              <Label className={field}>Role<Select name="role" defaultValue="engineer" options={[{ value: 'engineer', label: 'Engineer' }, { value: 'qc', label: 'QC inspector' }, { value: 'viewer', label: 'Viewer' }]} /></Label>
             </div>
-            <button className="primary full">Create team member</button>
+            <ModalFooter><Button>Create team member</Button></ModalFooter>
           </form>
         </Modal>
       )}
     </div>
+    </TooltipProvider>
   );
 }
 
@@ -1504,8 +1614,8 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   static getDerivedStateFromError(error: Error) { return { error }; }
   render() {
     if (this.state.error) return (
-      <div className="boot crash">
-        <div><h2>Something went wrong in the interface</h2><p>{String(this.state.error?.message || this.state.error)}</p><button className="primary" onClick={() => location.reload()}>Reload</button></div>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-background p-6 text-center">
+        <div className="grid justify-items-center gap-3"><h2 className="text-lg font-semibold">Something went wrong in the interface</h2><p className="max-w-[520px] text-sm text-muted-foreground">{String(this.state.error?.message || this.state.error)}</p><Button onClick={() => location.reload()}>Reload</Button></div>
       </div>
     );
     return this.props.children;

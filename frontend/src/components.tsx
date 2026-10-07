@@ -1,39 +1,86 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { usePinchZoom } from './pinchZoom';
-import { X, Download, ExternalLink, LoaderCircle, Plus, Trash2, ArrowUp, ArrowDown, Check, Eye, EyeOff, Box, CheckCircle2, Circle, Ban, Undo2, Settings, Layers, Link2, Flame , Sparkles } from 'lucide-react';
+import { X, Download, ExternalLink, LoaderCircle, Plus, Trash2, ArrowUp, ArrowDown, Check, Eye, EyeOff, Box, CheckCircle2, Circle, Ban, Minus, Undo2, Settings, Layers, Link2, Flame , Sparkles } from 'lucide-react';
 import { asset, assetJson, saveBlob } from './api';
 import { categories, RAL, suggestions, fmt } from './constants';
 import type { Any } from './constants';
 import { Select, Combo } from './controls';
+import { cn } from '@/lib/utils';
+import { Badge as UiBadge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Empty, Progress } from './shell';
+
+/** Tooltip for an icon-only button (carries its own provider so it works anywhere). */
+function Tip({ label, children }: { label: string; children: React.ReactElement }) {
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip><TooltipTrigger asChild>{children}</TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/** Eyebrow-titled group inside a specification form. */
+function FormSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="grid gap-3 border-b py-5 first-of-type:pt-1 last-of-type:border-b-0">
+      <h3 className="text-2xs font-medium tracking-wider text-muted-foreground uppercase">{title}</h3>
+      {children}
+    </section>
+  );
+}
+const FORM_GRID = 'grid gap-x-4 gap-y-3 sm:grid-cols-2';
+/** "· will change" marker after a group-editor label. */
+const Changed = ({ children }: { children: React.ReactNode }) => <span className="text-xs font-normal text-selection-foreground">{children}</span>;
+const CHANGED_FIELD = '[&_input]:border-primary/40 [&_input]:bg-selection [&_textarea]:border-primary/40 [&_textarea]:bg-selection';
+const GLYPH: Record<string, string> = { machining: 'bg-machining/10 text-machining', sheet_metal: 'bg-sheet/10 text-sheet', purchased: 'bg-purchased/10 text-purchased', other: 'bg-other/10 text-other' };
 
 // ---------------------------------------------------------------------------------------------
 // Small primitives
 // ---------------------------------------------------------------------------------------------
-export function Badge({ children, kind = '' }: { children: React.ReactNode; kind?: string }) {
-  return <span className={'badge ' + kind}>{children}</span>;
+const BADGE_TONES: Record<string, BadgeTone> = { success: 'success', warning: 'warning', danger: 'danger', accent: 'accent', neutral: 'neutral', welding: 'warning' };
+type BadgeTone = 'success' | 'warning' | 'danger' | 'accent' | 'neutral';
+/** Status pill. `kind`: success · warning · danger · accent · neutral (default). */
+export function Badge({ children, kind = '', className }: { children: React.ReactNode; kind?: string; className?: string }) {
+  return <UiBadge variant={BADGE_TONES[kind] || 'neutral'} className={cn('h-5 rounded-full px-2 text-2xs font-medium', className)}>{children}</UiBadge>;
 }
 
 export function Swatch({ hex, title, size = 14 }: { hex?: string; title?: string; size?: number }) {
   if (!hex) return null;
-  return <span className="swatch" title={title || hex} style={{ background: hex, width: size, height: size }} />;
+  return <span className="inline-block shrink-0 rounded-[4px] ring-1 ring-black/10 ring-inset dark:ring-white/15" title={title || hex} style={{ background: hex, width: size, height: size }} />;
 }
 
-export function Modal({ title, close, children, wide = false, subtitle, top = false }: { title: string; close: () => void; children: React.ReactNode; wide?: boolean; subtitle?: string; top?: boolean }) {
-  useEffect(() => {
-    // Escape closes an open dropdown first; the modal only closes on the next press.
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.getElementById('popover-root')?.childElementCount) close(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [close]);
+/**
+ * Dialog (shadcn). The body scrolls; put the action row in <ModalFooter> as the last child so it stays visible.
+ * `wide` for editors and tables, `top` is kept for callers that stack a dialog over another (Radix layers them).
+ */
+export function Modal({ title, close, children, wide = false, subtitle }: { title: string; close: () => void; children: React.ReactNode; wide?: boolean; subtitle?: string; top?: boolean }) {
   return (
-    <div className={'overlay' + (top ? ' top' : '')} onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
-      <section role="dialog" aria-modal="true" aria-label={title} className={'modal' + (wide ? ' wide' : '')}>
-        <header>
-          <div><h2>{title}</h2>{subtitle && <p className="muted">{subtitle}</p>}</div>
-          <button aria-label="Close" onClick={close}><X size={20} /></button>
-        </header>
-        {children}
-      </section>
+    <Dialog open onOpenChange={o => { if (!o) close(); }}>
+      <DialogContent className={cn('flex max-h-[min(88vh,900px)] flex-col gap-0 overflow-hidden bg-card p-0', wide ? 'sm:max-w-4xl' : 'sm:max-w-lg')}
+        onInteractOutside={e => { if ((e.target as HTMLElement)?.closest?.('[data-sonner-toaster], #popover-root')) e.preventDefault(); }}>
+        <DialogHeader className="shrink-0 gap-1 border-b px-5 py-4 pr-12">
+          <DialogTitle className="text-base font-semibold">{title}</DialogTitle>
+          {subtitle ? <DialogDescription className="text-sm">{subtitle}</DialogDescription> : <DialogDescription className="sr-only">{title}</DialogDescription>}
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Action row at the bottom of a Modal: stays visible while the body scrolls. Left content (a note) via `note`. */
+export function ModalFooter({ children, note, className }: { children: React.ReactNode; note?: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn('sticky -bottom-4 z-10 -mx-5 -mb-4 mt-5 flex items-center justify-end gap-2 border-t bg-card px-5 py-3', className)}>
+      {note && <div className="mr-auto min-w-0 text-xs text-muted-foreground">{note}</div>}
+      {children}
     </div>
   );
 }
@@ -47,13 +94,18 @@ export function ExcludeDialog({ parts, busy, onConfirm, close }: { parts: Any[];
   const ok = reason.trim().length >= 3;
   return (
     <Modal title={parts.length === 1 ? 'Mark not for production' : `Mark ${parts.length} parts not for production`} subtitle="Excluded parts are skipped by release checks, drawing sets, the manufacturing pack and the vendor checklist. You can restore them any time." close={close}>
-      <div className="group-summary">{parts.map(p => <Badge key={p.id} kind={p.category}>{p.name}</Badge>)}</div>
-      <label>Reason<textarea autoFocus value={reason} placeholder="Why is this part not being made in this revision?" onChange={e => setReason(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && ok) onConfirm(reason.trim()); }} /></label>
-      <div className="chips">{EXCLUDE_REASONS.map(r => <button type="button" key={r} className={'chip' + (reason === r ? ' chosen' : '')} onClick={() => setReason(r)}>{r}</button>)}</div>
-      <div className="modal-actions">
-        <button type="button" onClick={close}>Cancel</button>
-        <button type="button" className="primary danger-fill" disabled={!ok || busy} onClick={() => onConfirm(reason.trim())}><Ban size={15} />Not for production</button>
+      <div className="grid gap-4">
+        <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto">{parts.map(p => <Badge key={p.id} kind={p.category}>{p.name}</Badge>)}</div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="exclude-reason">Reason</Label>
+          <Textarea id="exclude-reason" autoFocus rows={3} value={reason} placeholder="Why is this part not being made in this revision?" onChange={e => setReason(e.target.value)} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && ok) onConfirm(reason.trim()); }} />
+        </div>
+        <div className="flex flex-wrap gap-1.5">{EXCLUDE_REASONS.map(r => <Button type="button" size="xs" variant={reason === r ? 'secondary' : 'outline'} key={r} className={cn('rounded-full font-normal', reason === r && 'bg-selection text-selection-foreground hover:bg-selection')} onClick={() => setReason(r)}>{r}</Button>)}</div>
       </div>
+      <ModalFooter>
+        <Button type="button" variant="outline" onClick={close}>Cancel</Button>
+        <Button type="button" variant="destructive" disabled={!ok || busy} onClick={() => onConfirm(reason.trim())}><Ban />Not for production</Button>
+      </ModalFooter>
     </Modal>
   );
 }
@@ -141,25 +193,34 @@ export function DocumentPreview({ blob, name, title, close }: { blob: Blob; name
 
   const size = blob.size > 1e6 ? (blob.size / 1e6).toFixed(1) + ' MB' : Math.round(blob.size / 1e3) + ' KB';
   return (
-    <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
-      <section role="dialog" aria-modal="true" aria-label={title} className="modal preview">
-        <header>
-          <div><h2>{title}</h2><p className="muted">{name} · {size}{pages ? ` · ${pages} page${pages > 1 ? 's' : ''}` : ''}</p></div>
-          <div className="flex">
-            {isPdf && <div className="zoom-group"><button type="button" onClick={() => setZoom(z => Math.max(0.5, +(z - 0.25).toFixed(2)))} aria-label="Zoom out">−</button><button type="button" className="zoom-reset" title="Fit width (pinch or Ctrl/⌘ + scroll to zoom)" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button type="button" onClick={() => setZoom(z => Math.min(8, +(z + 0.25).toFixed(2)))} aria-label="Zoom in">+</button></div>}
-            {isPdf && url && <a className="button" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} />Open in tab</a>}
-            <button className="primary" onClick={() => saveBlob(blob, name)}><Download size={16} />Download</button>
-            <button aria-label="Close" onClick={close}><X size={20} /></button>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-[2vh] backdrop-blur-[2px] animate-in fade-in-0" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
+      <section role="dialog" aria-modal="true" aria-label={title} data-slot="dialog-content" className="flex h-[92vh] w-[min(1400px,96vw)] flex-col items-stretch gap-0 overflow-hidden rounded-xl border bg-card shadow-pop">
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-semibold">{title}</h2>
+            <p className="truncate text-xs text-muted-foreground">{name} · {size}{pages ? ` · ${pages} page${pages > 1 ? 's' : ''}` : ''}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {isPdf && (
+              <div className="flex items-center gap-0 rounded-md border bg-card shadow-xs">
+                <Button type="button" variant="ghost" size="icon-sm" className="rounded-r-none" onClick={() => setZoom(z => Math.max(0.5, +(z - 0.25).toFixed(2)))} aria-label="Zoom out"><Minus /></Button>
+                <Button type="button" variant="ghost" size="sm" className="min-w-14 rounded-none font-normal text-muted-foreground tabular-nums" title="Fit width (pinch or Ctrl/⌘ + scroll to zoom)" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</Button>
+                <Button type="button" variant="ghost" size="icon-sm" className="rounded-l-none" onClick={() => setZoom(z => Math.min(8, +(z + 0.25).toFixed(2)))} aria-label="Zoom in"><Plus /></Button>
+              </div>
+            )}
+            {isPdf && url && <Button variant="outline" size="sm" asChild><a href={url} target="_blank" rel="noreferrer"><ExternalLink />Open in tab</a></Button>}
+            <Button size="sm" onClick={() => saveBlob(blob, name)}><Download />Download</Button>
+            <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={close}><X /></Button>
           </div>
         </header>
-        <div className="preview-body" ref={scroller}>
+        <div className="relative flex min-h-0 flex-1 touch-pan-x touch-pan-y flex-col items-start gap-4 overflow-auto overscroll-contain bg-muted p-6" ref={scroller}>
           {isPdf ? (
             <>
-              {rendering && !error && <div className="preview-state"><span className="spinner" />Rendering pages…</div>}
-              {error && <div className="preview-fallback"><p>{error}</p></div>}
-              {Array.from({ length: pages }, (_, i) => <canvas key={i} data-page={i + 1} className="pdf-page" />)}
+              {rendering && !error && <div className="sticky top-0 z-[2] flex items-center gap-2 self-center rounded-full border bg-card px-3.5 py-1.5 text-sm text-muted-foreground shadow-pop"><LoaderCircle className="size-4 animate-spin" />Rendering pages…</div>}
+              {error && <div className="grid h-full place-items-center self-stretch p-10 text-center text-sm text-muted-foreground"><p>{error}</p></div>}
+              {Array.from({ length: pages }, (_, i) => <canvas key={i} data-page={i + 1} className="mx-auto max-w-none shrink-0 bg-white shadow-md ring-1 ring-black/5" />)}
             </>
-          ) : <div className="preview-fallback"><p>Preview is available for PDF documents only. Download to open this file in your CAD or CAM software.</p></div>}
+          ) : <div className="grid h-full place-items-center self-stretch p-10 text-center text-sm text-muted-foreground"><p className="max-w-md">Preview is available for PDF documents only. Download to open this file in your CAD or CAM software.</p></div>}
         </div>
       </section>
     </div>
@@ -206,8 +267,8 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
     return () => el.removeEventListener('wheel', handler);
   }, [flat]);
 
-  if (error) return <div className="processing"><h2>Flat pattern unavailable</h2><p>{error}</p></div>;
-  if (!flat) return <div className="viewer-state"><span className="spinner" />Loading developed pattern…</div>;
+  if (error) return <div className="flex min-h-[370px] flex-1 flex-col items-center justify-center gap-3 bg-viewer px-6 py-16 text-center text-sm text-muted-foreground"><h2 className="text-lg font-semibold text-foreground">Flat pattern unavailable</h2><p className="max-w-[550px]">{error}</p></div>;
+  if (!flat) return <div className="absolute inset-0 flex items-center justify-center gap-2.5 bg-viewer/85 text-base text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading developed pattern…</div>;
 
   const pts = [...flat.outline, ...flat.holes.flat()];
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
@@ -245,16 +306,16 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
   const dimY = Y(minY) + margin * 0.35;
   const dimX = X(minX) - margin * 0.35;
   return (
-    <div className="flat-view">
-      <svg ref={svg} viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`} preserveAspectRatio="xMidYMid meet"
+    <div className="relative flex min-h-[300px] flex-1 flex-col items-stretch gap-0 bg-subtle">
+      <svg ref={svg} className="min-h-0 w-full flex-1 cursor-grab touch-none active:cursor-grabbing" viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`} preserveAspectRatio="xMidYMid meet"
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} onDoubleClick={() => setView(null)}>
         <defs>
           <pattern id="flat-grid" width={10} height={10} patternUnits="userSpaceOnUse">
-            <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#dfe2e6" strokeWidth={stroke * 0.5} />
+            <path d="M 10 0 L 0 0 0 10" fill="none" className="stroke-border" strokeWidth={stroke * 0.5} />
           </pattern>
         </defs>
         <rect x={vb.x - full.w * 4} y={vb.y - full.h * 4} width={full.w * 9} height={full.h * 9} fill="url(#flat-grid)" />
-        <path d={path(flat.outline) + flat.holes.map(path).join(' ')} fill="#c9d5e0" fillOpacity={0.55} stroke="#1c2024" strokeWidth={stroke * 2} strokeLinejoin="round" fillRule="evenodd" />
+        <path d={path(flat.outline) + flat.holes.map(path).join(' ')} fill="#c9d5e0" fillOpacity={0.55} className="stroke-foreground" strokeWidth={stroke * 2} strokeLinejoin="round" fillRule="evenodd" />
         {(() => {
           // Bend labels: short tag on the bend line, placed where it does not cover another label (the table
           // below carries radius and allowance). Tries above / below the line at the middle, then at a quarter.
@@ -286,13 +347,13 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
             return (
               <g key={b.id}>
                 <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#ff6a1f" strokeWidth={stroke * 1.6} strokeDasharray={`${font * 0.8} ${font * 0.4}`}><title>{`${tag}${n > 1 ? ` (${n} lines, one stroke)` : ''} · ${b.id} · ${fmt(b.angle)}° ${(b.direction || '').toUpperCase()} · R${fmt(b.radius)} · BA ${fmt(b.allowance)}`}</title></line>
-                {pick && <text x={pick.x} y={pick.y} fontSize={font} fill="#c8470c" textAnchor="middle" transform={`rotate(${ang} ${pick.x} ${pick.y})`} fontFamily="Manrope Variable, sans-serif" fontWeight={600} paintOrder="stroke" stroke="#fff" strokeWidth={font * 0.18}>{pick.t}</text>}
+                {pick && <text x={pick.x} y={pick.y} fontSize={font} fill="#c8470c" textAnchor="middle" transform={`rotate(${ang} ${pick.x} ${pick.y})`} fontFamily="Geist Variable, sans-serif" fontWeight={500} paintOrder="stroke" className="stroke-subtle" strokeWidth={font * 0.18}>{pick.t}</text>}
               </g>
             );
           });
         })()}
         {/* overall dimensions */}
-        <g stroke="#4b5158" strokeWidth={stroke} fill="#4b5158" fontSize={font} fontFamily="DM Sans Variable, sans-serif">
+        <g className="fill-muted-foreground stroke-muted-foreground" strokeWidth={stroke} fontSize={font} fontFamily="Geist Variable, sans-serif">
           <line x1={X(minX)} y1={dimY} x2={X(maxX)} y2={dimY} />
           <line x1={X(minX)} y1={Y(minY)} x2={X(minX)} y2={dimY + arrow} />
           <line x1={X(maxX)} y1={Y(minY)} x2={X(maxX)} y2={dimY + arrow} />
@@ -307,28 +368,28 @@ export function FlatPattern({ partId, thickness, kFactor, approved, name }: { pa
           <text x={dimX - font * 0.4} y={(Y(minY) + Y(maxY)) / 2} textAnchor="middle" stroke="none" transform={`rotate(-90 ${dimX - font * 0.4} ${(Y(minY) + Y(maxY)) / 2})`}>{fmt(H)}</text>
         </g>
       </svg>
-      <div className="flat-legend">
-        <div><b>{name}</b><span>Developed blank · {fmt(W)} × {fmt(H)} mm</span></div>
-        <div><span>Thickness</span><b>{fmt(thickness)} mm</b></div>
-        <div><span>K factor</span><b>{kFactor} {approved ? '· approved' : '· provisional'}</b></div>
-        <div><span>Bends</span><b>{bendGroups(flat.bends).length}{bendGroups(flat.bends).length < flat.bends.length ? ` (${flat.bends.length} lines)` : ''}</b></div>
-        <div><span>Cut-outs</span><b>{flat.holes.length}</b></div>
-        <span className="muted">Scroll to zoom · drag to pan · double-click to reset. {approved ? 'Bend allowance uses the approved K.' : 'Verify K against tooling before cutting blanks.'}</span>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-t bg-card px-4 py-2.5 text-sm">
+        <div className="flex flex-col items-start gap-0"><span className="font-medium">{name}</span><span className="text-xs text-muted-foreground">Developed blank · {fmt(W)} × {fmt(H)} mm</span></div>
+        <div className="flex flex-col items-start gap-0"><span className="text-xs text-muted-foreground">Thickness</span><span className="font-medium tabular-nums">{fmt(thickness)} mm</span></div>
+        <div className="flex flex-col items-start gap-0"><span className="text-xs text-muted-foreground">K factor</span><span className="font-medium tabular-nums">{kFactor} {approved ? '· approved' : '· provisional'}</span></div>
+        <div className="flex flex-col items-start gap-0"><span className="text-xs text-muted-foreground">Bends</span><span className="font-medium tabular-nums">{bendGroups(flat.bends).length}{bendGroups(flat.bends).length < flat.bends.length ? ` (${flat.bends.length} lines)` : ''}</span></div>
+        <div className="flex flex-col items-start gap-0"><span className="text-xs text-muted-foreground">Cut-outs</span><span className="font-medium tabular-nums">{flat.holes.length}</span></div>
+        <span className="ml-auto text-xs text-muted-foreground">Scroll to zoom · drag to pan · double-click to reset. {approved ? 'Bend allowance uses the approved K.' : 'Verify K against tooling before cutting blanks.'}</span>
       </div>
       {flat.bends.length > 0 && (
-        <div className="bend-table">
-          <table>
-            <thead><tr><th>Bend</th><th>Angle</th><th>Inside R</th><th>Direction</th><th>Allowance</th><th>Lines</th></tr></thead>
-            <tbody>
+        <div className="max-h-[190px] overflow-auto border-t bg-card px-4 pt-1 pb-3">
+          <Table>
+            <TableHeader><TableRow className="hover:bg-transparent">{['Bend', 'Angle', 'Inside R', 'Direction', 'Allowance', 'Lines'].map(h => <TableHead key={h} className="h-8 text-xs text-muted-foreground">{h}</TableHead>)}</TableRow></TableHeader>
+            <TableBody>
               {bendGroups(flat.bends).map((gr, k) => { const b = flat.bends[gr[0]]; return (
-                <tr key={b.id}>
-                  <td><code>B{k + 1}</code></td><td>{fmt(b.angle)}°</td><td>R{fmt(b.radius)} mm</td>
-                  <td><span className={'dir ' + (b.direction || '')}>{b.direction ? b.direction.toUpperCase() : '—'}</span></td>
-                  <td>{fmt(b.allowance)} mm</td><td title={gr.map(i => flat.bends[i].id).join(', ')}>{gr.length > 1 ? `${gr.length} lines · ${fmt(gr.reduce((t, i) => t + (flat.bends[i].length || 0), 0))} mm` : b.length ? fmt(b.length) + ' mm' : '—'}</td>
-                </tr>); })}
-            </tbody>
-          </table>
-          <small>UP folds toward you (viewing the root skin from outside); DOWN folds away. Collinear lines with the same angle, radius and direction are one press stroke. Confirm bend sequence and V-die with the press shop.</small>
+                <TableRow key={b.id} className="hover:bg-transparent">
+                  <TableCell className="py-1.5"><code className="text-xs">B{k + 1}</code></TableCell><TableCell className="py-1.5">{fmt(b.angle)}°</TableCell><TableCell className="py-1.5">R{fmt(b.radius)} mm</TableCell>
+                  <TableCell className="py-1.5"><span className={cn('rounded px-1.5 py-0.5 text-xs font-medium', b.direction === 'up' ? 'bg-selection text-selection-foreground' : b.direction === 'down' ? 'bg-machining/10 text-machining' : 'bg-muted')}>{b.direction ? b.direction.toUpperCase() : '—'}</span></TableCell>
+                  <TableCell className="py-1.5">{fmt(b.allowance)} mm</TableCell><TableCell className="py-1.5" title={gr.map(i => flat.bends[i].id).join(', ')}>{gr.length > 1 ? `${gr.length} lines · ${fmt(gr.reduce((t, i) => t + (flat.bends[i].length || 0), 0))} mm` : b.length ? fmt(b.length) + ' mm' : '—'}</TableCell>
+                </TableRow>); })}
+            </TableBody>
+          </Table>
+          <p className="mt-1.5 text-xs text-muted-foreground">UP folds toward you (viewing the root skin from outside); DOWN folds away. Collinear lines with the same angle, radius and direction are one press stroke. Confirm bend sequence and V-die with the press shop.</p>
         </div>
       )}
     </div>
@@ -349,8 +410,8 @@ export function PartThumb({ partId, alt, size = 96 }: { partId: string; alt: str
     return () => { cancelled = true; };
   }, [partId]);
   return (
-    <div className="thumb" style={{ width: size, height: Math.round(size * 0.66) }}>
-      {url ? <img src={url} alt={alt} /> : failed ? <Box size={22} /> : <span className="spinner" />}
+    <div className="grid shrink-0 place-items-center overflow-hidden rounded-md border bg-white text-faint" style={{ width: size, height: Math.round(size * 0.66) }}>
+      {url ? <img className="block size-full object-contain" src={url} alt={alt} /> : failed ? <Box className="size-5" /> : <LoaderCircle className="size-4 animate-spin" />}
     </div>
   );
 }
@@ -363,41 +424,41 @@ export function ProductionChecklist({ parts, rows, onSave, onPreview, canEdit, b
   const done = items.filter(p => byPart.get(p.id)?.produced).length;
   const draft = (p: Any) => drafts[p.id] || { quantity_done: byPart.get(p.id)?.quantity_done ?? 0, note: byPart.get(p.id)?.note ?? '' };
   return (
-    <div className="checklist">
-      <div className="checklist-summary">
-        <div><b>{done}</b><span>of {items.length} items produced</span></div>
-        <div className="bar"><span style={{ width: (items.length ? done / items.length * 100 : 0) + '%' }} /></div>
-        <span className="muted">{items.reduce((n, p) => n + (byPart.get(p.id)?.quantity_done || 0), 0)} / {items.reduce((n, p) => n + p.quantity, 0)} pieces</span>
+    <div className="flex flex-col gap-2.5">
+      <div className="mb-1.5 flex items-center gap-4 rounded-lg border bg-card px-4 py-3.5">
+        <div className="flex items-baseline gap-2"><span className="text-2xl font-semibold tabular-nums">{done}</span><span className="text-sm text-muted-foreground">of {items.length} items produced</span></div>
+        <div className="flex-1"><Progress value={items.length ? done / items.length * 100 : 0} tone="success" /></div>
+        <span className="text-sm text-muted-foreground tabular-nums">{items.reduce((n, p) => n + (byPart.get(p.id)?.quantity_done || 0), 0)} / {items.reduce((n, p) => n + p.quantity, 0)} pieces</span>
       </div>
       {items.map(p => {
         const row = byPart.get(p.id); const d = draft(p); const produced = !!row?.produced;
         const dirty = drafts[p.id] && (drafts[p.id].quantity_done !== (row?.quantity_done ?? 0) || drafts[p.id].note !== (row?.note ?? ''));
         return (
-          <article className={'check-row' + (produced ? ' done' : '')} key={p.id}>
-            <button type="button" className="check-toggle" disabled={!canEdit || busy} aria-label={produced ? 'Mark as not produced' : 'Mark as produced'}
+          <article className={cn('grid grid-cols-[40px_112px_1fr_260px] items-center gap-4 rounded-lg border bg-card px-4 py-3 max-[900px]:grid-cols-[34px_90px_1fr]', produced && 'border-success/20 bg-success-soft')} key={p.id}>
+            <Button type="button" variant="ghost" size="icon" className={cn('size-10 hover:bg-transparent', produced ? 'text-success hover:text-success' : 'text-faint hover:text-foreground')} disabled={!canEdit || busy} aria-label={produced ? 'Mark as not produced' : 'Mark as produced'}
               onClick={() => onSave(p.id, { produced: !produced, quantity_done: !produced ? Math.max(d.quantity_done, p.quantity) : d.quantity_done, note: d.note })}>
-              {produced ? <CheckCircle2 size={26} /> : <Circle size={26} />}
-            </button>
+              {produced ? <CheckCircle2 className="size-6.5" /> : <Circle className="size-6.5" />}
+            </Button>
             <PartThumb partId={p.id} alt={p.name} size={112} />
-            <div className="check-main">
-              <div className="flex"><strong>{p.name}</strong><Badge kind={p.category}>{categories[p.category]}</Badge>{produced && <Badge kind="success">Produced</Badge>}</div>
-              <small>
+            <div className="grid min-w-0 gap-1">
+              <div className="flex flex-wrap items-center gap-2"><span className="truncate text-base font-medium">{p.name}</span><Badge kind={p.category}>{categories[p.category]}</Badge>{produced && <Badge kind="success">Produced</Badge>}</div>
+              <p className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
                 Qty {p.quantity}{p.spec.material && ` · ${p.spec.material}`}{p.spec.finish && ` · ${p.spec.finish}`}
                 {p.spec.coating_hex && <> · <Swatch hex={p.spec.coating_hex} title={p.spec.coating_color} size={11} /> {p.spec.coating_color}</>}
-              </small>
-              <small>{p.geometry.dimensions.map((x: number) => fmt(x)).join(' × ')} mm{p.geometry.thickness > 0 && ` · t ${fmt(p.geometry.thickness)}`}{p.geometry.holes.length > 0 && ` · ${p.geometry.holes.length} bores`}{p.geometry.bends.length > 0 && ` · ${p.geometry.bends.length} bends`}</small>
-              {row?.updated && <small className="faint">{row.produced ? 'Produced' : 'Updated'} by {row.actor} · {new Date(row.updated).toLocaleString()}</small>}
+              </p>
+              <p className="text-xs text-muted-foreground tabular-nums">{p.geometry.dimensions.map((x: number) => fmt(x)).join(' × ')} mm{p.geometry.thickness > 0 && ` · t ${fmt(p.geometry.thickness)}`}{p.geometry.holes.length > 0 && ` · ${p.geometry.holes.length} bores`}{p.geometry.bends.length > 0 && ` · ${p.geometry.bends.length} bends`}</p>
+              {row?.updated && <p className="text-xs text-faint">{row.produced ? 'Produced' : 'Updated'} by {row.actor} · {new Date(row.updated).toLocaleString()}</p>}
             </div>
-            <div className="check-side">
-              <button type="button" disabled={!p.assets.includes('drawing.pdf')} title={p.assets.includes('drawing.pdf') ? 'Preview drawing' : 'Drawing not generated'} onClick={() => onPreview(p)}><Eye size={15} />Drawing</button>
-              <label>Done<input type="number" min={0} disabled={!canEdit} value={d.quantity_done} onChange={e => setDrafts({ ...drafts, [p.id]: { ...d, quantity_done: +e.target.value } })} /><span>/ {p.quantity}</span></label>
-              <input className="note" placeholder="Batch / heat no. / remarks" disabled={!canEdit} value={d.note} onChange={e => setDrafts({ ...drafts, [p.id]: { ...d, note: e.target.value } })} />
-              {dirty && <button type="button" className="primary mini" disabled={busy} onClick={() => onSave(p.id, { produced, quantity_done: d.quantity_done, note: d.note }).then(() => setDrafts(({ [p.id]: _, ...rest }) => rest))}><Check size={14} />Save</button>}
+            <div className="grid grid-cols-2 items-center gap-x-2 gap-y-1.5 max-[900px]:col-span-3">
+              <Button type="button" variant="outline" size="sm" className="col-span-2" disabled={!p.assets.includes('drawing.pdf')} title={p.assets.includes('drawing.pdf') ? 'Preview drawing' : 'Drawing not generated'} onClick={() => onPreview(p)}><Eye />Drawing</Button>
+              <Label className="gap-1.5 text-xs font-normal text-muted-foreground">Done<Input type="number" min={0} className="h-7 w-16 text-xs tabular-nums" disabled={!canEdit} value={d.quantity_done} onChange={e => setDrafts({ ...drafts, [p.id]: { ...d, quantity_done: +e.target.value } })} /><span className="tabular-nums">/ {p.quantity}</span></Label>
+              <Input className="h-7 text-xs" placeholder="Batch / heat no. / remarks" disabled={!canEdit} value={d.note} onChange={e => setDrafts({ ...drafts, [p.id]: { ...d, note: e.target.value } })} />
+              {dirty && <Button type="button" size="sm" className="col-span-2 justify-self-end" disabled={busy} onClick={() => onSave(p.id, { produced, quantity_done: d.quantity_done, note: d.note }).then(() => setDrafts(({ [p.id]: _, ...rest }) => rest))}><Check />Save</Button>}
             </div>
           </article>
         );
       })}
-      {!items.length && <div className="empty-inline"><Box size={30} /><p>No production items in this revision.</p></div>}
+      {!items.length && <Empty icon={<Box />} title="No production items in this revision." />}
     </div>
   );
 }
@@ -406,32 +467,33 @@ export function ProductionChecklist({ parts, rows, onSave, onPreview, canEdit, b
 // Manufacturing specification editor
 // ---------------------------------------------------------------------------------------------
 function Field({ label, value, onChange, list, placeholder, type = 'text', hint }: { label: string; value: Any; onChange: (v: string) => void; list?: string[]; placeholder?: string; type?: string; hint?: string }) {
+  const id = useId();
   return (
-    <label>
-      {label}
+    <div className="grid content-start gap-1.5">
+      <Label htmlFor={id}>{label}</Label>
       {list
-        ? <Combo value={value ?? ''} suggestions={list} placeholder={placeholder || 'Approved value or justified N/A'} onChange={onChange} />
-        : <input type={type} value={value ?? ''} placeholder={placeholder || 'Approved value or justified N/A'} onChange={e => onChange(e.target.value)} />}
-      {hint && <small>{hint}</small>}
-    </label>
+        ? <Combo value={value ?? ''} suggestions={list} aria-label={label} placeholder={placeholder || 'Approved value or justified N/A'} onChange={onChange} />
+        : <Input id={id} type={type} value={value ?? ''} placeholder={placeholder || 'Approved value or justified N/A'} onChange={e => onChange(e.target.value)} />}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
   );
 }
 
 type Op = { name: string; detail: string };
 export function OperationsEditor({ ops, setOps }: { ops: Op[]; setOps: (o: Op[]) => void }) {
   return (
-    <div className="ops-list">
+    <div className="grid gap-1.5">
       {ops.map((op, i) => (
-        <div className="op-row" key={i}>
-          <b>{String((i + 1) * 10).padStart(3, '0')}</b>
+        <div className="grid grid-cols-[40px_1.1fr_2fr_28px_28px_28px] items-center gap-1.5 max-sm:grid-cols-[1fr_1fr_28px_28px_28px]" key={i}>
+          <span className="font-mono text-xs font-medium text-primary tabular-nums max-sm:hidden">{String((i + 1) * 10).padStart(3, '0')}</span>
           <Combo size="sm" value={op.name} suggestions={suggestions.operation} placeholder="Operation" onChange={v => setOps(ops.map((o, j) => (j === i ? { ...o, name: v } : o)))} />
-          <input value={op.detail} placeholder="Machine, tooling, parameters, acceptance" onChange={e => setOps(ops.map((o, j) => (j === i ? { ...o, detail: e.target.value } : o)))} />
-          <button type="button" className="icon" title="Move up" disabled={i === 0} onClick={() => { const n = [...ops]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; setOps(n); }}><ArrowUp size={15} /></button>
-          <button type="button" className="icon" title="Move down" disabled={i === ops.length - 1} onClick={() => { const n = [...ops]; [n[i + 1], n[i]] = [n[i], n[i + 1]]; setOps(n); }}><ArrowDown size={15} /></button>
-          <button type="button" className="icon danger" title="Remove" onClick={() => setOps(ops.filter((_, j) => j !== i))}><Trash2 size={15} /></button>
+          <Input className="h-7 text-xs" value={op.detail} placeholder="Machine, tooling, parameters, acceptance" onChange={e => setOps(ops.map((o, j) => (j === i ? { ...o, detail: e.target.value } : o)))} />
+          <Tip label="Move up"><Button type="button" variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => { const n = [...ops]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; setOps(n); }}><ArrowUp /></Button></Tip>
+          <Tip label="Move down"><Button type="button" variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === ops.length - 1} onClick={() => { const n = [...ops]; [n[i + 1], n[i]] = [n[i], n[i + 1]]; setOps(n); }}><ArrowDown /></Button></Tip>
+          <Tip label="Remove"><Button type="button" variant="ghost" size="icon-sm" aria-label="Remove" className="text-muted-foreground hover:bg-danger-soft hover:text-destructive" onClick={() => setOps(ops.filter((_, j) => j !== i))}><Trash2 /></Button></Tip>
         </div>
       ))}
-      <button type="button" className="ghost" onClick={() => setOps([...ops, { name: '', detail: '' }])}><Plus size={15} />Add operation</button>
+      <Button type="button" variant="ghost" size="sm" className="justify-self-start" onClick={() => setOps([...ops, { name: '', detail: '' }])}><Plus />Add operation</Button>
     </div>
   );
 }
@@ -440,25 +502,25 @@ export function ColorPicker({ hex, label, onChange }: { hex?: string; label?: st
   const [ralQuery, setRalQuery] = useState('');
   const ralMatches = RAL.filter(r => !ralQuery || (r.code + ' ' + r.name).toLowerCase().includes(ralQuery.toLowerCase()));
   return (
-    <div className="color-picker">
-      <div className="color-current">
-        <span className="swatch large" style={{ background: hex || '#e6e8eb' }} />
-        <div>
-          <input value={label || ''} placeholder="RAL / Pantone / customer code" onChange={e => onChange(hex || '', e.target.value)} />
-          <div className="flex">
-            <input type="color" aria-label="Custom colour" value={hex || '#808080'} onChange={e => onChange(e.target.value, label || '')} />
-            <input value={hex || ''} placeholder="#hex" onChange={e => onChange(e.target.value, label || '')} />
-            {hex && <button type="button" className="ghost" onClick={() => onChange('', '')}>Clear</button>}
+    <div className="grid gap-3 rounded-lg border p-3">
+      <div className="flex items-center gap-3">
+        <span className="size-11 shrink-0 rounded-lg ring-1 ring-black/10 ring-inset dark:ring-white/15" style={{ background: hex || 'var(--ui-muted)' }} />
+        <div className="grid min-w-0 flex-1 gap-1.5">
+          <Input value={label || ''} placeholder="RAL / Pantone / customer code" onChange={e => onChange(hex || '', e.target.value)} />
+          <div className="flex items-center gap-1.5">
+            <Input type="color" className="w-11 shrink-0 cursor-pointer p-0.5" aria-label="Custom colour" value={hex || '#808080'} onChange={e => onChange(e.target.value, label || '')} />
+            <Input className="font-mono" value={hex || ''} placeholder="#hex" onChange={e => onChange(e.target.value, label || '')} />
+            {hex && <Button type="button" variant="ghost" onClick={() => onChange('', '')}>Clear</Button>}
           </div>
         </div>
       </div>
-      <input className="ral-search" placeholder="Search RAL classic…" value={ralQuery} onChange={e => setRalQuery(e.target.value)} />
-      <div className="ral-grid">
+      <Input className="h-7 text-xs" placeholder="Search RAL classic…" value={ralQuery} onChange={e => setRalQuery(e.target.value)} />
+      <div className="grid max-h-[190px] grid-cols-[repeat(auto-fill,minmax(58px,1fr))] gap-1.5 overflow-auto">
         {ralMatches.map(r => (
-          <button type="button" key={r.code} className={hex?.toLowerCase() === r.hex.toLowerCase() ? 'ral chosen' : 'ral'} title={`${r.code} ${r.name}`} onClick={() => onChange(r.hex, `${r.code} ${r.name}`)}>
-            <span style={{ background: r.hex }} />
-            <small>{r.code.replace('RAL ', '')}</small>
-          </button>
+          <Button type="button" variant="ghost" key={r.code} className={cn('h-auto flex-col gap-1 border border-transparent p-1', hex?.toLowerCase() === r.hex.toLowerCase() && 'border-primary bg-selection hover:bg-selection')} title={`${r.code} ${r.name}`} onClick={() => onChange(r.hex, `${r.code} ${r.name}`)}>
+            <span className="block h-6.5 w-full rounded ring-1 ring-black/10 ring-inset dark:ring-white/15" style={{ background: r.hex }} />
+            <span className="text-2xs text-muted-foreground tabular-nums">{r.code.replace('RAL ', '')}</span>
+          </Button>
         ))}
       </div>
     </div>
@@ -477,134 +539,137 @@ export function SpecEditor({ editing, setEditing, config, onSave, busy }: { edit
   ];
   const isSheet = editing.category === 'sheet_metal';
   const coated = /powder|paint|coat/i.test((spec.finish || '') + ' ' + (spec.paint || ''));
+  const uid = useId();
 
   return (
-    <form className="spec-form" onSubmit={e => { e.preventDefault(); onSave(); }}>
-      <section>
-        <h3>Classification</h3>
-        <div className="form-grid">
-          <label>Manufacturing category
-            <Select value={editing.category} onChange={v => setEditing({ ...editing, category: v })} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} />
-          </label>
-          <label>Quantity per assembly<input value={editing.quantity} readOnly /></label>
+    <form className="grid" onSubmit={e => { e.preventDefault(); onSave(); }}>
+      <FormSection title="Classification">
+        <div className={FORM_GRID}>
+          <div className="grid gap-1.5">
+            <Label>Manufacturing category</Label>
+            <Select aria-label="Manufacturing category" value={editing.category} onChange={v => setEditing({ ...editing, category: v })} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor={uid + '-qty'}>Quantity per assembly</Label>
+            <Input id={uid + '-qty'} className="tabular-nums" value={editing.quantity} readOnly />
+          </div>
         </div>
-      </section>
+      </FormSection>
 
-      <section>
-        <h3>Material & stock</h3>
-        <div className="form-grid">
+      <FormSection title="Material & stock">
+        <div className={FORM_GRID}>
           <Field label="Material / grade" value={spec.material} onChange={v => set('material', v)} list={suggestions.material} />
           <Field label="Raw stock" value={spec.stock} onChange={v => set('stock', v)} list={suggestions.stock} placeholder="Sheet 3 mm / plate / bar / tube" />
           <Field label="Heat treatment" value={spec.heat_treatment} onChange={v => set('heat_treatment', v)} list={suggestions.heat} />
           <Field label="Hardness" value={spec.hardness} onChange={v => set('hardness', v)} list={suggestions.hardness} />
         </div>
-        {editing.geometry.thickness > 0 && <p className="muted">Inferred thickness {fmt(editing.geometry.thickness)} mm · envelope {editing.geometry.dimensions.map((d: number) => fmt(d)).join(' × ')} mm</p>}
-      </section>
+        {editing.geometry.thickness > 0 && <p className="text-xs text-muted-foreground">Inferred thickness {fmt(editing.geometry.thickness)} mm · envelope {editing.geometry.dimensions.map((d: number) => fmt(d)).join(' × ')} mm</p>}
+      </FormSection>
 
-      <section>
-        <h3>Process</h3>
-        <div className="form-grid">
+      <FormSection title="Process">
+        <div className={FORM_GRID}>
           <Field label="Primary process" value={spec.process} onChange={v => set('process', v)} list={suggestions.process} />
           <Field label="Edge treatment" value={spec.edge_treatment} onChange={v => set('edge_treatment', v)} list={suggestions.edge} />
         </div>
-        <label>Process sequence</label>
-        <OperationsEditor ops={ops} setOps={setOps} />
-      </section>
+        <div className="grid gap-1.5">
+          <Label>Process sequence</Label>
+          <OperationsEditor ops={ops} setOps={setOps} />
+        </div>
+      </FormSection>
 
-      <section>
-        <h3>Surface & coating</h3>
-        <div className="form-grid">
+      <FormSection title="Surface & coating">
+        <div className={FORM_GRID}>
           <Field label="Finish" value={spec.finish} onChange={v => set('finish', v)} list={suggestions.finish} />
           <Field label="Coating system" value={spec.paint} onChange={v => set('paint', v)} list={suggestions.paint} hint="Powder / paint / plating system and film thickness" />
           <Field label="Coating thickness" value={spec.coating_thickness} onChange={v => set('coating_thickness', v)} list={suggestions.coatingThickness} />
           <Field label="Masking" value={spec.masking} onChange={v => set('masking', v)} list={suggestions.masking} />
           <Field label="Surface roughness" value={spec.roughness} onChange={v => set('roughness', v)} list={suggestions.roughness} />
         </div>
-        <label>Coating colour {coated ? '' : '(only applies to coated parts)'}</label>
-        <ColorPicker hex={spec.coating_hex} label={spec.coating_color} onChange={(hex, label) => setEditing({ ...editing, spec: { ...spec, coating_hex: hex, coating_color: label } })} />
-      </section>
+        <div className="grid gap-1.5">
+          <Label>Coating colour {coated ? '' : <span className="font-normal text-muted-foreground">(only applies to coated parts)</span>}</Label>
+          <ColorPicker hex={spec.coating_hex} label={spec.coating_color} onChange={(hex, label) => setEditing({ ...editing, spec: { ...spec, coating_hex: hex, coating_color: label } })} />
+        </div>
+      </FormSection>
 
-      <section>
-        <h3>Tolerancing & datums</h3>
-        <div className="form-grid">
+      <FormSection title="Tolerancing & datums">
+        <div className={FORM_GRID}>
           <Field label="General tolerance" value={spec.general_tolerance} onChange={v => set('general_tolerance', v)} list={suggestions.tolerance} />
           <Field label="Functional datums" value={spec.datums} onChange={v => set('datums', v)} placeholder="A = base face; B = left edge; C = bore H001" />
         </div>
-      </section>
+      </FormSection>
 
-      <section>
-        <h3>Marking, packaging & other needs</h3>
-        <div className="form-grid">
+      <FormSection title="Marking, packaging & other needs">
+        <div className={FORM_GRID}>
           <Field label="Marking / identification" value={spec.marking} onChange={v => set('marking', v)} list={suggestions.marking} />
           <Field label="Packaging" value={spec.packaging} onChange={v => set('packaging', v)} list={suggestions.packaging} />
         </div>
-        <label>Notes to vendor
-          <textarea value={spec.notes || ''} onChange={e => set('notes', e.target.value)} placeholder="Masking, welding standard, critical faces, inspection sampling, delivery and any other requirements" />
-        </label>
-      </section>
+        <div className="grid gap-1.5">
+          <Label htmlFor={uid + '-notes'}>Notes to vendor</Label>
+          <Textarea id={uid + '-notes'} value={spec.notes || ''} onChange={e => set('notes', e.target.value)} placeholder="Masking, welding standard, critical faces, inspection sampling, delivery and any other requirements" />
+        </div>
+      </FormSection>
 
       {(isSheet || editing.geometry.bends.length > 0) && (
-        <section>
-          <h3>Sheet development</h3>
-          <div className="form-grid">
-            <label>K factor
-              <input type="number" min="0.01" max="0.99" step="0.01" value={spec.k_factor} onChange={e => set('k_factor', +e.target.value)} />
-            </label>
-            <label className="check"><input type="checkbox" checked={!!spec.k_factor_approved} onChange={e => set('k_factor_approved', e.target.checked)} />K factor verified against forming tooling</label>
+        <FormSection title="Sheet development">
+          <div className={FORM_GRID}>
+            <div className="grid gap-1.5">
+              <Label htmlFor={uid + '-k'}>K factor</Label>
+              <Input id={uid + '-k'} className="tabular-nums" type="number" min="0.01" max="0.99" step="0.01" value={spec.k_factor} onChange={e => set('k_factor', +e.target.value)} />
+            </div>
+            <Label className="h-8 self-end font-normal"><Checkbox checked={!!spec.k_factor_approved} onCheckedChange={v => set('k_factor_approved', v === true)} />K factor verified against forming tooling</Label>
           </div>
-        </section>
+        </FormSection>
       )}
 
-      <section>
-        <h3>Named features & inspection limits</h3>
-        <div className="feature-edit-list">
+      <FormSection title="Named features & inspection limits">
+        <div className="max-h-[330px] overflow-auto rounded-md border">
           {features.map((h: Any) => {
             const f = spec.feature_specs[h.id] || {};
             const update = (k: string, raw: string) => set('feature_specs', { ...spec.feature_specs, [h.id]: { ...f, [k]: k === 'designation' ? raw : raw === '' ? null : +raw } });
             return (
-              <div className="feature-edit" key={h.id}>
-                <b>{h.id}<small>{h.display} {h.unit}</small></b>
-                <input aria-label={h.id + ' designation'} placeholder="Designation, e.g. M8 tapped / H7 reamed" value={f.designation ?? ''} onChange={e => update('designation', e.target.value)} />
-                <input aria-label={h.id + ' lower'} placeholder={'Lower (' + h.unit + ')'} type="number" step="any" value={f.lower ?? ''} onChange={e => update('lower', e.target.value)} />
-                <input aria-label={h.id + ' upper'} placeholder={'Upper (' + h.unit + ')'} type="number" step="any" value={f.upper ?? ''} onChange={e => update('upper', e.target.value)} />
+              <div className="grid grid-cols-[80px_2fr_1fr_1fr] items-center gap-2 border-b px-2.5 py-2 last:border-b-0 max-sm:grid-cols-[60px_1fr]" key={h.id}>
+                <span className="grid font-mono text-xs font-medium">{h.id}<span className="font-sans text-2xs font-normal text-muted-foreground tabular-nums">{h.display} {h.unit}</span></span>
+                <Input className="h-7 text-xs" aria-label={h.id + ' designation'} placeholder="Designation, e.g. M8 tapped / H7 reamed" value={f.designation ?? ''} onChange={e => update('designation', e.target.value)} />
+                <Input className="h-7 text-xs tabular-nums" aria-label={h.id + ' lower'} placeholder={'Lower (' + h.unit + ')'} type="number" step="any" value={f.lower ?? ''} onChange={e => update('lower', e.target.value)} />
+                <Input className="h-7 text-xs tabular-nums" aria-label={h.id + ' upper'} placeholder={'Upper (' + h.unit + ')'} type="number" step="any" value={f.upper ?? ''} onChange={e => update('upper', e.target.value)} />
               </div>
             );
           })}
         </div>
-      </section>
+      </FormSection>
 
-      <section>
-        <h3>Engineering verification notes</h3>
-        <div className="form-grid">
+      <FormSection title="Engineering verification notes">
+        <div className={FORM_GRID}>
           {Object.entries(config?.manual_checks || {}).map(([k, v]) => (
-            <label key={k}>{String(v)}
-              <input value={spec.manual_checks[k] || ''} onChange={e => set('manual_checks', { ...spec.manual_checks, [k]: e.target.value })} placeholder="Evidence, calculation reference or justified N/A" />
-            </label>
+            <div className="grid content-start gap-1.5" key={k}>
+              <Label htmlFor={uid + '-check-' + k} className="leading-snug">{String(v)}</Label>
+              <Input id={uid + '-check-' + k} value={spec.manual_checks[k] || ''} onChange={e => set('manual_checks', { ...spec.manual_checks, [k]: e.target.value })} placeholder="Evidence, calculation reference or justified N/A" />
+            </div>
           ))}
         </div>
-      </section>
+      </FormSection>
 
       {editing.findings?.some((f: Any) => f.code.startsWith('DFM')) && (
-        <section>
-          <h3>Rule dispositions</h3>
+        <FormSection title="Rule dispositions">
           {editing.findings.filter((f: Any) => f.code.startsWith('DFM')).map((f: Any) => {
             const k = f.code + (f.feature ? ':' + f.feature : '');
             return (
-              <label key={k}>{f.code} {f.feature} · {f.title}
-                <input placeholder="Disposition / deviation reason (optional)" value={spec.rule_waivers[k] || ''} onChange={e => { const w = { ...spec.rule_waivers }; if (e.target.value) w[k] = e.target.value; else delete w[k]; set('rule_waivers', w); }} />
-              </label>
+              <div className="grid gap-1.5" key={k}>
+                <Label htmlFor={uid + '-waive-' + k} className="leading-snug">{f.code} {f.feature} · {f.title}</Label>
+                <Input id={uid + '-waive-' + k} placeholder="Disposition / deviation reason (optional)" value={spec.rule_waivers[k] || ''} onChange={e => { const w = { ...spec.rule_waivers }; if (e.target.value) w[k] = e.target.value; else delete w[k]; set('rule_waivers', w); }} />
+              </div>
             );
           })}
-        </section>
+        </FormSection>
       )}
 
-      <label className="check reviewed">
-        <input type="checkbox" checked={!!editing.reviewed} onChange={e => setEditing({ ...editing, reviewed: e.target.checked })} />
+      <Label className="mt-2 rounded-md border bg-subtle px-3.5 py-3 font-normal leading-normal">
+        <Checkbox checked={!!editing.reviewed} onCheckedChange={v => setEditing({ ...editing, reviewed: v === true })} />
         I have reviewed this part's classification and specifications
-      </label>
-      <div className="modal-actions">
-        <button className="primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}Save specification</button>
-      </div>
+      </Label>
+      <ModalFooter>
+        <Button type="submit" disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}Save specification</Button>
+      </ModalFooter>
     </form>
   );
 }
@@ -618,47 +683,52 @@ export function GroupPanel({ parts, vendor, editable, busy, onEdit, onReady, onB
   const qty = parts.reduce((n, p) => n + p.quantity, 0);
   return (
     <>
-      <div className="inspector-top">
-        <div className="flex">{cats.map(([k, v, n]) => <Badge key={k} kind={k}>{n} {v}</Badge>)}</div>
-        <h2>{parts.length} parts selected</h2>
-        <span className="muted">{qty} pieces in the assembly{excluded ? ` · ${excluded} not for production` : ''}{hidden ? ` · ${hidden} hidden` : ''}</span>
+      <div className="px-4 pt-3 pb-2.5">
+        <div className="flex flex-wrap gap-1.5">{cats.map(([k, v, n]) => <Badge key={k} kind={k}>{n} {v}</Badge>)}</div>
+        <h2 className="mt-2 mb-0.5 text-lg leading-snug font-semibold break-words">{parts.length} parts selected</h2>
+        <span className="text-xs text-muted-foreground">{qty} pieces in the assembly{excluded ? ` · ${excluded} not for production` : ''}{hidden ? ` · ${hidden} hidden` : ''}</span>
       </div>
-      <div className="inspector-body">
+      <div className="min-h-0 flex-1 overflow-auto px-4 pt-3 pb-5">
         {!vendor && (
-          <div className="group-actions">
-            {onReady && <button type="button" className="primary full" disabled={!editable || busy} title="Fill what is missing, verify, and sign off all selected parts at once" onClick={onReady}><Sparkles size={15} />Make production ready</button>}
-            <button type="button" className={(onReady ? '' : 'primary ') + 'full'} disabled={!editable || busy} title={editable ? 'Set material, process, finish, coating and more for all selected parts at once' : 'Only on an active, ready revision (owner/engineer)'} onClick={onEdit}><Settings size={15} />Edit group manufacturing details</button>
+          <div className="grid gap-2">
+            {onReady && <Button type="button" className="w-full" disabled={!editable || busy} title="Fill what is missing, verify, and sign off all selected parts at once" onClick={onReady}><Sparkles />Make production ready</Button>}
+            <Button type="button" variant={onReady ? 'outline' : 'default'} className="w-full" disabled={!editable || busy} title={editable ? 'Set material, process, finish, coating and more for all selected parts at once' : 'Only on an active, ready revision (owner/engineer)'} onClick={onEdit}><Settings />Edit group manufacturing details</Button>
             {editable && (
-              <label className="select-action">Set category for all
-                <Select size="sm" value="" disabled={busy} placeholder="Choose…" onChange={v => { if (v) onBulk({ category: v }); }} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} />
-              </label>
+              <div className="grid gap-1.5">
+                <Label className="text-xs font-normal text-muted-foreground">Set category for all</Label>
+                <Select size="sm" aria-label="Set category for all" value="" disabled={busy} placeholder="Choose…" onChange={v => { if (v) onBulk({ category: v }); }} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} />
+              </div>
             )}
-            {editable && onJoint && <button type="button" className="full" disabled={busy} title="Define how the selected parts are joined: weld type and size, fasteners, faces" onClick={onJoint}><Flame size={15} />Weld these parts…</button>}
+            {editable && onJoint && <Button type="button" variant="outline" className="w-full" disabled={busy} title="Define how the selected parts are joined: weld type and size, fasteners, faces" onClick={onJoint}><Flame />Weld these parts…</Button>}
             {editable && onProcess && templates.length > 0 && (
-              <label className="select-action">Process template for all
-                <Select size="sm" value="" disabled={busy} placeholder="Choose a routing…" onChange={v => { if (v) onProcess(v === '__none__' ? '' : v); }} options={[...templates.map((t: Any) => ({ value: t.id, label: t.name, hint: t.data.steps.length + ' steps' })), { value: '__none__', label: 'Remove template' }]} />
-              </label>
+              <div className="grid gap-1.5">
+                <Label className="text-xs font-normal text-muted-foreground">Process template for all</Label>
+                <Select size="sm" aria-label="Process template for all" value="" disabled={busy} placeholder="Choose a routing…" onChange={v => { if (v) onProcess(v === '__none__' ? '' : v); }} options={[...templates.map((t: Any) => ({ value: t.id, label: t.name, hint: t.data.steps.length + ' steps' })), { value: '__none__', label: 'Remove template' }]} />
+              </div>
             )}
-            <div className="group-row">
-              <button type="button" disabled={busy} onClick={() => onBulk({ hidden: hidden < parts.length })}>{hidden < parts.length ? <EyeOff size={14} /> : <Eye size={14} />}{hidden < parts.length ? 'Hide in viewer' : 'Show in viewer'}</button>
+            <div className="flex gap-1.5">
+              <Button type="button" variant="outline" size="sm" className="flex-1" disabled={busy} onClick={() => onBulk({ hidden: hidden < parts.length })}>{hidden < parts.length ? <EyeOff /> : <Eye />}{hidden < parts.length ? 'Hide in viewer' : 'Show in viewer'}</Button>
               {editable && (excluded < parts.length
-                ? <button type="button" className="danger-ghost" disabled={busy} onClick={onExclude}><Ban size={14} />Not for production</button>
-                : <button type="button" disabled={busy} onClick={() => onBulk({ excluded: false })}><Undo2 size={14} />Restore to production</button>)}
+                ? <Button type="button" variant="outline" size="sm" className="flex-1 text-destructive hover:bg-danger-soft hover:text-destructive" disabled={busy} onClick={onExclude}><Ban />Not for production</Button>
+                : <Button type="button" variant="outline" size="sm" className="flex-1" disabled={busy} onClick={() => onBulk({ excluded: false })}><Undo2 />Restore to production</Button>)}
             </div>
           </div>
         )}
-        <h4>Selected parts</h4>
-        <div className="group-list">
+        <h4 className="mt-5 mb-2 text-2xs font-medium tracking-wider text-muted-foreground uppercase">Selected parts</h4>
+        <div className="mb-2.5 flex flex-col gap-1">
           {parts.map(p => (
-            <div className={'group-item' + (p.excluded ? ' is-excluded' : '')} key={p.id}>
-              <span className={'part-glyph ' + p.category} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers size={14} /> : <Box size={14} />}</span>
-              <button type="button" className="group-name" title="Show only this part" onClick={() => onFocus(p.id)}><strong>{p.name}</strong><small>{categories[p.category]} · Qty {p.quantity}{p.spec.material ? ' · ' + p.spec.material : ''}</small></button>
-              <button type="button" className="icon" title="Remove from selection" onClick={() => onRemove(p.id)}><X size={13} /></button>
+            <div className="flex items-center gap-2 rounded-md border bg-subtle py-1.5 pr-1.5 pl-2" key={p.id}>
+              <span className={cn('grid size-6.5 shrink-0 place-items-center rounded-md', GLYPH[p.category] || GLYPH.machining)} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers className="size-3.5" /> : <Box className="size-3.5" />}</span>
+              <Button type="button" variant="ghost" className="h-auto min-w-0 flex-1 flex-col items-stretch gap-0 px-1 py-0.5 text-left font-normal hover:bg-transparent" title="Show only this part" onClick={() => onFocus(p.id)}>
+                <span className={cn('block truncate text-sm font-medium', p.excluded && 'text-muted-foreground line-through')}>{p.name}</span>
+                <span className="block truncate text-xs text-muted-foreground">{categories[p.category]} · Qty {p.quantity}{p.spec.material ? ' · ' + p.spec.material : ''}</span>
+              </Button>
+              <Tip label="Remove from selection"><Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground" aria-label="Remove from selection" onClick={() => onRemove(p.id)}><X /></Button></Tip>
             </div>
           ))}
         </div>
-        <button type="button" className="full" onClick={onClear}>Clear selection</button>
-        <p className="muted">Shift-click selects a range in the navigator; Ctrl/Cmd-click adds or removes single parts.</p>
+        <Button type="button" variant="outline" className="w-full" onClick={onClear}>Clear selection</Button>
+        <p className="mt-3 text-xs text-muted-foreground">Shift-click selects a range in the navigator; Ctrl/Cmd-click adds or removes single parts.</p>
       </div>
     </>
   );
@@ -685,12 +755,14 @@ export function GroupSpecEditor({ parts, config, busy, onSave }: { parts: Any[];
   const isMixed = (k: string) => values[k] === MIXED;
   const dirty = (k: string) => JSON.stringify(values[k]) !== JSON.stringify(initial[k]);
   const set = (k: string, v: Any) => setValues({ ...values, [k]: v });
+  const uid = useId();
   const field = (label: string, k: string, list?: string[], placeholder?: string) => (
-    <label key={k} className={dirty(k) ? 'changed' : ''}>{label}{dirty(k) && <em> · will change</em>}
+    <div key={k} className={cn('grid content-start gap-1.5', dirty(k) && CHANGED_FIELD)}>
+      <Label htmlFor={uid + '-' + k} className={cn(dirty(k) && 'text-selection-foreground')}>{label}{dirty(k) && <Changed>· will change</Changed>}</Label>
       {list
-        ? <Combo value={isMixed(k) ? '' : values[k] ?? ''} suggestions={list} placeholder={isMixed(k) ? 'Mixed values — leave blank to keep each part\'s own' : placeholder || 'Approved value or justified N/A'} onChange={v => set(k, v)} />
-        : <input value={isMixed(k) ? '' : values[k] ?? ''} placeholder={isMixed(k) ? 'Mixed values — leave blank to keep each part\'s own' : placeholder || 'Approved value or justified N/A'} onChange={e => set(k, e.target.value)} />}
-    </label>
+        ? <Combo value={isMixed(k) ? '' : values[k] ?? ''} suggestions={list} aria-label={label} placeholder={isMixed(k) ? 'Mixed values — leave blank to keep each part\'s own' : placeholder || 'Approved value or justified N/A'} onChange={v => set(k, v)} />
+        : <Input id={uid + '-' + k} value={isMixed(k) ? '' : values[k] ?? ''} placeholder={isMixed(k) ? 'Mixed values — leave blank to keep each part\'s own' : placeholder || 'Approved value or justified N/A'} onChange={e => set(k, e.target.value)} />}
+    </div>
   );
   const ops: Op[] = Array.isArray(values.operations) ? values.operations.map((o: Any) => (typeof o === 'string' ? { name: o, detail: '' } : { name: o.name || '', detail: o.detail || '' })) : [];
   const changedKeys = GROUP_FIELDS.filter(dirty);
@@ -706,85 +778,91 @@ export function GroupSpecEditor({ parts, config, busy, onSave }: { parts: Any[];
   };
   const sheet = parts.some(p => p.category === 'sheet_metal' || p.geometry.bends.length);
   return (
-    <form className="spec-form" onSubmit={e => { e.preventDefault(); submit(); }}>
-      <div className="group-summary">{parts.map(p => <Badge key={p.id} kind={p.category}>{p.name}</Badge>)}</div>
-      <section>
-        <h3>Classification</h3>
-        <label>Manufacturing category{category && new Set(parts.map(p => p.category)).size !== 1 && <em> · will change all</em>}
-          <Select value={category} onChange={setCategory} options={[...(new Set(parts.map(p => p.category)).size !== 1 ? [{ value: '', label: "Mixed — keep each part's category" }] : []), ...Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))]} />
-        </label>
-      </section>
-      <section>
-        <h3>Material & stock</h3>
-        <div className="form-grid">
+    <form className="grid" onSubmit={e => { e.preventDefault(); submit(); }}>
+      <div className="mb-4 flex max-h-24 flex-wrap gap-1 overflow-y-auto">{parts.map(p => <Badge key={p.id} kind={p.category}>{p.name}</Badge>)}</div>
+      <FormSection title="Classification">
+        <div className="grid gap-1.5">
+          <Label className={cn(category && new Set(parts.map(p => p.category)).size !== 1 && 'text-selection-foreground')}>Manufacturing category{category && new Set(parts.map(p => p.category)).size !== 1 && <Changed>· will change all</Changed>}</Label>
+          <Select aria-label="Manufacturing category" value={category} onChange={setCategory} options={[...(new Set(parts.map(p => p.category)).size !== 1 ? [{ value: '', label: "Mixed — keep each part's category" }] : []), ...Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))]} />
+        </div>
+      </FormSection>
+      <FormSection title="Material & stock">
+        <div className={FORM_GRID}>
           {field('Material / grade', 'material', suggestions.material)}
           {field('Raw stock', 'stock', suggestions.stock, 'Sheet 3 mm / plate / bar / tube')}
           {field('Heat treatment', 'heat_treatment', suggestions.heat)}
           {field('Hardness', 'hardness', suggestions.hardness)}
         </div>
-      </section>
-      <section>
-        <h3>Process</h3>
-        <div className="form-grid">
+      </FormSection>
+      <FormSection title="Process">
+        <div className={FORM_GRID}>
           {field('Primary process', 'process', suggestions.process)}
           {field('Edge treatment', 'edge_treatment', suggestions.edge)}
         </div>
-        <label>Process sequence{dirty('operations') && <em> · will replace on all parts</em>}</label>
-        {isMixed('operations') && ops.length === 0 && <p className="muted">Parts have different sequences. Add operations here to give all of them the same sequence, or leave empty to keep each one.</p>}
-        <OperationsEditor ops={ops} setOps={o => set('operations', o)} />
-      </section>
-      <section>
-        <h3>Surface & coating</h3>
-        <div className="form-grid">
+        <div className="grid gap-1.5">
+          <Label className={cn(dirty('operations') && 'text-selection-foreground')}>Process sequence{dirty('operations') && <Changed>· will replace on all parts</Changed>}</Label>
+          {isMixed('operations') && ops.length === 0 && <p className="text-xs text-muted-foreground">Parts have different sequences. Add operations here to give all of them the same sequence, or leave empty to keep each one.</p>}
+          <OperationsEditor ops={ops} setOps={o => set('operations', o)} />
+        </div>
+      </FormSection>
+      <FormSection title="Surface & coating">
+        <div className={FORM_GRID}>
           {field('Finish', 'finish', suggestions.finish)}
           {field('Coating system', 'paint', suggestions.paint)}
           {field('Coating thickness', 'coating_thickness', suggestions.coatingThickness)}
           {field('Masking', 'masking', suggestions.masking)}
           {field('Surface roughness', 'roughness', suggestions.roughness)}
         </div>
-        <label>Coating colour{(dirty('coating_hex') || dirty('coating_color')) && <em> · will change all</em>}{isMixed('coating_hex') && !dirty('coating_hex') && <em> · mixed, pick one to unify</em>}</label>
-        <ColorPicker hex={isMixed('coating_hex') ? '' : values.coating_hex} label={isMixed('coating_color') ? '' : values.coating_color} onChange={(hex, label) => setValues({ ...values, coating_hex: hex, coating_color: label })} />
-      </section>
-      <section>
-        <h3>Tolerancing & datums</h3>
-        <div className="form-grid">
+        <div className="grid gap-1.5">
+          <Label className={cn((dirty('coating_hex') || dirty('coating_color')) && 'text-selection-foreground')}>Coating colour{(dirty('coating_hex') || dirty('coating_color')) && <Changed>· will change all</Changed>}{isMixed('coating_hex') && !dirty('coating_hex') && <Changed>· mixed, pick one to unify</Changed>}</Label>
+          <ColorPicker hex={isMixed('coating_hex') ? '' : values.coating_hex} label={isMixed('coating_color') ? '' : values.coating_color} onChange={(hex, label) => setValues({ ...values, coating_hex: hex, coating_color: label })} />
+        </div>
+      </FormSection>
+      <FormSection title="Tolerancing & datums">
+        <div className={FORM_GRID}>
           {field('General tolerance', 'general_tolerance', suggestions.tolerance)}
           {field('Functional datums', 'datums', undefined, 'A = base face; B = left edge')}
         </div>
-      </section>
-      <section>
-        <h3>Marking, packaging & notes</h3>
-        <div className="form-grid">
+      </FormSection>
+      <FormSection title="Marking, packaging & notes">
+        <div className={FORM_GRID}>
           {field('Marking / identification', 'marking', suggestions.marking)}
           {field('Packaging', 'packaging', suggestions.packaging)}
         </div>
-        <label className={dirty('notes') ? 'changed' : ''}>Notes to vendor{dirty('notes') && <em> · will change</em>}<textarea value={isMixed('notes') ? '' : values.notes ?? ''} placeholder={isMixed('notes') ? 'Mixed — leave blank to keep each part\'s notes' : ''} onChange={e => set('notes', e.target.value)} /></label>
-      </section>
-      {sheet && (
-        <section>
-          <h3>Sheet development</h3>
-          <div className="form-grid">
-            <label className={dirty('k_factor') ? 'changed' : ''}>K factor{isMixed('k_factor') && ' (mixed)'}<input type="number" min="0.01" max="0.99" step="0.01" value={isMixed('k_factor') ? '' : values.k_factor} onChange={e => set('k_factor', +e.target.value)} /></label>
-            <label className="check"><input type="checkbox" checked={values.k_factor_approved === true} onChange={e => set('k_factor_approved', e.target.checked)} />K factor verified against forming tooling{isMixed('k_factor_approved') && !dirty('k_factor_approved') && ' (mixed)'}</label>
-          </div>
-        </section>
-      )}
-      <section>
-        <h3>Engineering verification notes</h3>
-        <div className="form-grid">
-          {Object.entries(config?.manual_checks || {}).map(([k, v]) => (
-            <label key={k} className={values.manual_checks[k] !== initial.manual_checks[k] ? 'changed' : ''}>{String(v)}
-              <input value={values.manual_checks[k] === MIXED ? '' : values.manual_checks[k]} placeholder={values.manual_checks[k] === MIXED ? 'Mixed — leave blank to keep' : 'Evidence, calculation reference or justified N/A'} onChange={e => setValues({ ...values, manual_checks: { ...values.manual_checks, [k]: e.target.value } })} />
-            </label>
-          ))}
+        <div className={cn('grid gap-1.5', dirty('notes') && CHANGED_FIELD)}>
+          <Label htmlFor={uid + '-notes'} className={cn(dirty('notes') && 'text-selection-foreground')}>Notes to vendor{dirty('notes') && <Changed>· will change</Changed>}</Label>
+          <Textarea id={uid + '-notes'} value={isMixed('notes') ? '' : values.notes ?? ''} placeholder={isMixed('notes') ? 'Mixed — leave blank to keep each part\'s notes' : ''} onChange={e => set('notes', e.target.value)} />
         </div>
-        {changedChecks.length > 0 && Object.values(values.manual_checks).includes(MIXED) && <p className="muted">Notes still marked mixed are left as they are on each part.</p>}
-      </section>
-      <label className="check reviewed"><input type="checkbox" checked={reviewed === true} onChange={e => setReviewed(e.target.checked ? true : null)} />Mark all {parts.length} parts as reviewed</label>
-      <div className="modal-actions">
-        <span className="muted">{changedKeys.length + changedChecks.length + (category && new Set(parts.map(p => p.category)).size !== 1 || (category && category !== parts[0].category) ? 1 : 0)} field(s) will change on {parts.length} parts</span>
-        <button className="primary" disabled={busy || (!changedKeys.length && !changedChecks.length && !(category && (new Set(parts.map(p => p.category)).size !== 1 || category !== parts[0].category)) && reviewed === null)}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}Apply to {parts.length} parts</button>
-      </div>
+      </FormSection>
+      {sheet && (
+        <FormSection title="Sheet development">
+          <div className={FORM_GRID}>
+            <div className={cn('grid gap-1.5', dirty('k_factor') && CHANGED_FIELD)}>
+              <Label htmlFor={uid + '-k'} className={cn(dirty('k_factor') && 'text-selection-foreground')}>K factor{isMixed('k_factor') && ' (mixed)'}</Label>
+              <Input id={uid + '-k'} className="tabular-nums" type="number" min="0.01" max="0.99" step="0.01" value={isMixed('k_factor') ? '' : values.k_factor} onChange={e => set('k_factor', +e.target.value)} />
+            </div>
+            <Label className="h-8 self-end font-normal"><Checkbox checked={values.k_factor_approved === true} onCheckedChange={v => set('k_factor_approved', v === true)} />K factor verified against forming tooling{isMixed('k_factor_approved') && !dirty('k_factor_approved') && ' (mixed)'}</Label>
+          </div>
+        </FormSection>
+      )}
+      <FormSection title="Engineering verification notes">
+        <div className={FORM_GRID}>
+          {Object.entries(config?.manual_checks || {}).map(([k, v]) => {
+            const changed = values.manual_checks[k] !== initial.manual_checks[k];
+            return (
+              <div key={k} className={cn('grid content-start gap-1.5', changed && CHANGED_FIELD)}>
+                <Label htmlFor={uid + '-check-' + k} className={cn('leading-snug', changed && 'text-selection-foreground')}>{String(v)}</Label>
+                <Input id={uid + '-check-' + k} value={values.manual_checks[k] === MIXED ? '' : values.manual_checks[k]} placeholder={values.manual_checks[k] === MIXED ? 'Mixed — leave blank to keep' : 'Evidence, calculation reference or justified N/A'} onChange={e => setValues({ ...values, manual_checks: { ...values.manual_checks, [k]: e.target.value } })} />
+              </div>
+            );
+          })}
+        </div>
+        {changedChecks.length > 0 && Object.values(values.manual_checks).includes(MIXED) && <p className="text-xs text-muted-foreground">Notes still marked mixed are left as they are on each part.</p>}
+      </FormSection>
+      <Label className="mt-2 rounded-md border bg-subtle px-3.5 py-3 font-normal leading-normal"><Checkbox checked={reviewed === true} onCheckedChange={v => setReviewed(v === true ? true : null)} />Mark all {parts.length} parts as reviewed</Label>
+      <ModalFooter note={<>{changedKeys.length + changedChecks.length + (category && new Set(parts.map(p => p.category)).size !== 1 || (category && category !== parts[0].category) ? 1 : 0)} field(s) will change on {parts.length} parts</>}>
+        <Button type="submit" disabled={busy || (!changedKeys.length && !changedChecks.length && !(category && (new Set(parts.map(p => p.category)).size !== 1 || category !== parts[0].category)) && reviewed === null)}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}Apply to {parts.length} parts</Button>
+      </ModalFooter>
     </form>
   );
 }
@@ -814,19 +892,22 @@ export function DialogHost() {
   const finish = (v: string | null) => { setState(null); done(v); };
   const blocked = !!o.input?.required && !text.trim();
   return (
-    <Modal top title={o.title} close={() => finish(null)}>
-      <form className="ask-dialog" onSubmit={e => { e.preventDefault(); if (!blocked) finish(o.input ? text.trim() : ''); }}>
-        {o.message && <p className="ask-message">{o.message}</p>}
+    <Modal title={o.title} close={() => finish(null)}>
+      <form className="grid gap-3" onSubmit={e => { e.preventDefault(); if (!blocked) finish(o.input ? text.trim() : ''); }}>
+        {o.message && <p className="text-sm leading-relaxed text-muted-foreground">{o.message}</p>}
         {o.input && <>
-          {o.input.choices && <div className="ask-choices">{o.input.choices.map(c => <button type="button" key={c} className={'chip' + (text === c ? ' selected' : '')} onClick={() => setText(c)}>{c}</button>)}</div>}
-          <label>{o.input.label}{o.input.multiline
-            ? <textarea autoFocus rows={3} value={text} placeholder={o.input.placeholder} onChange={e => setText(e.target.value)} />
-            : <input autoFocus type={o.input.type || 'text'} min={o.input.min} value={text} placeholder={o.input.placeholder} onChange={e => setText(e.target.value)} />}</label>
+          {o.input.choices && <div className="flex flex-wrap gap-1.5">{o.input.choices.map(c => <Button type="button" size="sm" variant={text === c ? 'secondary' : 'outline'} key={c} className={cn('rounded-full', text === c && 'bg-selection text-selection-foreground')} onClick={() => setText(c)}>{c}</Button>)}</div>}
+          <div className="grid gap-1.5">
+            <Label htmlFor="ask-input">{o.input.label}</Label>
+            {o.input.multiline
+              ? <Textarea id="ask-input" autoFocus rows={3} value={text} placeholder={o.input.placeholder} onChange={e => setText(e.target.value)} />
+              : <Input id="ask-input" autoFocus type={o.input.type || 'text'} min={o.input.min} value={text} placeholder={o.input.placeholder} onChange={e => setText(e.target.value)} />}
+          </div>
         </>}
-        <div className="modal-actions">
-          <button type="button" onClick={() => finish(null)}>{o.cancel || 'Cancel'}</button>
-          <button type="submit" autoFocus={!o.input} className={o.danger ? 'danger' : 'primary'} disabled={blocked}>{o.confirm || 'OK'}</button>
-        </div>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={() => finish(null)}>{o.cancel || 'Cancel'}</Button>
+          <Button type="submit" autoFocus={!o.input} variant={o.danger ? 'destructive' : 'default'} disabled={blocked}>{o.confirm || 'OK'}</Button>
+        </ModalFooter>
       </form>
     </Modal>
   );

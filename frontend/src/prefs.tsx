@@ -2,6 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { Keyboard, RotateCcw } from 'lucide-react';
 import { Modal } from './components';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Kbd, KbdGroup } from '@/components/ui/kbd';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import type { NavStyle } from './cadControls';
 import type { DisplayMode } from './Viewer';
 
@@ -104,7 +110,7 @@ export function usePrefs() {
 const pretty = (b: string) => b.replace('Ctrl', /Mac/i.test(navigator.platform) ? '⌘' : 'Ctrl').replace(/Arrow(Up|Down|Left|Right)/, (_m, d) => ({ Up: '↑', Down: '↓', Left: '←', Right: '→' } as Record<string, string>)[d]);
 
 export function KeyChip({ combo }: { combo: string }) {
-  return combo ? <span className="key-chip">{pretty(combo).split('+').map((k, i) => <kbd key={i}>{k}</kbd>)}</span> : <span className="muted">—</span>;
+  return combo ? <KbdGroup>{pretty(combo).split('+').map((k, i) => <Kbd key={i} className="border border-b-2 bg-card font-mono text-2xs text-foreground">{k}</Kbd>)}</KbdGroup> : <span className="text-muted-foreground">—</span>;
 }
 
 /** Personal shortcuts and mouse navigation (saved in this browser). Click a key, press the new combination. */
@@ -130,28 +136,35 @@ export function ShortcutsDialog({ close, prefs, setPrefs, binding }: ReturnType<
   const groups = [...new Set(ACTIONS.map(a => a.group))];
   return (
     <Modal title="Shortcuts & navigation" subtitle="Personal — saved to your account, on every device" close={() => { if (!editing) close(); }} wide>
-      <div className="prefs">
-        <section>
-          <h4>Mouse</h4>
-          <div className="nav-choice">
+      <div className="grid gap-6">
+        <section className="grid gap-2.5">
+          <h4 className="text-2xs font-medium tracking-wider text-muted-foreground uppercase">Mouse</h4>
+          <RadioGroup value={prefs.navStyle} onValueChange={v => setPrefs({ navStyle: v as NavStyle })} className="grid gap-2.5 sm:grid-cols-2">
             {([['forge', 'Forge', 'Left drag rotates · right / middle drag pans · wheel zooms at the cursor · click selects'],
                ['solidworks', 'SolidWorks', 'Middle drag rotates · Ctrl+middle pans · Shift+middle zooms · right drag pans · wheel zooms at the cursor · left click / drag stays for selection']] as const).map(([k, l, d]) =>
-              <button key={k} type="button" className={'choice' + (prefs.navStyle === k ? ' chosen' : '')} onClick={() => setPrefs({ navStyle: k })}><b>{l}</b><small>{d}</small></button>)}
-          </div>
-          <p className="muted">Rotation is free in every direction (no locked “up”), like a parametric modeller. Arrow keys rotate 15°, with Shift 90°; Alt+←/→ rolls.</p>
+              <Label key={k} htmlFor={'nav-' + k} className={cn('min-w-0 cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/50', prefs.navStyle === k && 'border-primary bg-selection/40 hover:bg-selection/40')}>
+                <RadioGroupItem id={'nav-' + k} value={k} className="mt-0.5" />
+                <span className="grid min-w-0 gap-1"><span className="font-medium">{l}</span><span className="text-xs leading-relaxed font-normal text-muted-foreground">{d}</span></span>
+              </Label>)}
+          </RadioGroup>
+          <p className="text-xs leading-relaxed text-muted-foreground">Rotation is free in every direction (no locked “up”), like a parametric modeller. Arrow keys rotate 15°, with Shift 90°; Alt+←/→ rolls.</p>
         </section>
-        <section>
-          <div className="prefs-head"><h4>Keyboard</h4><input className="v-filter" placeholder="Filter…" value={filter} onChange={e => setFilter(e.target.value)} />
-            <button type="button" onClick={() => setPrefs({ shortcuts: {} })}><RotateCcw size={14} />Defaults</button></div>
+        <section className="grid gap-1">
+          <div className="flex items-center gap-2.5">
+            <h4 className="flex-1 text-2xs font-medium tracking-wider text-muted-foreground uppercase">Keyboard</h4>
+            <Input className="h-7 max-w-[260px] text-xs" placeholder="Filter…" value={filter} onChange={e => setFilter(e.target.value)} />
+            <Button type="button" variant="outline" size="sm" onClick={() => setPrefs({ shortcuts: {} })}><RotateCcw />Defaults</Button>
+          </div>
           {groups.map(g => {
             const rows = ACTIONS.filter(a => a.group === g && (!filter || a.label.toLowerCase().includes(filter.toLowerCase())));
             if (!rows.length) return null;
-            return <div key={g} className="shortcut-group"><h5>{g}</h5>
-              {rows.map(a => <div key={a.id} className={'shortcut-row' + (editing === a.id ? ' editing' : '')}>
-                <span>{a.label}</span>
-                <button type="button" className="key-btn" title="Click, then press the new key combination (Backspace clears, Esc cancels)" onClick={() => setEditing(a.id)}>
-                  {editing === a.id ? <span className="muted"><Keyboard size={13} /> Press keys…</span> : <KeyChip combo={binding(a.id)} />}
-                </button>
+            return <div key={g} className="grid">
+              <h5 className="mt-3 mb-1 px-2 text-2xs font-medium tracking-wider text-faint uppercase">{g}</h5>
+              {rows.map(a => <div key={a.id} className={cn('flex items-center justify-between gap-3 rounded-md px-2 py-0.5 hover:bg-accent', editing === a.id && 'bg-selection text-selection-foreground hover:bg-selection')}>
+                <span className="min-w-0 truncate">{a.label}</span>
+                <Button type="button" variant="ghost" size="sm" className="min-w-[120px] justify-end font-normal hover:bg-transparent" title="Click, then press the new key combination (Backspace clears, Esc cancels)" onClick={() => setEditing(a.id)}>
+                  {editing === a.id ? <span className="flex items-center gap-1 text-muted-foreground"><Keyboard className="size-3.5" /> Press keys…</span> : <KeyChip combo={binding(a.id)} />}
+                </Button>
               </div>)}
             </div>;
           })}

@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { Box, Maximize } from 'lucide-react';
+import { Box, Maximize, Loader2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { CadControls, upFor, type NavStyle } from './cadControls';
 import { loadSecureModel } from './api';
 
@@ -41,7 +43,7 @@ const ISO = new THREE.Vector3(1, -1.25, 0.9).normalize();
  * release without dragging (a drag rotates). `capture` lets a handler take the pointer instead of the camera
  * (press-and-drag welding).
  */
-export default function PartScene({ revision, bodies, navStyle = 'forge', onReady, onHover, onClick, onPress, onDrag, onRelease, cursor, children }: {
+export default function PartScene({ revision, bodies, navStyle = 'forge', onReady, onHover, onClick, onPress, onDrag, onRelease, cursor, children, className }: {
   revision: string; bodies: SceneBody[]; navStyle?: NavStyle;
   onReady?: (api: SceneApi) => void;
   onHover?: (e: PointerEvent, api: SceneApi) => void;
@@ -51,6 +53,8 @@ export default function PartScene({ revision, bodies, navStyle = 'forge', onRead
   onDrag?: (e: PointerEvent, api: SceneApi) => void;
   onRelease?: (e: PointerEvent, api: SceneApi) => void;
   cursor?: string; children?: React.ReactNode;
+  /** layout classes from the host (e.g. flex-1) */
+  className?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const apiRef = useRef<SceneApi | null>(null);
@@ -184,18 +188,23 @@ export default function PartScene({ revision, bodies, navStyle = 'forge', onRead
   useEffect(() => { if (apiRef.current) apiRef.current.controls.style = navStyle; }, [navStyle]);
 
   return (
-    <div className="pscene" style={{ cursor }}>
-      <div ref={host} className="pscene-gl" />
-      <div className="pscene-tools">
-        <button type="button" title="Fit (F)" onClick={() => apiRef.current?.fit()}><Maximize size={15} /></button>
-        <button type="button" title="Isometric" onClick={() => apiRef.current?.fit(ISO)}><Box size={15} /></button>
+    <div className={cn('relative min-h-0 min-w-0 overflow-hidden rounded-xl border bg-white', className)} style={{ cursor }}>
+      <div ref={host} className="absolute inset-0 [&_canvas]:block [&_canvas]:touch-none" />
+      <div className="glass absolute top-3 left-3 z-[2] flex gap-0.5 rounded-xl p-1">
+        <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" title="Fit (F)" onClick={() => apiRef.current?.fit()}><Maximize /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" title="Isometric" onClick={() => apiRef.current?.fit(ISO)}><Box /></Button>
       </div>
-      {state === 'loading' && <div className="pscene-state"><span className="spinner" />Loading model…</div>}
-      {state !== 'loading' && state !== 'ready' && <div className="pscene-state">{state}</div>}
-      <div className="pscene-help"><span>Rotate</span><b>{navStyle === 'solidworks' ? 'Middle drag' : 'Left drag'}</b><span>Pan</span><b>Right drag</b><span>Zoom</span><b>Scroll</b></div>
+      {state === 'loading' && <SceneState><Loader2 className="size-4 animate-spin text-primary" />Loading model…</SceneState>}
+      {state !== 'loading' && state !== 'ready' && <SceneState>{state}</SceneState>}
+      <div className="pointer-events-none absolute bottom-3 left-3.5 z-[2] grid grid-cols-[auto_auto] gap-x-3.5 gap-y-px text-2xs text-zinc-400"><span>Rotate</span><span className="text-right text-zinc-500">{navStyle === 'solidworks' ? 'Middle drag' : 'Left drag'}</span><span>Pan</span><span className="text-right text-zinc-500">Right drag</span><span>Zoom</span><span className="text-right text-zinc-500">Scroll</span></div>
       {children}
     </div>
   );
+}
+
+/** Centred loading / error message over a 3D scene (the WebGL background is white in both themes). */
+export function SceneState({ children }: { children: React.ReactNode }) {
+  return <div className="absolute inset-0 flex items-center justify-center gap-2.5 text-sm text-zinc-500">{children}</div>;
 }
 
 function mergeGeometries(list: THREE.BufferGeometry[]) {
