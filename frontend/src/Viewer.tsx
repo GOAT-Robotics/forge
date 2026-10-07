@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { CadControls, upFor, type NavStyle } from './cadControls';
-import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, ChevronUp, ChevronDown, Crosshair, Flame, CircleDashed, Square, Grid3x3, Shapes } from 'lucide-react';
+import { Box, Layers, Maximize, Scissors, Ruler, Focus, Eye, EyeOff, ChevronUp, ChevronDown, Crosshair, Flame, CircleDashed, Square, Grid3x3, Shapes, Sparkles, Sun } from 'lucide-react';
 import { loadSecureModel } from './api';
 import { beadGeometry, beadMaterial, labelSprite, pathLength, pathSection, pointAt, resample, type WeldShape, type WeldSelection } from './weld3d';
 
@@ -14,7 +15,7 @@ const disposeGroup = (group: THREE.Object3D) => group.traverse(o => {
   (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []).forEach(mat => { (mat as THREE.SpriteMaterial).map?.dispose(); mat.dispose(); });
 });
 
-export type PartAppearance = { color: string; category: string; name?: string };
+export type PartAppearance = { color: string; category: string; name?: string; roughness?: number; metalness?: number };
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 const loadView = (key?: string): Any => { if (!key) return {}; try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch { return {}; } };
@@ -68,6 +69,12 @@ type Props = {
   transparentIds?: string[];
   /** Front / Top / Right reference planes and the origin triad. */
   showPlanes?: boolean;
+  /** realistic materials: finish-based roughness / metalness with environment reflections */
+  realistic?: boolean;
+  onRealistic?: (v: boolean) => void;
+  /** show the studio environment behind the model */
+  studio?: boolean;
+  onStudio?: (v: boolean) => void;
   onShowPlanes?: (v: boolean) => void;
   /** Imperative view command from a keyboard shortcut ({ name, n }: n makes repeats distinct). */
   command?: { name: string; n: number } | null;
@@ -117,6 +124,8 @@ type Engine = {
   applyExplode: () => void;
   refresh?: () => void;
   loaded: boolean;
+  envTex?: THREE.Texture;
+  lights?: THREE.Light[];
 };
 
 const ease = (t: number) => 1 - Math.pow(1 - t, 3);
@@ -154,7 +163,7 @@ function sameCadBoundary(a: THREE.Vector3[], b: THREE.Vector3[], tolerance: numb
 }
 
 
-export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, command = null, viewKey }: Props) {
+export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, realistic = true, onRealistic, studio = false, onStudio, command = null, viewKey }: Props) {
   const weldClick = useRef(onWeldClick); weldClick.current = onWeldClick;
   const drafting = !!jointPreview || seamCandidates.length > 0;
   const seamToggle = useRef(onSeamToggle); seamToggle.current = onSeamToggle;
@@ -255,7 +264,12 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     const controls = new CadControls(camera, renderer.domElement);
     controls.style = navStyleRef.current;
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f96, 2.4));
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8f96, 2.4);
+    scene.add(hemi);
+    // studio environment for reflections (painted, plated and bare metal read by their roughness)
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
     const key = new THREE.DirectionalLight(0xffffff, 2.6);
     key.position.set(300, -500, 800);
     scene.add(key);
@@ -276,7 +290,7 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
       scene, meshes, renderer, camera, controls, plane,
       center: new THREE.Vector3(), radius: 100, minZ: 0, maxZ: 100,
       activeUntil: performance.now() + 2000, explodeCurrent: 0, explodeTarget: 0, fly: null, hovered: null, grid: null, planeGroup: null, featureGroup: null, weldGroup: null, savedWeldGroup: null, seamGroup: null, references: [], hoverGroup: null, edgeLines: [], loaded: false,
-      fit: () => {}, applyExplode: () => {},
+      fit: () => {}, applyExplode: () => {}, envTex, lights: [hemi, key, fill, rim],
     };
     engine.current = e;
 
@@ -702,6 +716,8 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         const look = appearance[id];
         mesh.visible = focusSet.size ? focusSet.has(id) : (!isolated || !selected || active) && (active || !hiddenSet.has(id));
         const base = new THREE.Color(look?.color || DEFAULT_COLOR);
+        mat.roughness = realistic ? (look?.roughness ?? 0.5) : 0.55;
+        mat.metalness = realistic ? (look?.metalness ?? 0.2) : 0.15;
         if (active) {
           // Keep the part's own (coating) colour and add a warm accent glow so the selection reads on any colour.
           mat.color.copy(base);
@@ -745,9 +761,23 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     if (engine.current) engine.current.refresh = refresh;
     if (engine.current?.loaded) engine.current.applyExplode();
     refresh();
-  }, [selected, isolated, ghost, section, loading, appearance, hidden.join('|'), multi.join('|'), focusIds.join('|'), pickMode, displayMode, transparentIds.join('|'), Object.entries(representativeOccurrences).map(([id, occurrence]) => `${id}:${occurrence}`).join('|')]);
+  }, [selected, isolated, ghost, section, loading, appearance, realistic, hidden.join('|'), multi.join('|'), focusIds.join('|'), pickMode, displayMode, transparentIds.join('|'), Object.entries(representativeOccurrences).map(([id, occurrence]) => `${id}:${occurrence}`).join('|')]);
 
   useEffect(() => { for (const m of engine.current?.references || []) m.visible = showRefs; }, [showRefs, loading]);
+
+  // realistic lighting: environment reflections with softer direct lights; optional visible studio backdrop
+  useEffect(() => {
+    const e = engine.current;
+    if (!e) return;
+    e.scene.environment = realistic ? e.envTex || null : null;
+    e.scene.environmentIntensity = 0.9;
+    const base = [2.4, 2.6, 1.2, 0.7], soft = [1.1, 1.9, 0.6, 0.4];
+    (e.lights || []).forEach((l, i) => { l.intensity = (realistic ? soft : base)[i]; });
+    e.scene.background = studio && e.envTex ? e.envTex : null;
+    e.scene.backgroundBlurriness = 0.55;
+    e.scene.backgroundIntensity = 0.85;
+    e.activeUntil = performance.now() + 700;
+  }, [realistic, studio, loading]);
 
   useEffect(() => { if (engine.current) engine.current.controls.style = navStyle; }, [navStyle, loading]);
 
@@ -1205,6 +1235,8 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
             <button key={m} type="button" className={displayMode === m ? 'selected' : ''} title={m === 'edges' ? 'Shaded with edges' : label} onClick={() => onDisplayMode(m)}><Icon size={14} />{label}</button>)}
           <button className={ghost ? 'selected' : ''} title="Fade the other parts while a part is selected" onClick={() => setGhost(!ghost)}><EyeOff size={14} />Ghost</button>
           {onShowPlanes && <button className={showPlanes ? 'selected' : ''} title="Front / Top / Right planes and origin (P)" onClick={() => onShowPlanes(!showPlanes)}><Square size={14} />Planes</button>}
+          {onRealistic && <button className={realistic ? 'selected' : ''} title="Realistic materials: colour, gloss and reflections from each part's finish and material" onClick={() => onRealistic(!realistic)}><Sparkles size={14} />Realistic</button>}
+          {onStudio && <button className={studio ? 'selected' : ''} title="Show the studio environment behind the model" onClick={() => onStudio(!studio)}><Sun size={14} />Studio</button>}
           {welds.length > 0 && <button className={showWelds ? 'selected' : ''} title={showWelds ? 'Hide weld beads' : 'Show weld beads'} onClick={() => setShowWelds(!showWelds)}><Flame size={14} />Welds</button>}
           {refCount > 0 && <button className={showRefs ? 'selected' : ''} title="Reference surfaces (sketch circles, boundaries) — not solid parts" onClick={() => setShowRefs(!showRefs)}><CircleDashed size={14} />Refs</button>}
         </>}

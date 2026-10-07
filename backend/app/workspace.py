@@ -1065,6 +1065,7 @@ class JobOrderIn(BaseModel):
     customer: str = Field(default='', max_length=160)
     parts: list[dict] | None = Field(default=None, max_length=5000)
     include_purchased: bool = True
+    vendor_id: str = Field(default='', max_length=40)
 
 
 def default_steps(p):
@@ -1129,6 +1130,14 @@ def jo_payload(jo, full=False):
     total = sum(i['required'] for i in items) or 1
     done = sum(min(i['done'], i['required']) for i in items)
     jo = dict(jo)
+    v = db.row('SELECT name FROM vendors WHERE id=?', (jo['vendor_id'],)) if jo.get('vendor_id') else None
+    jo['vendor_name'] = v['name'] if v else ''
+    est = jo.pop('estimate', '') or ''
+    if full:
+        try:
+            jo['estimate'] = json.loads(est) if est else None
+        except ValueError:
+            jo['estimate'] = None
     jo['progress'] = round(100 * done / total, 1)
     jo['items_total'] = len(items)
     jo['items_done'] = sum(1 for i in items if i['status'] == 'done')
@@ -1172,19 +1181,29 @@ def jo_payload(jo, full=False):
     return jo
 
 
+def _cost_gate(u, jos):
+    """Costs are shown to people who plan job orders or manage pricing."""
+    from .costing import can_price
+    for j in jos:
+        if not can_price(u, j['project_id']):
+            j.pop('estimate', None)
+            j['estimate_total'] = None
+    return jos
+
+
 @router.get('/api/projects/{pid}/job-orders')
 def job_orders(pid: str, request: Request):
-    user(request)
+    u = user(request)
     get_project(pid)
-    return [jo_payload(j) for j in db.rows('SELECT * FROM job_orders WHERE project_id=? ORDER BY number DESC', (pid,))]
+    return _cost_gate(u, [jo_payload(j) for j in db.rows('SELECT * FROM job_orders WHERE project_id=? ORDER BY number DESC', (pid,))])
 
 
 @router.get('/api/job-orders')
 def all_job_orders(request: Request, status: str = ''):
-    user(request)
+    u = user(request)
     q = 'SELECT j.*,p.name AS project_name,p.code AS project_code,r.number AS revision_number FROM job_orders j JOIN projects p ON p.id=j.project_id JOIN revisions r ON r.id=j.revision_id'
     rows = db.rows(q + (' WHERE j.status=?' if status else '') + ' ORDER BY j.created DESC', (status,) if status else ())
-    return [jo_payload(j) for j in rows]
+    return _cost_gate(u, [jo_payload(j) for j in rows])
 
 
 @router.post('/api/projects/{pid}/job-orders')
@@ -1210,6 +1229,8 @@ def create_job_order(pid: str, a: JobOrderIn, request: Request):
         for s in a.parts:
             if not isinstance(s, dict) or not db.row('SELECT id FROM parts WHERE id=? AND revision_id=?', (s.get('part_id'), rid)) or int(s.get('quantity') or 0) < 0:
                 raise HTTPException(422, 'Job order parts must belong to the revision with non-negative quantities')
+    if a.vendor_id and not db.row('SELECT id FROM vendors WHERE id=? AND archived=0', (a.vendor_id,)):
+        raise HTTPException(422, 'Unknown vendor')
     id = db.uid()
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
@@ -1221,8 +1242,91 @@ def create_job_order(pid: str, a: JobOrderIn, request: Request):
             raise HTTPException(422, 'Nothing to produce in this job order')
         c.executemany('INSERT INTO jo_items(id,job_order_id,part_id,part_name,category,seq,step,kind,required) VALUES(?,?,?,?,?,?,?,?,?)', rows)
         c.execute('INSERT INTO jo_events VALUES(?,?,?,?,?,?,?,?)', (db.uid(), id, None, u['name'], 'created', a.quantity, a.requirement[:1000], db.now()))
-        db.audit(c, u['name'], 'joborder.created', {'id': id, 'number': n, 'title': a.title, 'quantity': a.quantity, 'items': len(rows)}, rid)
+        db.audit(c, u['name'], 'joborder.created', {'id': id, 'number': n, 'title': a.title, 'quantity': a.quantity, 'items': len(rows), 'vendor': a.vendor_id}, rid)
+    save_estimate(id, a.vendor_id)
     return jo_payload(db.row('SELECT * FROM job_orders WHERE id=?', (id,)), True)
+
+
+def save_estimate(jid, vendor_id=None):
+    """Price the job order with the vendor's rate card (or the base sheet) and keep the result with it."""
+    from .costing import estimate_job_order
+    j = db.row('SELECT * FROM job_orders WHERE id=?', (jid,))
+    vid = j.get('vendor_id') or '' if vendor_id is None else vendor_id
+    try:
+        est = estimate_job_order(j, vid or '')
+    except HTTPException:
+        raise
+    except Exception as e:   # noqa: BLE001 - a failed estimate never blocks the job order
+        est = {'error': f'Estimate failed: {e}'[:300], 'total': 0}
+    with db.connect() as c:
+        c.execute('UPDATE job_orders SET vendor_id=?,estimate=?,estimate_total=? WHERE id=?', (vid or '', json.dumps(est), float(est.get('total') or 0), jid))
+    return est
+
+
+class EstimateIn(JobOrderIn):
+    model_config = ConfigDict(extra='forbid')
+    title: str = Field(default='Estimate', max_length=160)
+    vendor_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+@router.post('/api/projects/{pid}/job-orders/estimate')
+def preview_estimate(pid: str, a: EstimateIn, request: Request):
+    """Cost of a job order before it is created, for one or several vendors (compare and choose)."""
+    from .costing import card_for, estimate, jo_quantities, can_price
+    u = user(request)
+    get_project(pid)
+    if not can_price(u, pid):
+        raise HTTPException(403, 'Job order permission required')
+    rid = a.revision_id or (db.row("SELECT id FROM revisions WHERE project_id=? AND status='released' ORDER BY number DESC LIMIT 1", (pid,)) or {}).get('id')
+    if not rid:
+        raise HTTPException(409, 'Estimates need a production-ready (released) revision')
+    r = get_rev(rid)
+    if r['project_id'] != pid:
+        raise HTTPException(422, 'Revision belongs to another project')
+    rows = job_order_items('preview', rid, a.quantity, a.parts, a.include_purchased)
+    q, w = jo_quantities([{'part_id': x[2], 'required': x[8], 'kind': x[7]} for x in rows])
+    out = []
+    for vid in (a.vendor_ids or [a.vendor_id or '']):
+        vendor, card = card_for(vid or None)
+        out.append(estimate(rid, q, w, card, vendor))
+    return {'revision_id': rid, 'estimates': out}
+
+
+class EstimateRun(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    vendor_id: str | None = Field(default=None, max_length=40)
+
+
+@router.post('/api/job-orders/{jid}/estimate')
+def rerun_estimate(jid: str, a: EstimateRun, request: Request):
+    """Price the job order again (rates changed) or with another vendor; the vendor becomes the job order's vendor."""
+    j = get_jo(jid)
+    u = editor(request, 'joborder.create', j['project_id'])
+    if a.vendor_id and not db.row('SELECT id FROM vendors WHERE id=? AND archived=0', (a.vendor_id,)):
+        raise HTTPException(422, 'Unknown vendor')
+    est = save_estimate(jid, a.vendor_id)
+    with db.connect() as c:
+        c.execute('INSERT INTO jo_events VALUES(?,?,?,?,?,?,?,?)', (db.uid(), jid, None, u['name'], 'estimated', 0,
+                  f"{est.get('vendor', '')}: {est.get('currency', 'INR')} {est.get('total', 0):,.0f}"[:1000], db.now()))
+        db.audit(c, u['name'], 'joborder.estimated', {'id': jid, 'vendor': a.vendor_id, 'total': est.get('total')}, j['revision_id'])
+    return est
+
+
+@router.get('/api/job-orders/{jid}/estimate/compare')
+def compare_estimates(jid: str, request: Request):
+    """Total of this job order at every vendor's rates, cheapest first."""
+    from .costing import estimate_job_order, can_price
+    u = user(request)
+    j = get_jo(jid)
+    if not can_price(u, j['project_id']):
+        raise HTTPException(403, 'Job order permission required')
+    out = []
+    for v in db.rows('SELECT id,name FROM vendors WHERE archived=0 ORDER BY name'):
+        e = estimate_job_order(j, v['id'])
+        out.append({'vendor_id': v['id'], 'vendor': v['name'], 'total': e['total'], 'subtotal': e['subtotal'], 'warnings': len(e['warnings'])})
+    base = estimate_job_order(j, '')
+    out.append({'vendor_id': '', 'vendor': 'Base rates', 'total': base['total'], 'subtotal': base['subtotal'], 'warnings': len(base['warnings'])})
+    return sorted(out, key=lambda x: x['total'])
 
 
 def get_jo(jid):
@@ -1237,7 +1341,7 @@ def job_order(jid: str, request: Request):
     u = user(request)
     j = jo_payload(get_jo(jid), True)
     j['permissions'] = sorted(perms_for(u, j['project_id']))
-    return j
+    return _cost_gate(u, [j])[0]
 
 
 class JobOrderEdit(BaseModel):
@@ -1353,6 +1457,7 @@ class NestIn(BaseModel):
     gap: float = Field(default=0, ge=0, le=50)        # 0 = automatic (2 x thickness, at least 3 mm)
     margin: float = Field(default=10, ge=0, le=200)
     rotate: bool = True
+    square: bool = True   # keep parts square to the sheet: only 0 / 90 / 180 / 270 degree turns (faster laser cuts)
 
 
 def nest_dir(jid):
@@ -1439,7 +1544,7 @@ def start_nesting(jid: str, a: NestIn, request: Request):
                 if x - last[0] >= .03:
                     last[0] = x
                     write({'state': 'running', 'progress': round(100 * x)})
-            summary, data = run(parts, a.sheet_w, a.sheet_h, a.gap, a.margin, a.rotate, title, progress)
+            summary, data = run(parts, a.sheet_w, a.sheet_h, a.gap, a.margin, a.rotate, title, progress, a.square)
             summary['missing'] = missing
             (d / 'nesting.zip').write_bytes(data)
             (d / 'summary.json').write_text(json.dumps(summary))

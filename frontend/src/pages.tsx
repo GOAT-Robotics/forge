@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from './api';
 import NestingDialog from './nesting';
+import { EstimatePanel, EstimateCard } from './pricing';
 import { Badge, Modal, ask } from './components';
 import { Select } from './controls';
 import { categories, date, fmt } from './constants';
@@ -146,6 +147,7 @@ export function JobOrderDialog({ projects, projectId, close, onCreated, ctx, sel
   const [qty, setQty] = useState<Record<string, number>>({});        // custom quantities (part id → count)
   const [picked, setPicked] = useState<Set<string>>(new Set());       // custom scope: ticked parts
   const [filter, setFilter] = useState('');
+  const [vendorId, setVendorId] = useState('');
   useEffect(() => {
     if (!pid) return;
     setRev(null);
@@ -168,14 +170,17 @@ export function JobOrderDialog({ projects, projectId, close, onCreated, ctx, sel
   const missed = (selection?.length || 0) - selectedIds.size;
   const count = (k: JoScope) => k === 'all' ? make.length : k === 'selected' ? selectedIds.size : k === 'custom' ? picked.size : make.filter((p: Any) => p.category === k).length;
   const scopes: [JoScope, string][] = [['all', 'Everything'], ['sheet_metal', 'Sheet metal'], ['machining', 'Machining'], ...(selection?.length ? [['selected', 'Selected in model'] as [JoScope, string]] : []), ['custom', 'Choose parts']];
+  const requestBody = () => {
+    const custom = mode !== 'all' || Object.keys(qty).length > 0;
+    return { ...form, quantity: Number(form.quantity), revision_id: rev.id, include_purchased: mode === 'all' ? form.include_purchased : false,
+      parts: custom ? scoped.map((p: Any) => ({ part_id: p.id, quantity: per(p) })).filter((x: Any) => x.quantity > 0) : null };
+  };
+  const estimateBody = rev && scoped.length ? (({ title, due, priority, customer, requirement, ...b }: Any) => b)(requestBody()) : null;
   const list = mode === 'custom' ? make.filter((p: Any) => !filter || (p.name + ' ' + (p.alias || '')).toLowerCase().includes(filter.toLowerCase())) : scoped;
   return (
     <Modal title="New job order" subtitle="Creates the production and process checklists from the production-ready revision" wide close={close}>
       <form onSubmit={e => { e.preventDefault(); ctx.action(async () => {
-        const custom = mode !== 'all' || Object.keys(qty).length > 0;
-        const body = { ...form, quantity: Number(form.quantity), revision_id: rev.id, include_purchased: mode === 'all' ? form.include_purchased : false,
-          parts: custom ? scoped.map((p: Any) => ({ part_id: p.id, quantity: per(p) })).filter((x: Any) => x.quantity > 0) : null };
-        const jo = await api(`/projects/${pid}/job-orders`, 'POST', body); onCreated(jo);
+        const jo = await api(`/projects/${pid}/job-orders`, 'POST', { ...requestBody(), vendor_id: vendorId }); onCreated(jo);
       }); }}>
         <div className="form-grid">
           <label>Project<Select value={pid} onChange={setPid} options={projects.map(p => ({ value: p.id, label: (p.code ? p.code + ' · ' : '') + p.name, hint: p.active_status === 'released' ? 'ready' : 'not ready' }))} /></label>
@@ -205,6 +210,7 @@ export function JobOrderDialog({ projects, projectId, close, onCreated, ctx, sel
             <small className="muted">{scoped.length} part{scoped.length === 1 ? '' : 's'} · {scoped.reduce((n: number, p: Any) => n + per(p), 0)} pieces{mode !== 'all' ? ' · assembly / welding lines only for welds inside these parts' : ''}</small>
           </div>
         )}
+        {rev && <EstimatePanel pid={pid} body={estimateBody} vendorId={vendorId} setVendorId={setVendorId} />}
         <div className="modal-actions"><button type="button" onClick={close}>Cancel</button><button className="primary" disabled={ctx.busy || !rev || !scoped.length}><Plus size={15} />Create job order</button></div>
       </form>
     </Modal>
@@ -315,6 +321,7 @@ export function JobOrderDetail({ id, ctx, back, openProject }: { id: string; ctx
               <small>{jo.due ? date(jo.due) : 'No deadline set'}{d.pace ? ' · ' + d.pace : ''}</small>
             </div>); })()}
         </div>
+        <EstimateCard jo={jo} canManage={canManage} reload={load} ctx={ctx} />
         {jo.requirement && <div className="v-card"><header><h3>Requirement</h3></header><p className="pre">{jo.requirement}</p></div>}
         <div className="v-toolbar">
           <div className="v-segment">{[['parts', 'Process checklist'], ['stations', 'By process'], ['activity', 'Activity']].map(([k, l]) => <button key={k} className={view === k ? 'active' : ''} onClick={() => setView(k as Any)}>{l}</button>)}</div>

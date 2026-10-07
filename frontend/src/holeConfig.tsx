@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { hardwareModel } from './hardware3d';
 import { X, ChevronDown, ChevronUp, Search, MousePointerClick, ArrowDownToLine, ArrowUpToLine, Info, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import PartScene, { type SceneApi } from './partScene';
 import { api } from './api';
@@ -9,7 +10,7 @@ import type { NavStyle } from './cadControls';
 type Item = { id: string; type: string; units: string; thread: string; name: string; pn: string; hole: number | null; min_sheet?: number | null; length?: number | null; csk?: number; angle?: number; custom?: boolean };
 type Hole = { id: string; diameter: number; axis: number[]; origin: number[]; start: number; end: number; center: number[]; depth: number };
 
-const CHIPS: [string, string][] = [['nut', 'Nut'], ['flush_nut', 'Flush Nut'], ['stud', 'Stud'], ['standoff', 'Standoff'], ['rivnut', 'Rivnut'], ['tap', 'Tap'], ['countersink', 'Countersink']];
+const CHIPS: [string, string][] = [['nut', 'Nut'], ['flush_nut', 'Flush Nut'], ['stud', 'Stud'], ['standoff', 'Standoff'], ['rivnut', 'Rivnut'], ['weld_nut', 'Weld nut'], ['tap', 'Tap'], ['countersink', 'Countersink']];
 const KIND = (t: string) => t === 'tap' ? 'tap' : t === 'countersink' ? 'csk' : 'hw';
 const KIND_LABEL: Record<string, string> = { hw: 'Hardware', tap: 'Tap', csk: 'Countersink' };
 const COLORS = { hover: 0xf6d34a, selected: 0xf2c200, hw: 0xa78bfa, tap: 0x60a5fa, csk: 0x4ade80, metal: 0xc9a227 };
@@ -298,45 +299,9 @@ function Picker({ catalog, dia, top, height, left, width, thickness, assigned, c
   );
 }
 
-/** 3D sign of the hardware in the hole, on its insertion side. */
+/** 3D model of the hardware in the hole, on its insertion side (see hardware3d.ts). */
 function glyph(h: Hole, hw: Any): THREE.Object3D | null {
-  const a = new THREE.Vector3(...h.axis).normalize(), o = new THREE.Vector3(...h.origin);
-  const side = hw.side || 1;
-  const top = side > 0 ? Math.max(h.start, h.end) : Math.min(h.start, h.end), bottom = side > 0 ? Math.min(h.start, h.end) : Math.max(h.start, h.end);
-  const face = o.clone().addScaledVector(a, top), back = o.clone().addScaledVector(a, bottom);
-  const out = a.clone().multiplyScalar(side);
-  const d = threadDia(hw.thread || '') || (hw.hole || h.diameter) * 0.8;
-  const g = new THREE.Group();
-  const mat = (c: number, opacity = 1) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45, metalness: 0.35, transparent: opacity < 1, opacity });
-  const along = (len: number, from: THREE.Vector3, dir: THREE.Vector3, geo: THREE.BufferGeometry, m: THREE.Material) => {
-    const mesh = new THREE.Mesh(geo, m); mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize()); mesh.position.copy(from).addScaledVector(dir.clone().normalize(), len / 2); return mesh;
-  };
-  const rings = (from: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, color: number) => {
-    const n = Math.max(3, Math.floor(len / Math.max(0.5, d * 0.18)));
-    for (let i = 1; i < n; i++) { const t = new THREE.Mesh(new THREE.TorusGeometry(r, Math.max(0.06, r * 0.07), 6, 24), mat(color)); t.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize()); t.position.copy(from).addScaledVector(dir.clone().normalize(), len * i / n); g.add(t); }
-  };
-  if (hw.type === 'nut' || hw.type === 'flush_nut') {
-    const R = (hw.hole || h.diameter) * (hw.type === 'nut' ? 0.95 : 0.75), H = hw.type === 'nut' ? Math.max(0.6, d * 0.45) : 0.15;
-    g.add(along(H, face, out, new THREE.CylinderGeometry(R, R, H, 6), mat(COLORS.hw)));
-  } else if (hw.type === 'stud') {
-    const L = Number(hw.length || d * 2.5);
-    g.add(along(0.25, face, out, new THREE.CylinderGeometry(d * 0.85, d * 0.85, 0.25, 32), mat(COLORS.metal)));
-    g.add(along(L, back, out.clone().negate(), new THREE.CylinderGeometry(d / 2 * 0.92, d / 2 * 0.92, L, 24), mat(COLORS.metal)));
-    rings(back, out.clone().negate(), L, d / 2 * 0.93, 0x9c7c12);
-  } else if (hw.type === 'standoff') {
-    const L = Number(hw.length || d * 3), R = Math.max(d * 0.9, (hw.hole || d) / 2 * 1.4);
-    g.add(along(L, back, out.clone().negate(), new THREE.CylinderGeometry(R, R, L, 6), mat(COLORS.hw)));
-  } else if (hw.type === 'rivnut') {
-    const R = (hw.hole || h.diameter) * 0.85;
-    g.add(along(0.6, face, out, new THREE.CylinderGeometry(R, R, 0.6, 32), mat(COLORS.hw)));
-    g.add(along(d * 1.6, back, out.clone().negate(), new THREE.CylinderGeometry((hw.hole || h.diameter) / 2 * 0.98, (hw.hole || h.diameter) / 2 * 0.98, d * 1.6, 24), mat(COLORS.hw, 0.85)));
-  } else if (hw.type === 'tap') {
-    rings(back, a.clone().multiplyScalar(top - bottom >= 0 ? 1 : -1), Math.abs(top - bottom), (hw.hole || h.diameter) / 2 * 1.02, 0x2563eb);
-  } else if (hw.type === 'countersink') {
-    const R = (hw.csk || h.diameter * 2) / 2, ang = THREE.MathUtils.degToRad((hw.angle || 90) / 2), depth = (R - h.diameter / 2) / Math.tan(ang);
-    const cone = new THREE.Mesh(new THREE.CylinderGeometry(R, h.diameter / 2, depth, 40, 1, true), new THREE.MeshStandardMaterial({ color: COLORS.csk, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
-    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), out); cone.position.copy(face).addScaledVector(out, -depth / 2 + 0.02); g.add(cone);
-  }
-  g.userData.hole = h.id;
+  const g = hardwareModel(h, hw);
+  if (g) g.userData.hole = h.id;
   return g;
 }

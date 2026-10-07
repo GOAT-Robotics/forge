@@ -13,7 +13,7 @@ def test_catalogue_is_consistent():
     ids = [i['id'] for i in CATALOG]
     assert len(ids) == len(set(ids))
     for i in CATALOG:
-        assert i['type'] in ('nut', 'flush_nut', 'stud', 'standoff', 'rivnut', 'tap', 'countersink')
+        assert i['type'] in ('nut', 'flush_nut', 'stud', 'standoff', 'rivnut', 'weld_nut', 'tap', 'countersink')
         assert i['hole'] is None or 0.5 < i['hole'] < 30
         if i['type'] == 'tap' and i['units'] == 'metric':
             nominal = float(i['thread'].split('×')[0][1:])

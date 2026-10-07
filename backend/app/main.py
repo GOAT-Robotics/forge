@@ -93,7 +93,7 @@ def auth_status(request:Request):
   try:u['prefs']=json.loads(u.get('prefs') or '{}')
   except ValueError:u['prefs']={}
  return {'configured':configured,'user':u,'providers':entra.providers()}
-PREF_KEYS={'shortcuts':dict,'navStyle':str,'displayMode':str,'showPlanes':bool,'hwUnits':str}
+PREF_KEYS={'shortcuts':dict,'navStyle':str,'displayMode':str,'showPlanes':bool,'hwUnits':str,'realistic':bool,'studio':bool}
 @app.put('/api/me/prefs')
 def save_prefs(body:dict,request:Request):
  u=user(request)
@@ -888,6 +888,8 @@ def part_asset(pid:str,filename:str,request:Request):
  return FileResponse(f,filename=p['name'].replace('/','_')+'_'+filename if filename.endswith(('.pdf','.dxf')) else None)
 from .workspace import router as platform_router
 app.include_router(platform_router)
+from .costing import router as costing_router
+app.include_router(costing_router)
 from .quality import router as quality_router
 app.include_router(quality_router)
 from .assembly import router as assembly_router

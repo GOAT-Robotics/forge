@@ -13,6 +13,8 @@ import type { PartAppearance } from './Viewer';
 import { api, asset, download, vendorId, headers } from './api';
 import { Badge, Modal, DocumentPreview, FlatPattern, SpecEditor, Swatch, ProductionChecklist, GroupPanel, GroupSpecEditor, ExcludeDialog, ask, DialogHost } from './components';
 import { Sidebar, TopBar, PageHeader, initTheme, LogoMark, Progress, type Page } from './shell';
+import { PricingPage, PartCost } from './pricing';
+import { surfaceLook } from './surface';
 import { Dashboard, JobOrdersPage, JobOrderDialog, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, StatusBadge } from './pages';
 import { categories, categoryColors, date, fmt } from './constants';
 import type { Any } from './constants';
@@ -36,10 +38,10 @@ initTheme();
 /** Read a deep link: /projects/{pid}/revisions/{rid}/{tab}?part={id} or /vendor/{rid}?tab=&part= */
 function parseRoute() {
   const q = new URLSearchParams(location.search);
-  const top = location.pathname.match(/^\/(dashboard|projects|job-orders|templates|admin)\/?(?:([a-f0-9]+))?$/);
+  const top = location.pathname.match(/^\/(dashboard|projects|job-orders|templates|pricing|admin)\/?(?:([a-f0-9]+))?$/);
   const jo = location.pathname.match(/^\/job-orders\/([a-f0-9]+)/);
   const m = location.pathname.match(/^\/projects\/([a-f0-9]+)(?:\/revisions\/([a-f0-9]+))?(?:\/([a-z]+))?/);
-  const page: Page = m ? 'project' : jo ? 'joborder' : top ? ({ dashboard: 'dashboard', projects: 'projects', 'job-orders': 'joborders', templates: 'templates', admin: 'admin' } as Record<string, Page>)[top[1]] : 'dashboard';
+  const page: Page = m ? 'project' : jo ? 'joborder' : top ? ({ dashboard: 'dashboard', projects: 'projects', 'job-orders': 'joborders', templates: 'templates', pricing: 'pricing', admin: 'admin' } as Record<string, Page>)[top[1]] : 'dashboard';
   return { page, jo: jo?.[1] || null, project: m?.[1] || null, revision: m?.[2] || null, tab: (m?.[3] && TABS.includes(m[3]) ? m[3] : q.get('tab') && TABS.includes(q.get('tab')!) ? q.get('tab')! : null), part: q.get('part') };
 }
 const joinList = (v: Any) => (Array.isArray(v) ? v.join(', ') : String(v ?? ''));
@@ -373,14 +375,18 @@ function App() {
   const job = rev?.jobs?.find((j: Any) => ['queued', 'running', 'cancelling'].includes(j.status) && !['instructions', 'welding'].includes(j.kind));
   const appearance = useMemo<Record<string, PartAppearance>>(() => {
     const out: Record<string, PartAppearance> = {};
-    for (const p of parts) out[p.id] = { color: (colorBy === 'coating' && p.spec.coating_hex) || categoryColors[p.category] || categoryColors.other, category: p.category, name: p.name };
+    for (const p of parts) {
+      // realistic: the finish and material decide colour, gloss and metalness; otherwise the part-type colours
+      const look = prefs.realistic ? surfaceLook(p.spec || {}, p.category) : null;
+      out[p.id] = { color: (colorBy === 'coating' && p.spec.coating_hex) || look?.color || categoryColors[p.category] || categoryColors.other, category: p.category, name: p.name, roughness: look?.roughness, metalness: look?.metalness };
+    }
     return out;
-  }, [rev?.id, colorBy, parts.map((p: Any) => p.spec.coating_hex + p.category).join('|')]);
+  }, [rev?.id, colorBy, prefs.realistic, parts.map((p: Any) => [p.spec.coating_hex, p.category, p.spec.finish, p.spec.paint, p.spec.material, p.spec.roughness].join('~')).join('|')]);
 
   // Keep the address bar in sync so any view can be copied and opened by a colleague or vendor.
   useEffect(() => {
     if (!auth?.user) return;
-    let path = vendor ? location.pathname : ({ dashboard: '/dashboard', projects: '/projects', joborders: '/job-orders', joborder: '/job-orders/' + joId, templates: '/templates', admin: '/admin', project: '/projects' } as Record<string, string>)[page];
+    let path = vendor ? location.pathname : ({ dashboard: '/dashboard', projects: '/projects', joborders: '/job-orders', joborder: '/job-orders/' + joId, templates: '/templates', pricing: '/pricing', admin: '/admin', project: '/projects' } as Record<string, string>)[page];
     if (!vendor && page === 'project' && project) { path = `/projects/${project.id}`; if (rev) path += `/revisions/${rev.id}/${tab}`; }
     const q = new URLSearchParams();
     if (vendor && tab !== 'parts') q.set('tab', tab);
@@ -683,6 +689,7 @@ function App() {
         : !vendor && page === 'joborders' ? <JobOrdersPage projects={projects} ctx={ctx} perms={perms} openJobOrder={openJobOrder} />
         : !vendor && page === 'joborder' && joId ? <JobOrderDetail id={joId} ctx={ctx} back={() => go('joborders')} openProject={openProjectId} />
         : !vendor && page === 'templates' ? <TemplatesPage ctx={ctx} perms={perms} />
+        : !vendor && page === 'pricing' ? <PricingPage ctx={ctx} />
         : !vendor && page === 'admin' ? <AdminPage ctx={ctx} me={auth.user} />
         : !vendor && (page === 'projects' || !project) ? (
           <div className="v-page">
@@ -918,6 +925,10 @@ function App() {
                             onDisplayMode={m => setPrefs({ displayMode: m })}
                             showPlanes={prefs.showPlanes}
                             onShowPlanes={v => setPrefs({ showPlanes: v })}
+                            realistic={prefs.realistic}
+                            onRealistic={v => setPrefs({ realistic: v })}
+                            studio={prefs.studio}
+                            onStudio={v => setPrefs({ studio: v })}
                             transparentIds={transparentIds}
                             command={viewCmd}
                             appearance={appearance}
@@ -980,6 +991,7 @@ function App() {
                           onBulk={bulk} onExclude={() => setExcluding(parts.filter((p: Any) => multi.includes(p.id)))} onRemove={id => { const next = multi.filter(x => x !== id); setMulti(next); if (selected === id) setSelected(next[next.length - 1] || null); }}
                           onFocus={id => setSelected(id)} onClear={() => choosePart(null)} />
                       ) : part ? (() => {
+                        const canCost = !vendor && ['joborder.create', 'pricing.manage'].some(k => (project?.permissions || []).includes(k));
                         const openFindings = selectedFindings.filter((f: Any) => f.severity === 'blocker' && !f.waiver);
                         const specDone = openFindings.length === 0;
                         const ready = partReady(part);
@@ -1046,7 +1058,7 @@ function App() {
                               {differ.length > 0 && <button type="button" className="link" disabled={busy} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: siblings.map((p: Any) => p.id), category: part.category }); await loadRevision(rev.id); notify(`${path[path.length - 1]}: ${siblings.length} parts are now ${categories[part.category]}`); })}>Make all {categories[part.category].toLowerCase()}</button>}</div></div>}
                           </div>}
 
-                          <nav className="pi-tabs" role="tablist">{[['details', 'Details'], ['features', `Features${part.geometry.holes.length + part.geometry.bends.length ? ' ' + (part.geometry.holes.length + part.geometry.bends.length) : ''}`], ['documents', 'Documents']].map(([t, l]) => <button type="button" role="tab" aria-selected={detail === t} key={t} className={detail === t ? 'active' : ''} onClick={() => setDetail(t)}>{l}</button>)}</nav>
+                          <nav className="pi-tabs" role="tablist">{[['details', 'Details'], ['features', `Features${part.geometry.holes.length + part.geometry.bends.length ? ' ' + (part.geometry.holes.length + part.geometry.bends.length) : ''}`], ['documents', 'Documents'], ...(canCost && !part.excluded && part.category !== 'purchased' ? [['cost', 'Cost']] : [])].map(([t, l]) => <button type="button" role="tab" aria-selected={detail === t} key={t} className={detail === t ? 'active' : ''} onClick={() => setDetail(t)}>{l}</button>)}</nav>
 
                           <div className="pi-body">
                             {detail === 'details' ? (
@@ -1082,6 +1094,8 @@ function App() {
                                 {part.spec.notes && <section className="pi-section"><h4>Notes</h4><p className="note-text">{part.spec.notes}</p></section>}
                                 {part.geometry.carried_from && <p className="pi-foot">{part.geometry.carried_from.same_shape ? `Carried over from rev ${part.geometry.carried_from.revision} (identical shape) — re-approve for this revision.` : `Carried over from rev ${part.geometry.carried_from.revision}; shape changed, feature limits were reset.`}</p>}
                               </>
+                            ) : detail === 'cost' && canCost ? (
+                              <PartCost part={part} />
                             ) : detail === 'features' ? (
                               <>
                                 {part.geometry.holes.length > 0 && part.category !== 'purchased' && <button type="button" className="primary-soft pi-holes-btn" onClick={() => setHoleCfg(part.id)}><CircleDot size={15} />Configure holes &amp; hardware</button>}

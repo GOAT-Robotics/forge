@@ -37,6 +37,8 @@ def init():
  CREATE TABLE IF NOT EXISTS measurements(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL,part_id TEXT NOT NULL,serial TEXT NOT NULL,char_key TEXT NOT NULL,char_no TEXT NOT NULL,label TEXT NOT NULL,nominal REAL,lower_limit REAL,upper_limit REAL,unit TEXT NOT NULL,critical INTEGER DEFAULT 0,value REAL,attr TEXT DEFAULT '',result TEXT NOT NULL,instrument TEXT DEFAULT '',note TEXT DEFAULT '',actor TEXT NOT NULL,created TEXT NOT NULL,first_article INTEGER DEFAULT 0,disposition TEXT DEFAULT '',disposition_note TEXT DEFAULT '',disposition_by TEXT DEFAULT '',disposition_at TEXT DEFAULT '');
  CREATE TABLE IF NOT EXISTS assembly_steps(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),seq INTEGER NOT NULL,data TEXT NOT NULL,created TEXT NOT NULL,author TEXT NOT NULL,updated TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS assembly_groups(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),seq INTEGER NOT NULL,name TEXT NOT NULL,notes TEXT DEFAULT '',created TEXT NOT NULL,author TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS vendors(id TEXT PRIMARY KEY,name TEXT NOT NULL,services TEXT DEFAULT '[]',contact TEXT DEFAULT '',phone TEXT DEFAULT '',email TEXT DEFAULT '',gstin TEXT DEFAULT '',address TEXT DEFAULT '',notes TEXT DEFAULT '',rate_card_id TEXT DEFAULT '',archived INTEGER DEFAULT 0,created TEXT NOT NULL,updated TEXT NOT NULL,author TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS rate_cards(id TEXT PRIMARY KEY,name TEXT NOT NULL,vendor_id TEXT,data TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,author TEXT NOT NULL,archived INTEGER DEFAULT 0);
  CREATE TABLE IF NOT EXISTS weldments(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),name TEXT NOT NULL,parts TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,author TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS idx_weldments ON weldments(revision_id);
  CREATE INDEX IF NOT EXISTS idx_assembly_steps ON assembly_steps(revision_id,seq);
@@ -53,6 +55,7 @@ def init():
    if column not in existing:c.execute(f'ALTER TABLE parts ADD COLUMN {column} {definition}')
   for table,cols in {'parts':[('process_template_id',"TEXT DEFAULT ''"),('drawing_options',"TEXT DEFAULT '{}'"),('doc_reviewed',"INTEGER DEFAULT 0"),('doc_reviewed_by',"TEXT DEFAULT ''"),('doc_reviewed_at',"TEXT DEFAULT ''"),('reviewed_by',"TEXT DEFAULT ''"),('reviewed_at',"TEXT DEFAULT ''"),('alias',"TEXT DEFAULT ''")],
                      'shares':[('allow_cad','INTEGER DEFAULT 0')],
+                     'job_orders':[('vendor_id',"TEXT DEFAULT ''"),('estimate',"TEXT DEFAULT ''"),('estimate_total','REAL DEFAULT 0')],
                      'assembly_steps':[('grp',"TEXT DEFAULT ''")],
                      'users':[('provider',"TEXT DEFAULT 'local'"),('oid',"TEXT DEFAULT ''"),('active','INTEGER DEFAULT 1'),('last_login',"TEXT DEFAULT ''"),('prefs',"TEXT DEFAULT '{}'")],
                      'projects':[('code',"TEXT DEFAULT ''"),('settings',"TEXT DEFAULT '{}'"),('created_by',"TEXT DEFAULT ''"),('archived','INTEGER DEFAULT 0')]}.items():

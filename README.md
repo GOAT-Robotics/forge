@@ -6,6 +6,12 @@ Upload a neutral CAD file, classify every part (machined, sheet metal, purchased
 
 Forge is built and used in production at [GOAT Robotics](https://goat-robotics.com) for its autonomous mobile robots.
 
+<!-- Launch film. For a player with sound inline: edit this README on github.com, drag docs/media/forge-launch.mp4
+     into the editor and put the https://github.com/user-attachments/assets/… link it inserts on its own line here. -->
+[![Forge launch film — plays inline, click for the version with sound](docs/media/forge-launch-preview.webp)](docs/media/forge-launch.mp4?raw=true)
+
+*Launch film, 58 s — [play with sound](docs/media/forge-launch.mp4?raw=true).*
+
 ---
 
 ## Contents
@@ -30,12 +36,14 @@ Forge is built and used in production at [GOAT Robotics](https://goat-robotics.c
 **CAD workspace**
 - Imports STEP, IGES and BREP assemblies. Keeps the assembly tree, component placements, occurrence quantities and multi-body parts.
 - Fast 3D viewer: part navigator with assembly hierarchy, category filters, isolate a part (or one instance of a multi-quantity part), ghosting, section, explode, measure and view cube.
+- Realistic view: each part shows its finish and material — powder coat gloss level and colour, plating, anodising, bare stainless, aluminium or steel with its machined roughness — with studio reflections and an optional studio backdrop.
 - Classifies parts as machining, sheet metal or purchased from geometry and naming rules. Every suggestion is reviewed by an engineer, and sub-assemblies can be re-classified in one step.
 
 **Manufacturing definition**
 - Material, stock, process sequence, finish, coating (RAL picker), tolerances, datums, heat treatment, roughness, masking, marking and K-factor per part, or applied from reusable process templates.
 - A step-by-step *Make production ready* walkthrough that asks the questions an engineer must answer before a part can be released.
-- Rule checks (bend radius, flange length, hole-to-edge, …) with recorded waivers and manual verification items.
+- Rule checks (bend radius, flange length, hole-to-edge, holes inside a bend's distortion zone of 2t + r, a hanging hole for powder coating, …) with recorded waivers — accepting a distortion risk is a waiver on that hole — and manual verification items.
+- Hole hardware shown as real parts in 3D: self-clinching nuts with knurled collars and yellow-zinc threads, flush nuts, studs, standoffs, rivnuts, DIN 929 weld nuts, tapped threads and countersinks.
 
 **Drawings and documents**
 - GOAT-style A4/A3/A2 sheets: third- or first-angle views, ordinate dimensions, hole callouts or hole tables, chamfer and fillet notes, angled holes and sloped faces, pictorial views, a title block filled from your project settings.
@@ -50,6 +58,10 @@ Forge is built and used in production at [GOAT Robotics](https://goat-robotics.c
 **Release and production**
 - Release gate: every custom part needs a complete specification, design review and drawing review before the revision can be released.
 - Job orders with a per-part process checklist, deadlines with days remaining and schedule pace, hold and cancel reasons, and count corrections.
+- Vendors and rate cards: material per kg, laser per metre of cut and per pierce, bending per stroke, rolling, machining per hour, drilling, tapping, countersinks, hardware and its insertion, welding per metre and per tack (by process and material), finishes and colours, quantity breaks, margin and GST. A Coimbatore base sheet is included; copy it for each vendor and enter their rates.
+- Every job order is priced from the parts' own geometry (flat-pattern cut length and pierces, bends, rolls, holes and their hardware, surface area, mass, welds) with the chosen vendor's rates. Compare vendors before creating it, change the vendor later, and see the cost per part and per process.
+- Every make part has a *Cost* tab: the approximate cost to make one piece, split by process, with setups spread over the quantity, the cost at 1–500 pieces and at each vendor.
+- Sheet nesting with true shapes; parts can be kept square to the sheet (only 0 / 90 / 180 / 270° turns) so the laser cuts along X and Y.
 - Quality inspection against released limits, CSV export, a review thread and a full audit trail.
 - Expiring, revocable, read-only vendor links scoped to one revision.
 
@@ -115,7 +127,7 @@ All settings are environment variables, read from `.env` by Docker Compose. See 
 8. **Inspect.** Record measurements against released limits. Forge computes pass/fail and keeps the record.
 9. **Revise.** Upload the next revision. Specifications carry over by part name and shape; every part returns to review.
 
-Details, roles and permissions are in the [platform guide](docs/PLATFORM.md).
+Details, roles and permissions are in the [platform guide](docs/PLATFORM.md). Vendors, rate cards and job-order estimates are described in [docs/PRICING.md](docs/PRICING.md).
 
 ---
 

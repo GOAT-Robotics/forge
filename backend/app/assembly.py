@@ -220,7 +220,7 @@ def assembly_config():
     from .hardware import CATALOG
     return {'methods': METHODS, 'fasteners': {k: [{'standard': s, 'name': n} for s, n in v] for k, v in FASTENERS.items()},
             'threadlock': THREADLOCK, 'approach': APPROACH,
-            'hardware': [{'id': i['id'], 'name': i['name'], 'type': i['type'], 'pn': i['pn']} for i in CATALOG if i['type'] in ('nut', 'flush_nut', 'stud', 'standoff', 'rivnut')]}
+            'hardware': [{'id': i['id'], 'name': i['name'], 'type': i['type'], 'pn': i['pn']} for i in CATALOG if i['type'] in ('nut', 'flush_nut', 'stud', 'standoff', 'rivnut', 'weld_nut')]}
 
 
 @router.get('/api/revisions/{rid}/assembly-steps')

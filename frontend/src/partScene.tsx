@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Box, Maximize } from 'lucide-react';
 import { CadControls, upFor, type NavStyle } from './cadControls';
@@ -69,6 +70,7 @@ export default function PartScene({ revision, bodies, navStyle = 'forge', onRead
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100000); camera.up.set(0, 0, 1);
     scene.add(new THREE.HemisphereLight(0xffffff, 0xd8dde4, 1.6));
+    { const pmrem = new THREE.PMREMGenerator(renderer); scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture; scene.environmentIntensity = 0.6; pmrem.dispose(); }
     const sun = new THREE.DirectionalLight(0xffffff, 1.5); camera.add(sun); sun.position.set(0.4, 0.8, 0.3); scene.add(camera);
     const overlay = new THREE.Group(); overlay.renderOrder = 10; scene.add(overlay);
     const controls = new CadControls(camera, renderer.domElement); controls.style = navStyle;

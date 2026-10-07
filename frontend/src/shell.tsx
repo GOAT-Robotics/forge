@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { LayoutDashboard, FolderKanban, ClipboardList, Library, Settings, Moon, Sun, Monitor, LogOut, Search, ScrollText, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, ClipboardList, Library, Settings, Moon, Sun, Monitor, LogOut, Search, ScrollText, PanelLeftOpen, PanelLeftClose, IndianRupee } from 'lucide-react';
 import type { Any } from './constants';
 
-export type Page = 'dashboard' | 'projects' | 'project' | 'joborders' | 'joborder' | 'templates' | 'admin';
+export type Page = 'dashboard' | 'projects' | 'project' | 'joborders' | 'joborder' | 'templates' | 'pricing' | 'admin';
 
 type Theme = 'light' | 'dark' | 'system';
 function applyTheme(t: Theme) {
@@ -45,6 +45,7 @@ export function Sidebar({ page, go, user, perms, badges, onSignOut }: { page: Pa
     { id: 'projects', label: 'Projects', icon: <FolderKanban /> },
     { id: 'joborders', label: 'Job orders', icon: <ClipboardList />, badge: badges.joborders },
     { id: 'templates', label: 'Templates', icon: <Library /> },
+    { id: 'pricing', label: 'Vendors & pricing', icon: <IndianRupee />, show: perms.has('pricing.manage') || perms.has('joborder.create') },
     { id: 'admin', label: 'Administration', icon: <Settings />, show: perms.has('users.manage') },
   ];
   const active = (id: Page) => page === id || (id === 'projects' && page === 'project') || (id === 'joborders' && page === 'joborder');

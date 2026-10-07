@@ -16,20 +16,20 @@ export default function NestingDialog({ jo, canRun, canDownload, close }: { jo: 
   const [st, setSt] = useState<Any>(null);
   const [preset, setPreset] = useState('2500 × 1250');
   const [w, setW] = useState(2500), [h, setH] = useState(1250);
-  const [gap, setGap] = useState(''), [margin, setMargin] = useState(10), [rotate, setRotate] = useState(true);
+  const [gap, setGap] = useState(''), [margin, setMargin] = useState(10), [rotate, setRotate] = useState(true), [square, setSquare] = useState(true);
   const [err, setErr] = useState('');
   const [editing, setEditing] = useState(false);
   const timer = useRef(0);
   const load = () => api(`/job-orders/${jo.id}/nesting`).then((s: Any) => {
     setSt(s);
-    if (s.options && !editing) { setW(s.options.sheet_w); setH(s.options.sheet_h); setGap(s.options.gap ? String(s.options.gap) : ''); setMargin(s.options.margin); setRotate(s.options.rotate); setPreset(SHEETS.find(x => x[1] === s.options.sheet_w && x[2] === s.options.sheet_h)?.[0] || 'custom'); }
+    if (s.options && !editing) { setW(s.options.sheet_w); setH(s.options.sheet_h); setGap(s.options.gap ? String(s.options.gap) : ''); setMargin(s.options.margin); setRotate(s.options.rotate); setSquare(s.options.square ?? true); setPreset(SHEETS.find(x => x[1] === s.options.sheet_w && x[2] === s.options.sheet_h)?.[0] || 'custom'); }
     window.clearTimeout(timer.current);
     if (s.state === 'running') timer.current = window.setTimeout(load, 1500);
   }).catch(e => setErr(e.message));
   useEffect(() => { load(); return () => window.clearTimeout(timer.current); }, [jo.id]);
   const start = async () => {
     setErr(''); setEditing(false);
-    try { setSt(await api(`/job-orders/${jo.id}/nesting`, 'POST', { sheet_w: w, sheet_h: h, gap: Number(gap) || 0, margin, rotate })); window.setTimeout(load, 800); }
+    try { setSt(await api(`/job-orders/${jo.id}/nesting`, 'POST', { sheet_w: w, sheet_h: h, gap: Number(gap) || 0, margin, rotate, square })); window.setTimeout(load, 800); }
     catch (e: unknown) { setErr((e as Error).message); }
   };
   const res = st?.state === 'ready' ? st.result : null;
@@ -44,6 +44,7 @@ export default function NestingDialog({ jo, canRun, canDownload, close }: { jo: 
           <label>Part spacing (mm)<input type="number" min={0} max={50} step={.5} value={gap} placeholder="Auto: 2 × t, min 3" onChange={e => setGap(e.target.value)} /></label>
           <label>Sheet margin (mm)<input type="number" min={0} max={200} value={margin} onChange={e => setMargin(Number(e.target.value))} /></label>
           <label className="check"><input type="checkbox" checked={rotate} onChange={e => setRotate(e.target.checked)} />Turn parts (0 / 90 / 180 / 270°) — off for brushed or grained sheet</label>
+          <label className="check"><input type="checkbox" checked={square} onChange={e => setSquare(e.target.checked)} />Keep parts square to the sheet — straight edges run along X / Y, no diagonal angles (faster laser cutting; laser time usually costs more than the sheet saved)</label>
           <div className="nest-actions">{editing && <button type="button" onClick={() => setEditing(false)}>Back to result</button>}<button type="button" className="primary" onClick={start}><Play size={15} />Nest parts</button></div>
         </div>}
         {err && <div className="cfg-error">{err}</div>}

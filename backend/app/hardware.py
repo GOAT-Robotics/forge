@@ -10,8 +10,8 @@ from __future__ import annotations
 
 IN = 25.4
 TYPES = {'nut': 'Nut', 'flush_nut': 'Flush nut', 'stud': 'Stud', 'standoff': 'Standoff', 'rivnut': 'Rivnut',
-         'tap': 'Tap', 'countersink': 'Countersink'}
-HARDWARE_TYPES = ('nut', 'flush_nut', 'stud', 'standoff', 'rivnut')
+         'weld_nut': 'Weld nut', 'tap': 'Tap', 'countersink': 'Countersink'}
+HARDWARE_TYPES = ('nut', 'flush_nut', 'stud', 'standoff', 'rivnut', 'weld_nut')
 
 
 def _r(x):
@@ -55,6 +55,9 @@ def _items():
         for L in (6, 8, 10, 12, 15, 20):
             add(id=f'so-{th}-{L}', type='standoff', units='metric', thread=th, name=f'{th}×{L} Standoff', pn=f'SO-{th}-{L}', hole=hole, length=L)
             add(id=f'bso-{th}-{L}', type='standoff', units='metric', thread=th, name=f'{th}×{L} Blind Standoff', pn=f'BSO-{th}-{L}', hole=hole, length=L)
+    # hexagon weld nuts (DIN 929, projection welded): pilot hole per the nut / coater's datasheet
+    for th in ('M4', 'M5', 'M6', 'M8', 'M10', 'M12'):
+        add(id=f'weldnut-{th}', type='weld_nut', units='metric', thread=th, name=f'{th} Hex Weld Nut', pn=f'DIN 929 {th}', hole=None)
     # rivet nuts (steel, flat head)
     for th, hole in (('M3', 5.0), ('M4', 6.0), ('M5', 7.0), ('M6', 9.0), ('M8', 11.0), ('M10', 13.0)):
         add(id=f'rivnut-{th}', type='rivnut', units='metric', thread=th, name=f'{th} Rivnut', pn='', hole=hole)
@@ -87,7 +90,7 @@ def designation(item):
         return f"{thread} {'UNF' if item['thread'] == '#10-32' else 'UNC'}-2B"
     if t == 'countersink':
         return f"CSK Ø {item['csk']:.2f} X {item.get('angle', 90)}°" if item.get('csk') else f"CSK X {item.get('angle', 90)}°"
-    label = {'nut': 'SELF-CLINCHING NUT', 'flush_nut': 'FLUSH NUT', 'stud': 'STUD', 'standoff': 'STANDOFF', 'rivnut': 'RIVET NUT'}.get(t, 'HARDWARE')
+    label = {'nut': 'SELF-CLINCHING NUT', 'flush_nut': 'FLUSH NUT', 'stud': 'STUD', 'standoff': 'STANDOFF', 'rivnut': 'RIVET NUT', 'weld_nut': 'WELD NUT'}.get(t, 'HARDWARE')
     if item.get('custom'):
         ref = ' '.join(x for x in (item.get('name'), item.get('pn')) if x)
         return f"INSERT {ref}".upper() if label.split()[-1].lower() in ref.lower() else f"INSERT {ref} {label}".upper()

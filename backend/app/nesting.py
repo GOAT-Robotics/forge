@@ -39,15 +39,24 @@ def _slug(s):
 class Shape:
     """One flat pattern, pre-turned to its tightest bounding rectangle (long side along X)."""
 
-    def __init__(self, key, label, outline, holes, bends, qty):
+    def __init__(self, key, label, outline, holes, bends, qty, square=False):
         poly = Polygon(outline, [h for h in holes if len(h) >= 3]).buffer(0)
         if poly.geom_type != 'Polygon':
             poly = max(getattr(poly, 'geoms', [poly]), key=lambda g: g.area)
-        mrr = poly.minimum_rotated_rectangle
-        c = np.array(mrr.exterior.coords)[:4]
-        e = [c[1] - c[0], c[2] - c[1]]
-        long = e[0] if np.linalg.norm(e[0]) >= np.linalg.norm(e[1]) else e[1]
-        self.base_angle = -math.degrees(math.atan2(long[1], long[0]))
+        self.square = bool(square)
+        if square:
+            # square to the sheet: the part's own straight edges run along X / Y, so the laser cuts them
+            # axis-parallel (faster, cleaner than diagonal moves); only quarter turns are tried afterwards
+            a = _dominant_angle(outline)
+            turned = affinity.rotate(poly, -a, origin=(0, 0))
+            x0, y0, x1, y1 = turned.bounds
+            self.base_angle = -a + (90 if (y1 - y0) > (x1 - x0) + 1e-6 else 0)
+        else:
+            mrr = poly.minimum_rotated_rectangle
+            c = np.array(mrr.exterior.coords)[:4]
+            e = [c[1] - c[0], c[2] - c[1]]
+            long = e[0] if np.linalg.norm(e[0]) >= np.linalg.norm(e[1]) else e[1]
+            self.base_angle = -math.degrees(math.atan2(long[1], long[0]))
         self.key, self.label, self.qty = key, label, int(qty)
         self.poly = affinity.rotate(poly, self.base_angle, origin=(0, 0))
         self.bends = [affinity.rotate(LineString([b['a'], b['b']]), self.base_angle, origin=(0, 0)) for b in bends]
@@ -59,6 +68,32 @@ class Shape:
         bl = [affinity.rotate(b, angle, origin=(0, 0)) for b in self.bends]
         x0, y0 = p.bounds[0], p.bounds[1]
         return affinity.translate(p, -x0, -y0), [affinity.translate(b, -x0, -y0) for b in bl]
+
+
+def _dominant_angle(ring):
+    """Direction (degrees, 0..90) of the outline's straight edges, weighted by length: the angle that makes most of
+    the cut run parallel to the sheet edges."""
+    pts = np.asarray(ring, float)
+    if len(pts) < 2:
+        return 0.0
+    d = np.diff(np.vstack([pts, pts[:1]]), axis=0)
+    L = np.hypot(d[:, 0], d[:, 1])
+    keep = L > 1e-6
+    if not keep.any():
+        return 0.0
+    ang = np.degrees(np.arctan2(d[keep, 1], d[keep, 0])) % 90.0
+    w = L[keep]
+    hist = np.zeros(180)
+    np.add.at(hist, (ang * 2).astype(int) % 180, w)
+    smooth = hist + np.roll(hist, 1) + np.roll(hist, -1)
+    best = (int(np.argmax(smooth)) + .5) / 2
+    # refine: weighted mean of the edges within a degree of the peak (on the 90 degree circle)
+    diff = (ang - best + 45) % 90 - 45
+    near = np.abs(diff) <= 1.0
+    if near.any():
+        best = best + float(np.average(diff[near], weights=w[near]))
+    best %= 90.0
+    return 0.0 if best < 1e-3 or best > 90 - 1e-3 else best
 
 
 def _raster(poly, cell, grow):
@@ -162,6 +197,8 @@ def _rotations(s, rotate):
     best fit is rarely axis-aligned."""
     if not rotate:
         return (0,)
+    if getattr(s, 'square', False):
+        return (0, 90, 180, 270)
     boxy = s.poly.area / max(s.poly.envelope.area, 1e-9) > .75
     return (0, 90, 180, 270) if boxy else tuple(range(0, 360, 15))
 
@@ -359,7 +396,7 @@ def _pdf(groups, title):
     return out.getvalue()
 
 
-def run(parts, W, H, gap=0.0, margin=10.0, rotate=True, title='', progress=None):
+def run(parts, W, H, gap=0.0, margin=10.0, rotate=True, title='', progress=None, square=True):
     """parts: [{key, label, material, thickness, qty, flat{outline, holes, bends}}]. Returns (summary, zip bytes)."""
     groups = {}
     for p in parts:
@@ -369,7 +406,7 @@ def run(parts, W, H, gap=0.0, margin=10.0, rotate=True, title='', progress=None)
     for gi, gk in enumerate(keys):
         mat, th = gk
         g_gap = gap if gap > 0 else max(3.0, 2 * th)
-        shapes = [Shape(p['key'], p['label'], p['flat']['outline'], p['flat'].get('holes') or [], p['flat'].get('bends') or [], p['qty']) for p in groups[gk]]
+        shapes = [Shape(p['key'], p['label'], p['flat']['outline'], p['flat'].get('holes') or [], p['flat'].get('bends') or [], p['qty'], square) for p in groups[gk]]
         rot = (0, 90, 180, 270) if rotate else (0,)
         n_copies = sum(sh.qty for sh in shapes)
         sheets, unplaced = nest_group(shapes, W, H, g_gap, margin, rot, budget=min(30.0, 4.0 + .2 * n_copies),
@@ -390,7 +427,7 @@ def run(parts, W, H, gap=0.0, margin=10.0, rotate=True, title='', progress=None)
             files[f'{name}/{name}-all-sheets.dxf'] = _dxf([(s['n'], s['placed']) for s in out_sheets], W, H, f'{mat} {th:g}mm')
         n_parts = sum(sh.qty for sh in shapes)
         out_groups.append({
-            'material': mat, 'thickness': th, 'sheet': [W, H], 'gap': g_gap, 'margin': margin, 'parts': n_parts,
+            'material': mat, 'thickness': th, 'sheet': [W, H], 'gap': g_gap, 'margin': margin, 'parts': n_parts, 'square': bool(square),
             'placed': sum(len(s['placed']) for s in out_sheets), 'unplaced': unplaced,
             'utilization': (sum(s['utilization'] for s in out_sheets) / len(out_sheets)) if out_sheets else 0.0,
             'files': [k for k in files if k.startswith(name + '/')],

@@ -45,8 +45,8 @@ export const ACTIONS: { id: string; label: string; group: string; key: string }[
   { id: 'help.shortcuts', label: 'Shortcuts & navigation', group: 'Tools', key: 'Shift+/' },
 ];
 
-export type Prefs = { shortcuts: Record<string, string>; navStyle: NavStyle; displayMode: DisplayMode; showPlanes: boolean };
-const DEFAULTS: Prefs = { shortcuts: {}, navStyle: 'forge', displayMode: 'shaded', showPlanes: false };
+export type Prefs = { shortcuts: Record<string, string>; navStyle: NavStyle; displayMode: DisplayMode; showPlanes: boolean; realistic: boolean; studio: boolean };
+const DEFAULTS: Prefs = { shortcuts: {}, navStyle: 'forge', displayMode: 'shaded', showPlanes: false, realistic: true, studio: false };
 const KEY = 'forge-prefs';
 
 /** The key combination of a keyboard event as written in the bindings ("Ctrl+Shift+F", "Alt+ArrowUp", "7"). */
