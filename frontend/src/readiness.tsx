@@ -88,7 +88,7 @@ export function ReadinessWizard({ part, settings, editable, canReview, onSave, o
   useEffect(() => { if (at >= steps.length) setAt(steps.length - 1); }, [steps.length]);
   const step = steps[at];
   const doneCount = steps.filter(s => s.done(spec, part)).length;
-  const purchased = category === 'purchased';
+  const purchased = category === 'purchased' || category === 'other';
 
   const save = async (next = true) => {
     setErr(''); setSaving(true);
@@ -105,7 +105,7 @@ export function ReadinessWizard({ part, settings, editable, canReview, onSave, o
     if (!step) return null;
     if (step.id === 'type') return <>
       <Choice options={Object.values(categories)} value={categories[category]} onPick={v => setCategory(Object.entries(categories).find(([, l]) => l === v)?.[0] || category)} />
-      {purchased && <p className={noteInfo}><ShieldCheck />Purchased parts are bought complete: they are left out of release checks, drawing sets and the assembly drawing. Save to finish.</p>}
+      {purchased && <p className={noteInfo}><ShieldCheck />{category === 'purchased' ? 'Purchased parts are bought complete: they are left out of release checks, drawing sets and the assembly drawing.' : 'Other parts need no design checks or reviews.'} Save to finish.</p>}
     </>;
     if (step.id === 'material') return <>
       <Choice options={[...new Set([...(stepMat ? [stepMat] : []), ...matFor(category)])]} value={spec.material} onPick={v => set('material', v)} hint={stepMat} />

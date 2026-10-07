@@ -1597,7 +1597,7 @@ def dashboard(request: Request):
     active = [j for j in jos if j['status'] in ('open', 'in_progress', 'on_hold')]
     design = []
     for p in db.rows("SELECT p.id,p.name,p.code,r.id AS revision_id,r.number,r.status FROM projects p JOIN revisions r ON r.project_id=p.id AND r.state='active' WHERE p.archived=0"):
-        s = db.row("SELECT COUNT(*) AS parts, SUM(reviewed) AS reviewed, SUM(doc_reviewed) AS docs FROM parts WHERE revision_id=? AND category!='purchased' AND excluded=0", (p['revision_id'],))
+        s = db.row("SELECT COUNT(*) AS parts, SUM(reviewed) AS reviewed, SUM(doc_reviewed) AS docs FROM parts WHERE revision_id=? AND category NOT IN ('purchased','other') AND excluded=0", (p['revision_id'],))
         open_c = db.row('SELECT COUNT(*) AS n FROM comments WHERE revision_id=? AND resolved=0', (p['revision_id'],))['n']
         design.append({**p, 'parts': s['parts'] or 0, 'reviewed': s['reviewed'] or 0, 'docs_reviewed': s['docs'] or 0, 'open_comments': open_c})
     events = db.rows('SELECT e.*,j.number,j.title,j.project_id FROM jo_events e JOIN job_orders j ON j.id=e.job_order_id ORDER BY e.created DESC LIMIT 40')

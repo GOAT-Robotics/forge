@@ -604,8 +604,8 @@ def bulk_ready(rid:str,a:BulkReady,request:Request):
   row=db.row('SELECT * FROM parts WHERE id=? AND revision_id=?',(pid,rid))
   if not row:raise HTTPException(422,'Part outside revision: '+pid)
   p=deserialize(row)
-  if p['category']=='purchased' or p.get('excluded'):
-   results.append({'id':pid,'name':p['name'],'skipped':'purchased' if p['category']=='purchased' else 'not for production'});continue
+  if p['category'] in ('purchased','other') or p.get('excluded'):
+   results.append({'id':pid,'name':p['name'],'skipped':'not for production' if p.get('excluded') else p['category']});continue
   spec=dict(p['spec']);before=json.dumps(spec,sort_keys=True)
   for k,v in a.fill.items():
    if v.strip() and (a.overwrite or not str(spec.get(k,'')).strip()):spec[k]=v.strip()
@@ -741,7 +741,7 @@ def release_check(rid:str,request:Request):
  if r['state']!='active':reasons.append('Revision is not active')
  for p in db.rows('SELECT * FROM parts WHERE revision_id=?',(rid,)):
   p=deserialize(p)
-  if p['category']=='purchased' or p.get('excluded'):continue
+  if p['category'] in ('purchased','other') or p.get('excluded'):continue
   if not p['reviewed']:reasons.append(p['name']+': design review not complete')
   if not p.get('doc_reviewed'):reasons.append(p['name']+': drawing not reviewed')
   for f in evaluate(p['geometry'],p['spec'],rules):

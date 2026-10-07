@@ -39,7 +39,7 @@ const tag = (n: number) => cn('text-xs font-normal', n ? 'text-warning' : 'text-
 export default function BulkReady({ revision, parts, selection, canDesign, canDrawing, close, done }: {
   revision: string; parts: Any[]; selection: string[]; canDesign: boolean; canDrawing: boolean; close: () => void; done: () => Promise<void>;
 }) {
-  const make = parts.filter(p => !p.excluded && p.category !== 'purchased');
+  const make = parts.filter(p => !p.excluded && p.category !== 'purchased' && p.category !== 'other');
   const ready = (p: Any) => !!p.reviewed && !!p.doc_reviewed;
   const scopes: Scope[] = [
     ...(selection.length ? [{ id: 'sel', label: `Selected (${selection.filter(id => make.some(p => p.id === id)).length})`, ids: selection.filter(id => make.some(p => p.id === id)) }] : []),

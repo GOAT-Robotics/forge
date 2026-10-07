@@ -764,7 +764,7 @@ export function ProjectSettingsDialog({ project, workspace, config, close, onSav
 export function DesignChecks({ parts, onOpen, onRules, onWizard }: { parts: Any[]; onOpen: (id: string) => void; onRules: () => void; onWizard?: (id: string) => void }) {
   const [openOnly, setOpenOnly] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const rows = parts.filter((p: Any) => p.category !== 'purchased' && !p.excluded).map((p: Any) => {
+  const rows = parts.filter((p: Any) => p.category !== 'purchased' && p.category !== 'other' && !p.excluded).map((p: Any) => {
     const open = p.findings.filter((f: Any) => !f.waiver);
     return { p, blockers: open.filter((f: Any) => f.severity === 'blocker').length, warnings: open.filter((f: Any) => f.severity === 'warning').length, done: p.findings.filter((f: Any) => f.waiver).length, open };
   }).sort((a: Any, b: Any) => b.blockers - a.blockers || b.warnings - a.warnings || a.p.name.localeCompare(b.p.name));

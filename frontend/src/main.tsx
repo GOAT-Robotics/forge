@@ -49,6 +49,8 @@ function Tip({ label, children }: { label: React.ReactNode; children: React.Reac
   return <Tooltip><TooltipTrigger asChild>{children}</TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>;
 }
 /** Part-type glyph tint (navigator rows, inspector title). */
+/** Purchased, other and not-for-production parts skip design checks and reviews. */
+const noChecks = (p: Any) => !!p.excluded || p.category === 'purchased' || p.category === 'other';
 const glyphTone: Record<string, string> = { machining: 'bg-machining/10 text-machining', sheet_metal: 'bg-sheet/10 text-sheet', purchased: 'bg-purchased/10 text-purchased', other: 'bg-other/10 text-other' };
 /** Selected state of a ghost button in the canvas toolbars and the HUD. */
 const onTone = 'bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground';
@@ -120,7 +122,6 @@ function App() {
   const [drawingPart, setDrawingPart] = useState<string | null>(null);
   const [balloonMode, setBalloonMode] = useState(false);
   const [readyFor, setReadyFor] = useState<string | null>(null);
-  const [partMenu, setPartMenu] = useState(false);
   const [preview, setPreview] = useState<{ blob: Blob; name: string; title: string } | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [overview, setOverview] = useState(false);
@@ -393,13 +394,13 @@ function App() {
   const endWeld = () => { setPairPick([]); setJointDraft(null); setPickMode(null); setSeamCandidates([]); setHoverSeam(null); setAddingParts(false); setWeldPreviewStatus(null); detectRequest.current++; };
   const weldDraftPreview = useMemo(() => jointDraft ? { faces: [...jointDraft.faces, ...pairPick], weld: jointDraft.weld } : null, [jointDraft?.faces, jointDraft?.weld, pairPick]);
   const holes = parts.reduce((n: number, p: Any) => n + p.geometry.holes.length, 0);
-  const findings = parts.flatMap((p: Any) => (p.category === 'purchased' || p.excluded ? [] : p.findings));
+  const findings = parts.flatMap((p: Any) => (noChecks(p) ? [] : p.findings));
   const selectedFindings = part?.findings || [];
   /** A part is production ready when its spec has no open blocker, its design review and its drawing review are done.
-   *  Purchased and not-for-production parts need nothing. */
-  const partReady = (p: Any) => p.excluded || p.category === 'purchased' || (!!p.reviewed && !!p.doc_reviewed
+   *  Purchased, other and not-for-production parts need nothing. */
+  const partReady = (p: Any) => noChecks(p) || (!!p.reviewed && !!p.doc_reviewed
     && !(p.findings || []).some((f: Any) => f.severity === 'blocker' && (!f.waiver || ['GEO001', 'FLAT001'].includes(f.code))));
-  const releaseParts = (rev?.parts || []).filter((p: Any) => !p.excluded && p.category !== 'purchased');
+  const releaseParts = (rev?.parts || []).filter((p: Any) => !noChecks(p));
   const readyCount = releaseParts.filter(partReady).length;
   const blocking = findings.filter((f: Any) => f.severity === 'blocker' && !f.waiver).length;
   const [dismissedJob, setDismissedJob] = useState('');
@@ -508,7 +509,7 @@ function App() {
                               <span className={cn('grid size-[26px] shrink-0 place-items-center rounded-md', glyphTone[p.category] || glyphTone.other)} style={p.spec.coating_hex ? { background: p.spec.coating_hex, color: '#fff' } : undefined}>{p.category === 'sheet_metal' ? <Layers className="size-4" /> : <Box className="size-4" />}</span>
                               <span className="min-w-0 flex-1"><span className={cn('block truncate text-sm font-medium text-foreground', p.excluded && 'text-muted-foreground line-through')} title={p.alias ? `${p.alias} — ${p.name}` : p.name}>{p.alias && <span className="mr-1.5 inline-block rounded bg-selection px-1.5 align-[1px] text-2xs leading-[17px] font-medium text-selection-foreground">{p.alias}</span>}{p.name}</span><span className="mt-0.5 block truncate text-2xs text-muted-foreground">{p.excluded ? <span className="font-medium text-destructive">Not for production</span> : categories[p.category]} <span className="text-faint">· Qty {p.quantity}</span>{p.spec.material && !p.excluded && <span className="text-faint"> · {p.spec.material}</span>}</span></span>
                               {jointDraft?.kind === 'weld' && (() => { const check = weldability(p); return <span className={cn('grid size-5 shrink-0 place-items-center rounded-full', check.level === 'good' ? 'bg-success-soft text-success' : check.level === 'blocked' ? 'bg-danger-soft text-destructive' : 'bg-warning-soft text-warning')} title={`${check.label}: ${check.reason}`}><Flame className="size-3" /></span>; })()}
-                              {p.excluded || p.category === 'purchased' ? <span className="size-[9px] shrink-0 rounded-full border-2 border-dashed border-faint/60" title={p.excluded ? 'Not for production' : 'Purchased — no release needed'} />
+                              {noChecks(p) ? <span className="size-[9px] shrink-0 rounded-full border-2 border-dashed border-faint/60" title={p.excluded ? 'Not for production' : `${categories[p.category]} — no checks needed`} />
                                 : partReady(p) ? <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-label="Production ready" />
                                 : <span className={cn('size-[9px] shrink-0 rounded-full border-2 border-warning', (p.reviewed || p.doc_reviewed) && 'bg-[linear-gradient(90deg,var(--color-warning)_50%,transparent_50%)]')} title={[!p.reviewed && 'design review', !p.doc_reviewed && 'drawing review', p.reviewed && p.doc_reviewed && 'open specification items'].filter(Boolean).join(' + ') + ' still to do'} />}
                             </Button>
@@ -1108,24 +1109,22 @@ function App() {
                               {(part.alias || (!vendor && can('part.edit'))) && <Button type="button" variant="outline" size="xs" className={cn('my-0.5 w-fit max-w-full self-start shadow-none disabled:opacity-100', part.alias ? 'border-primary/30 bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground' : 'border-dashed bg-transparent font-normal text-muted-foreground')} disabled={vendor || !can('part.edit')} title={part.alias ? 'Alias — click to change' : 'Give this part a short, easy name'} onClick={() => editAlias(part)}><Tag />{part.alias || 'Add alias'}</Button>}
                               <small className="text-2xs text-muted-foreground tabular-nums">{part.id.slice(-10).toUpperCase()} · Qty {part.quantity}{part.geometry.mass_kg !== undefined ? ` · ${fmt(part.geometry.mass_kg)} kg` : ''}</small>
                             </div>
-                            {!vendor && <DropdownMenu open={partMenu} onOpenChange={setPartMenu}>
-                              <Tip label="More actions">
-                                <DropdownMenuTrigger asChild>
-                                  <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="More actions"><MoreHorizontal /></Button>
-                                </DropdownMenuTrigger>
-                              </Tip>
+                            {!vendor && <DropdownMenu key={part.id} modal={false}>
+                              <DropdownMenuTrigger asChild>
+                                <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="More actions" title="More actions"><MoreHorizontal /></Button>
+                              </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="min-w-[230px]">
-                                <DropdownMenuItem onClick={() => { setPartMenu(false); setFlags(part.id, { hidden: !part.hidden }); }}>{part.hidden ? <Eye /> : <EyeOff />}{part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'}</DropdownMenuItem>
-                                {editable && !part.excluded && <DropdownMenuItem onClick={() => { setPartMenu(false); setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings />All manufacturing details</DropdownMenuItem>}
-                                {editable && !part.excluded && <DropdownMenuItem onClick={() => { setPartMenu(false); startWeld([part.id]); }}><Flame />Weld this component</DropdownMenuItem>}
-                                {editable && <DropdownMenuItem onClick={() => { setPartMenu(false); addToSteps([part.id]); }}><ListPlus />Add as assembly step</DropdownMenuItem>}
-                                {part.geometry.holes.length > 0 && <DropdownMenuItem onClick={() => { setPartMenu(false); setHoleCfg(part.id); }}><CircleDot />Holes &amp; hardware…</DropdownMenuItem>}
-                                {canBend(part) && <DropdownMenuItem onClick={() => { setPartMenu(false); setBendSim(part.id); }}><FoldVertical />Bending simulation…</DropdownMenuItem>}
-                                {editable && canBend(part) && <DropdownMenuItem onClick={() => { setPartMenu(false); setBendSharing([part.id], part.bend_sim ? 'off' : 'on'); }}>{part.bend_sim ? <EyeOff /> : <Eye />}{part.bend_sim ? 'Stop sharing bending simulation' : 'Share bending simulation'}</DropdownMenuItem>}
-                                {editable && canBend(part) && part.drawing_options?.bend_sim !== undefined && <DropdownMenuItem onClick={() => { setPartMenu(false); setBendSharing([part.id], 'inherit'); }}><Undo2 />Bending simulation: use project default</DropdownMenuItem>}
+                                <DropdownMenuItem onClick={() => { setFlags(part.id, { hidden: !part.hidden }); }}>{part.hidden ? <Eye /> : <EyeOff />}{part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'}</DropdownMenuItem>
+                                {editable && !part.excluded && <DropdownMenuItem onClick={() => { setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings />All manufacturing details</DropdownMenuItem>}
+                                {editable && !part.excluded && <DropdownMenuItem onClick={() => { startWeld([part.id]); }}><Flame />Weld this component</DropdownMenuItem>}
+                                {editable && <DropdownMenuItem onClick={() => { addToSteps([part.id]); }}><ListPlus />Add as assembly step</DropdownMenuItem>}
+                                {part.geometry.holes.length > 0 && <DropdownMenuItem onClick={() => { setHoleCfg(part.id); }}><CircleDot />Holes &amp; hardware…</DropdownMenuItem>}
+                                {canBend(part) && <DropdownMenuItem onClick={() => { setBendSim(part.id); }}><FoldVertical />Bending simulation…</DropdownMenuItem>}
+                                {editable && canBend(part) && <DropdownMenuItem onClick={() => { setBendSharing([part.id], part.bend_sim ? 'off' : 'on'); }}>{part.bend_sim ? <EyeOff /> : <Eye />}{part.bend_sim ? 'Stop sharing bending simulation' : 'Share bending simulation'}</DropdownMenuItem>}
+                                {editable && canBend(part) && part.drawing_options?.bend_sim !== undefined && <DropdownMenuItem onClick={() => { setBendSharing([part.id], 'inherit'); }}><Undo2 />Bending simulation: use project default</DropdownMenuItem>}
                                 {editable && (part.excluded
-                                  ? <DropdownMenuItem onClick={() => { setPartMenu(false); setFlags(part.id, { excluded: false }); }}><Undo2 />Restore to production</DropdownMenuItem>
-                                  : <DropdownMenuItem variant="destructive" onClick={() => { setPartMenu(false); setExcluding([part]); }}><Ban />Not for production…</DropdownMenuItem>)}
+                                  ? <DropdownMenuItem onClick={() => { setFlags(part.id, { excluded: false }); }}><Undo2 />Restore to production</DropdownMenuItem>
+                                  : <DropdownMenuItem variant="destructive" onClick={() => { setExcluding([part]); }}><Ban />Not for production…</DropdownMenuItem>)}
                               </DropdownMenuContent>
                             </DropdownMenu>}
                           </header>
@@ -1136,9 +1135,10 @@ function App() {
                                 {!vendor && (project?.permissions || []).includes('joborder.create') && <Button type="button" variant="outline" size="xs" onClick={() => weldmentJobOrder(wm)}><ClipboardList />Job order</Button>}</div></div></div>); })()}
                           {part.excluded ? (
                             <div className={card}><Ban className="mt-px size-4 flex-none text-muted-foreground" /><div className="min-w-0"><div className="text-sm font-medium">Not for production</div><p className={cardText}>{(part.exclusion_reason || 'Excluded from this revision').replace(/[.]?$/, '.')} Skipped in release checks, drawing packs and the vendor checklist.</p>{editable && <Button type="button" variant="outline" size="xs" onClick={() => setFlags(part.id, { excluded: false })}><Undo2 />Restore</Button>}</div></div>
-                          ) : part.category === 'purchased' ? (
-                            <div className={card}><Box className="mt-px size-4 flex-none text-muted-foreground" /><div className="min-w-0"><div className="text-sm font-medium">Purchased part</div><p className={cardText}>Bought complete — no drawing release needed.</p>
-                              <Label className="cursor-pointer text-xs font-normal"><Switch checked={!!part.drawing_options?.assembly_show} disabled={busy || !editable} onCheckedChange={show => { action(async () => { await api(`/revisions/${rev.id}/parts/assembly-drawing`, 'POST', { ids: [part.id], show }); await loadRevision(rev.id); }); }} />Show on the assembly drawing</Label></div></div>
+                          ) : noChecks(part) ? (
+                            <div className={card}><Box className="mt-px size-4 flex-none text-muted-foreground" /><div className="min-w-0 flex-1"><div className="text-sm font-medium">{part.category === 'purchased' ? 'Purchased part' : 'Other part'}</div><p className={cardText}>{part.category === 'purchased' ? 'Bought complete — no checks or drawing release needed.' : 'No design checks or reviews needed for this part.'}</p>
+                              {part.category === 'purchased' && <Label className="mb-2 cursor-pointer text-xs font-normal"><Switch checked={!!part.drawing_options?.assembly_show} disabled={busy || !editable} onCheckedChange={show => { action(async () => { await api(`/revisions/${rev.id}/parts/assembly-drawing`, 'POST', { ids: [part.id], show }); await loadRevision(rev.id); }); }} />Show on the assembly drawing</Label>}
+                              {editable && <Button type="button" variant="outline" size="xs" className="text-destructive hover:bg-danger-soft hover:text-destructive" onClick={() => setExcluding([part])}><Ban />Not for production</Button>}</div></div>
                           ) : (
                             <div className={cn(card, 'flex-col bg-subtle', ready && 'border-success/40')}>
                               <div className="grid grid-cols-3 gap-1.5">
