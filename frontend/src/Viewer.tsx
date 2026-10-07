@@ -56,6 +56,9 @@ type Props = {
   representativeOccurrences?: Record<string, number>;
   /** Feature to highlight in the scene (hovered in the sidebar): a bore or a bend in part-definition coordinates. */
   feature?: { kind: 'hole' | 'bend'; partId: string; center: number[]; axis: number[]; diameter?: number; depth?: number; length?: number; radius?: number; id: string } | null;
+  /** Flat-pattern problems of one part (part-definition coordinates): outlined faces + numbered markers.
+   *  `active` is emphasised; `focus` (a pinned issue) flies the camera to it. */
+  issues?: { partId: string; items: { point: number[] | null; outlines: number[][][]; title: string }[]; active: number | null; focus: number | null } | null;
   /** Configured welds drawn on the model (beads + labels). */
   welds?: WeldShape[];
   onWeldClick?: (id: string) => void;
@@ -125,6 +128,7 @@ type Engine = {
   hovered: THREE.Mesh | null;
   grid: THREE.GridHelper | null;
   featureGroup: THREE.Group | null;
+  issueGroup?: THREE.Group | null;
   weldGroup: THREE.Group | null;
   savedWeldGroup: THREE.Group | null;
   seamGroup: THREE.Group | null;
@@ -183,7 +187,7 @@ const paletteOn = 'bg-selection text-selection-foreground hover:bg-selection hov
 const paletteSep = 'mx-1 data-[orientation=vertical]:h-5 group-[.tight]/palette:mx-0.5';
 const palettePop = 'flex w-auto items-center gap-3 rounded-lg px-3 py-2.5 shadow-pop';
 
-export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, corner, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, realistic = true, onRealistic, studio = false, onStudio, command = null, viewKey }: Props) {
+export default function Viewer({ url, selected, onPick, onIsolateToggle, isolated = false, flat = false, appearance = {}, hidden = [], multi = [], focusIds = [], representativeOccurrences = {}, feature = null, issues = null, pickMode = null, onGeometryPick, onGeometryHover, hoverGeometry = null, onWeldPreviewStatus, jointPreview = null, welds = [], onWeldClick, seamCandidates = [], hoverSeam = null, onSeamToggle, onSeamHover, hud, toolbarStart, toolbarEnd, corner, navStyle = 'forge', displayMode = 'shaded', onDisplayMode, transparentIds = [], showPlanes = false, onShowPlanes, realistic = true, onRealistic, studio = false, onStudio, command = null, viewKey }: Props) {
   const weldClick = useRef(onWeldClick); weldClick.current = onWeldClick;
   const drafting = !!jointPreview || seamCandidates.length > 0;
   const seamToggle = useRef(onSeamToggle); seamToggle.current = onSeamToggle;
@@ -955,6 +959,64 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
     group.traverse(o => { o.renderOrder = 10; });
     e.scene.add(group); e.featureGroup = group;
   }, [feature, loading, explode]);
+
+  // Flat-pattern issues: faces outlined in amber, numbered markers; the hovered / pinned one in red and thicker.
+  const issueKey = issues ? issues.partId + '|' + issues.items.length + '|' + issues.items.map(i => i.title).join('/') : '';
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded) return;
+    if (e.issueGroup) { e.scene.remove(e.issueGroup); disposeGroup(e.issueGroup); e.issueGroup = null; }
+    if (!issues || !issues.items.length) { e.refresh?.(); return; }
+    const placements: THREE.Matrix4[] = [];
+    for (const m of e.meshes) {
+      if (m.userData.partId !== issues.partId) continue;
+      if (m instanceof THREE.InstancedMesh) { for (let i = 0; i < m.count; i++) { const t = new THREE.Matrix4(); m.getMatrixAt(i, t); placements.push(t); } }
+      else { m.updateMatrixWorld(true); placements.push(m.matrixWorld.clone()); }
+    }
+    if (!placements.length) return;
+    const group = new THREE.Group();
+    const lit = issues.active ?? issues.focus;
+    // tube radius in part units, from the part size (so it reads at any zoom without hiding the face)
+    let size = 1;
+    { const b = new THREE.Box3(); for (const it of issues.items) for (const l of it.outlines) for (const p of l) b.expandByPoint(new THREE.Vector3(...p)); size = Math.max(b.getSize(new THREE.Vector3()).length(), 1); }
+    issues.items.forEach((it, i) => {
+      const on = lit === i, dim = lit !== null && lit !== undefined && !on;
+      const mat = new THREE.MeshBasicMaterial({ color: on ? 0xdc2626 : 0xf59e0b, depthTest: false, transparent: true, opacity: dim ? 0.28 : 0.95 });
+      const r = size * (on ? 0.0042 : 0.0024);
+      for (const line of it.outlines) {
+        if (line.length < 2) continue;
+        const pts = line.map(p => new THREE.Vector3(...p));
+        const path = new THREE.CurvePath<THREE.Vector3>();
+        for (let k = 1; k < pts.length; k++) if (pts[k].distanceTo(pts[k - 1]) > 1e-6) path.add(new THREE.LineCurve3(pts[k - 1], pts[k]));
+        if (!path.curves.length) continue;
+        const tube = new THREE.Mesh(new THREE.TubeGeometry(path, Math.min(200, path.curves.length * 2), r, 6, false), mat);
+        tube.renderOrder = on ? 31 : 30; group.add(tube);
+      }
+      if (it.point) {
+        const dot = new THREE.Mesh(new THREE.SphereGeometry(r * 2.6, 16, 12), mat); dot.position.set(it.point[0], it.point[1], it.point[2]); dot.renderOrder = 32; group.add(dot);
+        const label = labelSprite(String(i + 1), on ? 0.03 : 0.024, on ? '#dc2626' : '#d97706'); label.position.copy(dot.position); label.center.set(0.5, -0.45); label.renderOrder = 45; group.add(label);
+      }
+    });
+    const out = new THREE.Group();
+    for (const t of placements) { const holder = new THREE.Group(); holder.applyMatrix4(t); holder.add(group.clone()); out.add(holder); }
+    e.scene.add(out); e.issueGroup = out; e.refresh?.();
+  }, [issueKey, issues?.active, issues?.focus, loading, explode]);
+  // Pinned issue: fly to it (first placement of the part).
+  useEffect(() => {
+    const e = engine.current;
+    if (!e || !e.loaded || !issues || issues.focus === null || issues.focus === undefined) return;
+    const it = issues.items[issues.focus];
+    const mesh = e.meshes.find(m => m.userData.partId === issues.partId);
+    if (!it?.point || !mesh) return;
+    const t = new THREE.Matrix4();
+    if (mesh instanceof THREE.InstancedMesh) mesh.getMatrixAt(0, t); else { mesh.updateMatrixWorld(true); t.copy(mesh.matrixWorld); }
+    const center = new THREE.Vector3(...it.point).applyMatrix4(t);
+    const dir = e.camera.position.clone().sub(e.controls.target).normalize();
+    let size = 1; { const b = new THREE.Box3(); for (const l of it.outlines) for (const p of l) b.expandByPoint(new THREE.Vector3(...p).applyMatrix4(t)); size = Math.max(b.getSize(new THREE.Vector3()).length(), 40); }
+    const dist = Math.max(size * 1.4, 60) / Math.tan(THREE.MathUtils.degToRad(e.camera.fov / 2)) / 2;
+    e.fly = { from: e.camera.position.clone(), to: center.clone().addScaledVector(dir, dist), tFrom: e.controls.target.clone(), tTo: center, start: performance.now(), duration: 600 };
+    e.activeUntil = performance.now() + 900; e.refresh?.();
+  }, [issues?.focus, issues?.partId, loading]);
 
   /** Part-definition → world transform of one occurrence (follows explode). */
   const occurrenceMatrix = (e: Engine, partId: string, occurrence = 0) => {

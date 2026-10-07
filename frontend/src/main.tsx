@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useState, useCallback, useR
 import { createRoot } from 'react-dom/client';
 import {
   Info, Tag, ClipboardList,
-  MoreHorizontal, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
+  MoreHorizontal, History, Sparkles, ListTree, ListChecks, PanelRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Maximize2, Minimize2, Box, Plus, ArrowUpRight, ArrowUp, ArrowDown, Upload, Folder, ChevronDown, ChevronRight, ChevronLeft, Search, Download, Check, CheckCircle2, AlertTriangle, Clock,
   FileText, Layers, Link, LogOut, Settings, ShieldCheck, MessageSquare, ClipboardCheck, GitBranch, LoaderCircle, ExternalLink, X, Eye,
   Target, Archive, SlidersHorizontal, Users, Send, RefreshCw, Scan, Grid2x2, Palette, EyeOff, Ban, Undo2, Factory, Files, Flame, Droplet, Keyboard,
   CircleDot, FoldVertical, ListOrdered, ListPlus,
@@ -16,12 +16,13 @@ import { Sidebar, TopBar, PageHeader, initTheme, LogoMark, Progress, Empty, Avat
 import { PricingPage, PartCost } from './pricing';
 import { surfaceLook } from './surface';
 import { Dashboard, JobOrdersPage, JobOrderDialog, JobOrderDetail, TemplatesPage, AdminPage, ProjectSettingsDialog, DesignChecks, JointPanel, JointCards, StatusBadge } from './pages';
-import { categories, categoryColors, date, fmt } from './constants';
+import { categories, categoryColors, date, fmt, flatReason } from './constants';
 import type { Any } from './constants';
 import { Select } from './controls';
 import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams, findAllSeams } from './welding';
 import { ReadinessWizard } from './readiness';
 import BulkReady from './bulkReady';
+import { ReplaceDialog, VersionsDialog, CadSourceRow, FlatIssuesCard, type FlatIssue } from './partVersions';
 import { JobDocButton } from './docJob';
 import { QualityPage } from './quality';
 import HoleConfig from './holeConfig';
@@ -137,6 +138,12 @@ function App() {
   const [settings, setSettings] = useState<Any>(null);
   const [feature, setFeature] = useState<Any>(null);
   const [excluding, setExcluding] = useState<Any[] | null>(null);
+  /** part geometry replacement / version history dialogs; hovered and pinned flat-pattern issue */
+  const [replacing, setReplacing] = useState<Any | null>(null);
+  const [versionsOf, setVersionsOf] = useState<Any | null>(null);
+  const [flatHover, setFlatHover] = useState<number | null>(null);
+  const [flatPin, setFlatPin] = useState<number | null>(null);
+  useEffect(() => { setFlatHover(null); setFlatPin(null); }, [selected]);
   const anchor = useRef<string | null>(null);
   const [page, setPage] = useState<Page>(route.current.page);
   const [joId, setJoId] = useState<string | null>(route.current.jo);
@@ -396,6 +403,10 @@ function App() {
   const holes = parts.reduce((n: number, p: Any) => n + p.geometry.holes.length, 0);
   const findings = parts.flatMap((p: Any) => (noChecks(p) ? [] : p.findings));
   const selectedFindings = part?.findings || [];
+  /** problems the unfolder located on the selected part (sheet metal whose flat pattern was refused) */
+  const flatIssues: FlatIssue[] = part && part.category === 'sheet_metal' && part.geometry.flat_status === 'needs_review' ? (part.geometry.flat_issues || []) : [];
+  /** changes whenever a part's active geometry version changes: the viewer reloads the assembly mesh */
+  const modelStamp = (rev?.parts || []).filter((p: Any) => p.version && p.version.count > 1).map((p: Any) => p.id.slice(-6) + '.' + p.version.active).join('-') || '0';
   /** A part is production ready when its spec has no open blocker, its design review and its drawing review are done.
    *  Purchased, other and not-for-production parts need nothing. */
   const partReady = (p: Any) => noChecks(p) || (!!p.reviewed && !!p.doc_reviewed
@@ -875,7 +886,7 @@ function App() {
                     try { await api(`/jobs/${job.id}/cancel`, 'POST'); await loadRevision(rev.id); } catch (e: unknown) { notify((e as Error).message); }
                   }}><X />Stop</Button>}</div>}
                 {!job && rev.jobs?.[0]?.status === 'cancelled' && dismissedJob !== rev.jobs[0].id && <div className="fixed bottom-[84px] left-1/2 z-[150] flex max-w-[min(620px,90vw)] -translate-x-1/2 items-center gap-2.5 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning shadow-pop [&>svg]:shrink-0"><Info className="size-4" /><span>Generation stopped{rev.jobs[0].error ? ` (${rev.jobs[0].error.toLowerCase()})` : ''}. Parts it had started need Regenerate; the others kept their drawings.</span><Button type="button" variant="ghost" size="icon-xs" className="text-warning hover:bg-warning/10 hover:text-warning" aria-label="Dismiss" onClick={() => setDismissedJob(rev.jobs[0].id)}><X /></Button></div>}
-                {!job && rev.jobs?.[0]?.status === 'failed' && rev.jobs[0].kind !== 'import' && <div className={cn(banner, 'bg-danger-soft text-destructive')}>Document generation failed: {rev.jobs[0].error || 'Retry generation.'}</div>}
+                {!job && rev.jobs?.[0]?.status === 'failed' && rev.jobs[0].kind !== 'import' && <div className={cn(banner, 'bg-danger-soft text-destructive')}>{rev.jobs[0].kind === 'replace' ? 'Part replacement failed' : 'Document generation failed'}: {rev.jobs[0].error || 'Retry generation.'}</div>}
                 {rev.status === 'failed' && <div className={cn(banner, 'bg-danger-soft text-destructive')}>Import failed: {rev.message}. The previous active revision is preserved.</div>}
                 {rev.state === 'archived' && <div className={cn(banner, 'border-warning/30 bg-warning-soft text-warning')}><Archive className="size-4" />Archived revision — read-only design and historical documents. New production work should use the active released revision.</div>}
 
@@ -919,7 +930,7 @@ function App() {
                           <FlatPattern partId={part.id} thickness={part.geometry.thickness} kFactor={part.spec.k_factor} approved={!!part.spec.k_factor_approved} name={part.name} />
                         ) : (
                           <Viewer
-                            url={mode === 'flat3d' && part ? `${rev.id}:flat.glb:${part.id}` : `${rev.id}:assembly.glb`}
+                            url={mode === 'flat3d' && part ? `${rev.id}:flat.glb:${part.id}:${part.version?.active || 1}` : `${rev.id}:assembly.glb::${modelStamp}`}
                             viewKey={project ? `forge-view:${project.id}` : undefined}
                             hud={canvasHud}
                             toolbarStart={canvasToolsStart}
@@ -1026,6 +1037,7 @@ function App() {
                             focusIds={weldFocusIds}
                             representativeOccurrences={isolate && selected && solo !== null && !jointDraft ? { ...weldRepresentatives, [selected]: solo } : weldRepresentatives}
                             feature={mode === '3d' ? feature : null}
+                            issues={mode === '3d' && part && flatIssues.length ? { partId: part.id, items: flatIssues, active: flatHover, focus: flatPin } : null}
                             onPick={(id, additive, occurrence) => {
                               lastOccurrence.current = occurrence;
                               if (mode === 'flat3d') return;
@@ -1118,6 +1130,8 @@ function App() {
                                 {editable && !part.excluded && <DropdownMenuItem onClick={() => { setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings />All manufacturing details</DropdownMenuItem>}
                                 {editable && !part.excluded && <DropdownMenuItem onClick={() => { startWeld([part.id]); }}><Flame />Weld this component</DropdownMenuItem>}
                                 {editable && <DropdownMenuItem onClick={() => { addToSteps([part.id]); }}><ListPlus />Add as assembly step</DropdownMenuItem>}
+                                {editable && <DropdownMenuItem disabled={!!part.version?.processing} onClick={() => setReplacing(part)}><Upload />Replace with STEP…</DropdownMenuItem>}
+                                {(part.version?.count || 0) > 1 && <DropdownMenuItem onClick={() => setVersionsOf(part)}><History />Geometry versions…</DropdownMenuItem>}
                                 {part.geometry.holes.length > 0 && <DropdownMenuItem onClick={() => { setHoleCfg(part.id); }}><CircleDot />Holes &amp; hardware…</DropdownMenuItem>}
                                 {canBend(part) && <DropdownMenuItem onClick={() => { setBendSim(part.id); }}><FoldVertical />Bending simulation…</DropdownMenuItem>}
                                 {editable && canBend(part) && <DropdownMenuItem onClick={() => { setBendSharing([part.id], part.bend_sim ? 'off' : 'on'); }}>{part.bend_sim ? <EyeOff /> : <Eye />}{part.bend_sim ? 'Stop sharing bending simulation' : 'Share bending simulation'}</DropdownMenuItem>}
@@ -1129,6 +1143,8 @@ function App() {
                             </DropdownMenu>}
                           </header>
 
+                          {part.category === 'sheet_metal' && part.geometry.flat_status === 'needs_review' && !part.excluded && <FlatIssuesCard part={part} issues={flatIssues} active={flatHover} onActive={setFlatHover} pinned={flatPin} onPin={i => { setFlatPin(i); if (i !== null && mode !== '3d') setMode('3d'); }}
+                            editable={editable} busy={busy || !!job} onRecheck={() => generate(part.id)} onReplace={() => setReplacing(part)} />}
                           {(() => { const wm = weldmentOf(part.id); if (!wm) return null; return (
                             <div className={card}><Flame className="mt-px size-4 flex-none text-pink-500" /><div className="min-w-0"><div className="text-sm font-medium">{wm.name}</div><p className={cardText}>Weld assembly · {wm.parts.length} part{wm.parts.length === 1 ? '' : 's'} · {(wm.welds || []).length} weld{(wm.welds || []).length === 1 ? '' : 's'}</p>
                               <div className="flex flex-wrap items-center gap-1.5"><Button type="button" variant="outline" size="xs" onClick={() => openWeldment(wm)}><Flame />Weld configuration</Button>
@@ -1158,6 +1174,7 @@ function App() {
                               <Button type="button" variant="link" size="xs" className={linkBtn} onClick={() => { setMulti(siblings.map((p: Any) => p.id)); setSelected(part.id); }}>Select</Button>
                               {differ.length > 0 && <Button type="button" variant="link" size="xs" className={linkBtn} disabled={busy} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: siblings.map((p: Any) => p.id), category: part.category }); await loadRevision(rev.id); notify(`${path[path.length - 1]}: ${siblings.length} parts are now ${categories[part.category]}`); })}>Make all {categories[part.category].toLowerCase()}</Button>}</div></div>}
                           </div>}
+                          {!vendor && <CadSourceRow part={part} editable={editable} busy={busy || !!job} onReplace={() => setReplacing(part)} onHistory={() => setVersionsOf(part)} />}
 
                           <Tabs value={detail} onValueChange={setDetail} className="mx-4 gap-0">
                             <TabsList className="w-full">{[['details', 'Details'], ['features', `Features${part.geometry.holes.length + part.geometry.bends.length ? ' ' + (part.geometry.holes.length + part.geometry.bends.length) : ''}`], ['documents', 'Documents'], ...(canCost && !part.excluded && part.category !== 'purchased' ? [['cost', 'Cost']] : [])].map(([t, l]) => <TabsTrigger key={t} value={t} className="text-xs">{l}</TabsTrigger>)}</TabsList>
@@ -1190,7 +1207,7 @@ function App() {
                                   {part.geometry.mass_kg !== undefined && <div className={kv}><span className="shrink-0 text-muted-foreground">Mass</span><span className={kvValue}>{fmt(part.geometry.mass_kg)} kg <small className="text-muted-foreground">{part.geometry.mass_basis}</small></span></div>}
                                   {part.geometry.step && Object.keys(part.geometry.step).length > 0 && <div className={kv}><span className="shrink-0 text-muted-foreground">From STEP</span><span className={cn(kvValue, 'flex items-center justify-end gap-2')}>{part.geometry.step.color && <Swatch hex={part.geometry.step.color} title="CAD appearance" />}{[part.geometry.step.material, part.geometry.step.density && part.geometry.step.density + ' g/cm³'].filter(Boolean).join(' · ') || 'appearance only'}</span></div>}
                                   <div className={kv}><span className="shrink-0 text-muted-foreground">Classified by</span><span className={kvValue}>{part.geometry.classification_confidence}</span></div>
-                                  {part.category === 'sheet_metal' && <div className={kv}><span className="shrink-0 text-muted-foreground">Flat pattern</span><span className={cn(kvValue, part.geometry.flat_status === 'supported' ? 'text-success' : 'text-destructive')}>{part.geometry.flat_status === 'supported' ? 'Available' : 'Needs review'}</span></div>}
+                                  {part.category === 'sheet_metal' && <div className={kv}><span className="shrink-0 text-muted-foreground">Flat pattern</span><span className={cn(kvValue, part.geometry.flat_status === 'supported' ? 'text-success' : 'text-destructive')}>{part.geometry.flat_status === 'supported' ? 'Available' : 'Not developed'}</span></div>}
                                   {canBend(part) && <div className={kv}><span className="shrink-0 text-muted-foreground">Bending simulation</span><span className={cn(kvValue, 'flex items-center justify-end gap-2')}>{part.bend_sim ? 'Shared' : 'Not shared'}{showBend(part) && <Button type="button" variant="outline" size="xs" onClick={() => setBendSim(part.id)}><FoldVertical />Play</Button>}</span></div>}
                                 </section>
                                 {part.spec.operations?.length > 0 && <section className={section}><h4 className={sectionTitle}>Process steps</h4><ol className="m-0 grid list-decimal gap-1 pl-[18px] text-sm">{part.spec.operations.map((o: Any, i: number) => <li key={i}><span className="font-medium">{typeof o === 'string' ? o : o.name}</span>{o.detail && <small className="block text-xs text-muted-foreground">{o.detail}</small>}</li>)}</ol></section>}
@@ -1389,6 +1406,11 @@ function App() {
         canJobOrder={!vendor && (project?.permissions || []).includes('joborder.create')}
         onJobOrder={w => { setWeldCfg(null); refreshJoints(rev.id).catch(fail); weldmentJobOrder(w); }}
         close={() => { setWeldCfg(null); refreshJoints(rev.id).catch(fail); }} />}
+      {replacing && project && <ReplaceDialog part={replacing} projectId={project.id} close={() => setReplacing(null)}
+        onQueued={() => { notify(`Processing the new geometry for ${replacing.alias || replacing.name}…`); loadRevision(rev.id).catch(fail); }} />}
+      {versionsOf && rev && (() => { const live = (rev.parts || []).find((p: Any) => p.id === versionsOf.id) || versionsOf; return <VersionsDialog part={live} editable={editable} canCad={can('cad.download')} busy={busy || !!job} close={() => setVersionsOf(null)}
+        preview={(path, name, title) => doc(path, name, title)}
+        onActivate={v => action(async () => { await api(`/parts/${live.id}/versions/${v.id}/activate`, 'POST'); await loadRevision(rev.id); notify(`Switching ${live.alias || live.name} to version ${v.number}…`); })} />; })()}
       {excluding && <ExcludeDialog parts={excluding} busy={busy} close={() => setExcluding(null)} onConfirm={reason => action(async () => {
         if (excluding.length === 1) await api('/parts/' + excluding[0].id + '/flags', 'PATCH', { excluded: true, exclusion_reason: reason });
         else await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: excluding.map((p: Any) => p.id), excluded: true, exclusion_reason: reason });
@@ -1513,6 +1535,7 @@ function App() {
           {release?.can_release ? (
             <>
               <div className="grid justify-items-center gap-2 p-6 text-center text-success"><ShieldCheck className="size-9" /><h3 className="text-base font-semibold">Every part is reviewed and every check is covered</h3><p className="text-sm text-muted-foreground">Marking the revision production ready locks it, generates the final document pack and opens job orders. Engineering approval remains your responsibility.</p></div>
+              {release?.warnings?.length > 0 && <ul className="mx-6 mb-2 grid gap-1 rounded-md border border-warning/30 bg-warning-soft p-3 text-xs text-warning">{release.warnings.map((w: string, i: number) => <li key={i} className="flex gap-2"><AlertTriangle className="mt-px size-3.5 shrink-0" />{w}</li>)}</ul>}
               <ModalFooter><Button disabled={!can('revision.release')} title={can('revision.release') ? '' : 'You need the release permission'} onClick={() => action(async () => { await api(`/revisions/${rev.id}/release`, 'POST'); await loadRevision(rev.id); setModal(''); })}>Release revision</Button></ModalFooter>
             </>
           ) : (

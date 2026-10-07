@@ -8,6 +8,7 @@ the viewer and prints a work instruction (one page per step, rendered pictures o
 from __future__ import annotations
 
 import hashlib
+import uuid
 import io
 import json
 import math
@@ -65,6 +66,7 @@ class StepIn(BaseModel):
     approach: str = 'auto'
     subs: list[str] = Field(default_factory=list, max_length=50)   # sub-assemblies fitted as one unit in this step
     group: str = ''                                                # sub-assembly the step belongs to ('' = main); set on create
+    shots: list[dict] = Field(default_factory=list, max_length=12)  # saved camera shots (angles) the PDF renders this step from
 
 
 def instances_of(rid):
@@ -184,7 +186,30 @@ def clean_step(rid, a: StepIn, group='', sid=None):
                 raise HTTPException(422, 'That sub-assembly is already fitted in another step')
             subs.append(g)
     return {'title': a.title.strip(), 'parts': parts, 'method': a.method, 'fasteners': fasteners, 'welds': welds,
-            'notes': a.notes.strip(), 'tools': a.tools.strip(), 'check': a.check.strip(), 'approach': a.approach, 'subs': subs}
+            'notes': a.notes.strip(), 'tools': a.tools.strip(), 'check': a.check.strip(), 'approach': a.approach, 'subs': subs,
+            'shots': clean_shots(a.shots)}
+
+
+def clean_shots(shots):
+    """Camera shots of a step as saved from the viewer: eye position, look-at target, up vector (assembly mm),
+    vertical field of view (deg) and the view's aspect ratio. Rendered in that order in the instructions PDF."""
+    import math
+    out = []
+    for i, sh in enumerate(shots or []):
+        try:
+            vec = lambda k: [float(x) for x in sh[k]][:3]  # noqa: E731
+            pos, tgt, up = vec('position'), vec('target'), vec('up')
+            fov = float(sh.get('fov', 45)); aspect = float(sh.get('aspect', 1.5))
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(422, f'Camera shot {i + 1} is incomplete')
+        if any(len(v) != 3 or not all(math.isfinite(x) for x in v) for v in (pos, tgt, up)):
+            raise HTTPException(422, f'Camera shot {i + 1} is invalid')
+        if math.dist(pos, tgt) < 1e-3 or math.hypot(*up) < 1e-6:
+            raise HTTPException(422, f'Camera shot {i + 1} has no viewing direction')
+        out.append({'id': str(sh.get('id') or uuid.uuid4().hex[:8])[:16], 'name': str(sh.get('name') or f'View {i + 1}').strip()[:60],
+                    'position': [round(x, 4) for x in pos], 'target': [round(x, 4) for x in tgt], 'up': [round(x, 6) for x in up],
+                    'fov': min(max(fov, 5.0), 120.0), 'aspect': min(max(aspect, .2), 5.0)})
+    return out
 
 
 def sub_closure(rid, g, seen=None):
@@ -507,26 +532,52 @@ def instructions_pdf(rid, progress=None):
                 continue
             meshes.append(placed(md, matrix(pid, o), NEW if state == 'new' else DONE))
             flags.append(state == 'new')
-        box = (12 * mm, 16 * mm, 182 * mm, H - 34 * mm)
-        markers = []
-        if meshes:
-            md = merge(meshes)
-            # camera per step: the side from which the parts fitted in this step are best seen
-            new_tri = np.concatenate([np.full(len(m['f']), fl) for m, fl in zip(meshes, flags)])
-            view_n = best_view(md, focus=new_tri) if new_tri is not None and new_tri.any() and not new_tri.all() else VIEW_N
-            right, up = frame(view_n)
-            P2 = np.c_[md['v'] @ right, md['v'] @ up]
-            lo, hi = P2.min(0), P2.max(0)
-            pad = (hi - lo) * .04 + 1
-            lo, hi = lo - pad, hi + pad
-            img = view_image(md, view_n, right, lo, hi, px_per_mm=1600 / max(hi - lo), max_px=1600)
-            bw, bh = box[2] - box[0], box[3] - box[1]
+        md = merge(meshes) if meshes else None
+        new_tri = np.concatenate([np.full(len(m['f']), fl) for m, fl in zip(meshes, flags)]) if meshes else None
+
+        def views_of(step):
+            """(name, n, right, lo, hi, md) per picture: the step's saved camera shots, else one automatic view."""
+            out_ = []
+            for sh in step.get('shots') or []:
+                pos, tgt, upc = (np.asarray(sh[k], float) for k in ('position', 'target', 'up'))
+                n_ = pos - tgt; dist = float(np.linalg.norm(n_)); n_ /= dist
+                r_ = np.cross(upc, n_)
+                if np.linalg.norm(r_) < 1e-9:
+                    r_, _ = frame(n_)
+                r_ /= np.linalg.norm(r_); u_ = np.cross(n_, r_)
+                hh = dist * math.tan(math.radians(sh.get('fov', 45)) / 2); hw = hh * sh.get('aspect', 1.5)
+                c2 = np.array([tgt @ r_, tgt @ u_])
+                # what the perspective camera could not see (behind the eye) is left out of the picture
+                F = md['f']; ahead = ((md['v'] - pos) @ -n_) > 0
+                sub = dict(md, f=F[ahead[F].any(axis=1)])
+                out_.append((sh.get('name') or '', n_, r_, c2 - [hw, hh], c2 + [hw, hh], sub))
+            if not out_:
+                # automatic camera: the side from which the parts fitted in this step are best seen
+                view_n = best_view(md, focus=new_tri) if new_tri is not None and new_tri.any() and not new_tri.all() else VIEW_N
+                r_, u_ = frame(view_n)
+                P2 = np.c_[md['v'] @ r_, md['v'] @ u_]
+                lo_, hi_ = P2.min(0), P2.max(0)
+                pad = (hi_ - lo_) * .04 + 1
+                out_.append(('', view_n, r_, lo_ - pad, hi_ + pad, md))
+            return out_
+
+        def draw_view(view, box):
+            name, n_, r_, lo, hi, mdv = view
+            u_ = np.cross(n_, r_)
+            caption = 4.5 * mm if name else 0
+            bx0, by0, bx1, by1 = box[0], box[1] + caption, box[2], box[3]
+            img = view_image(mdv, n_, r_, lo, hi, px_per_mm=1600 / max(hi - lo), max_px=1600)
+            bw, bh = bx1 - bx0, by1 - by0
             sc = min(bw / (hi - lo)[0], bh / (hi - lo)[1])
             iw, ih = (hi - lo)[0] * sc, (hi - lo)[1] * sc
-            ix, iy = box[0] + (bw - iw) / 2, box[1] + (bh - ih) / 2
+            ix, iy = bx0 + (bw - iw) / 2, by0 + (bh - ih) / 2
             c.drawImage(ImageReader(io.BytesIO(img)), ix, iy, iw, ih)
-            to_paper = lambda p: (ix + (p @ right - lo[0]) * sc, iy + (p @ up - lo[1]) * sc)  # noqa: E731
+            if name:
+                c.setFillColorRGB(.4, .45, .52); c.setFont('Helvetica-Bold', 7.5)
+                c.drawCentredString(ix + iw / 2, iy - 3.6 * mm, name.upper()[:60])
+            to_paper = lambda p: (ix + (p @ r_ - lo[0]) * sc, iy + (p @ u_ - lo[1]) * sc)  # noqa: E731
             # fastener holes: letter per fastener line at the hole end facing the reader
+            marks = []
             for fi, f in enumerate(s.get('fasteners', [])):
                 for h in f.get('holes', []):
                     g = load(parts.get(h['part'], {}).get('geometry'), {})
@@ -537,15 +588,36 @@ def instructions_pdf(rid, progress=None):
                     ax = np.asarray(hole['axis'], float)
                     ends = [np.asarray(hole['origin'], float) + ax * hole.get(e, 0) for e in ('start', 'end')]
                     ends = [M[:3, :3] @ e + M[:3, 3] for e in ends]
-                    e = max(ends, key=lambda q: q @ view_n)
-                    markers.append((fi, to_paper(e)))
-        c.setStrokeColorRGB(.85, .2, .1)
-        c.setFillColorRGB(.85, .2, .1)
-        for fi, (x, y) in markers:
-            c.setLineWidth(1)
-            c.circle(x, y, 2.2 * mm, stroke=1, fill=0)
-            c.setFont('Helvetica-Bold', 7)
-            c.drawString(x + 2.6 * mm, y + 1.6 * mm, chr(65 + fi % 26))
+                    e = max(ends, key=lambda q: q @ n_)
+                    x, y_ = to_paper(e)
+                    if ix <= x <= ix + iw and iy <= y_ <= iy + ih:
+                        marks.append((fi, (x, y_)))
+            c.setStrokeColorRGB(.85, .2, .1)
+            c.setFillColorRGB(.85, .2, .1)
+            for fi, (x, y_) in marks:
+                c.setLineWidth(1)
+                c.circle(x, y_, 2.2 * mm, stroke=1, fill=0)
+                c.setFont('Helvetica-Bold', 7)
+                c.drawString(x + 2.6 * mm, y_ + 1.6 * mm, chr(65 + fi % 26))
+
+        def grid(n, box):
+            """Picture boxes for n views inside box: 1 = whole, 2 = side by side (stacked if tall), 3-4 = 2 x 2."""
+            x0_, y0_, x1_, y1_ = box; g_ = 3 * mm
+            if n == 1:
+                return [box]
+            if n == 2:
+                if (x1_ - x0_) >= (y1_ - y0_):
+                    w_ = (x1_ - x0_ - g_) / 2
+                    return [(x0_, y0_, x0_ + w_, y1_), (x0_ + w_ + g_, y0_, x1_, y1_)]
+                h_ = (y1_ - y0_ - g_) / 2
+                return [(x0_, y0_ + h_ + g_, x1_, y1_), (x0_, y0_, x1_, y0_ + h_)]
+            w_, h_ = (x1_ - x0_ - g_) / 2, (y1_ - y0_ - g_) / 2
+            return [(x0_, y0_ + h_ + g_, x0_ + w_, y1_), (x0_ + w_ + g_, y0_ + h_ + g_, x1_, y1_), (x0_, y0_, x0_ + w_, y0_ + h_), (x0_ + w_ + g_, y0_, x1_, y0_ + h_)][:n]
+
+        views = views_of(s) if md is not None else []
+        first, rest = views[:4], views[4:]
+        for v_, b_ in zip(first, grid(len(first), (12 * mm, 16 * mm, 182 * mm, H - 34 * mm)) if first else []):
+            draw_view(v_, b_)
         # right column
         x0, y = 192 * mm, H - 24 * mm
         colw = W - x0 - 12 * mm
@@ -614,8 +686,17 @@ def instructions_pdf(rid, progress=None):
         c.setFont('Helvetica', 7)
         c.setFillColorRGB(.45, .5, .56)
         c.drawString(12 * mm, 8 * mm, 'Blue: fitted in this step · grey: already assembled · red letters: fastener positions')
-        c.drawRightString(W - 12 * mm, 8 * mm, f'Page {k + 1}/{len(steps)}')
+        c.drawRightString(W - 12 * mm, 8 * mm, f'Step {k + 1}/{len(steps)}')
         c.showPage()
+        for chunk in range(0, len(rest), 4):
+            header(f"Step {k + 1} of {len(steps)} · more views")
+            part_views = rest[chunk:chunk + 4]
+            for v_, b_ in zip(part_views, grid(len(part_views), (12 * mm, 16 * mm, W - 12 * mm, H - 24 * mm))):
+                draw_view(v_, b_)
+            c.setFont('Helvetica', 7); c.setFillColorRGB(.45, .5, .56)
+            c.drawString(12 * mm, 8 * mm, f"{k + 1}. {s.get('title') or METHODS.get(s.get('method'), 'Step')} — continued")
+            c.drawRightString(W - 12 * mm, 8 * mm, f'Step {k + 1}/{len(steps)}')
+            c.showPage()
     c.save()
     return out
 

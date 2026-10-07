@@ -214,6 +214,7 @@ CHUNK=int(os.getenv('UPLOAD_CHUNK_MB','16'))*1024*1024
 class UploadStart(BaseModel):
  model_config=ConfigDict(extra='forbid')
  filename:str=Field(min_length=1,max_length=255);size:int=Field(gt=29);notes:str=Field(default='',max_length=4000)
+ part_id:str=Field(default='',max_length=80)   # set: the file replaces this part's geometry in its revision
 def upload_dir(uid):
  if not _re.fullmatch(r'[0-9a-f]{32}',uid or ''):raise HTTPException(404,'Upload not found')
  return db.ROOT/'uploads'/uid
@@ -233,14 +234,18 @@ def sweep_uploads():
   except OSError:pass
 @app.post('/api/projects/{pid}/uploads')
 def upload_start(pid:str,a:UploadStart,request:Request):
- u=editor(request,'revision.upload',pid)
+ if a.part_id:
+  from .part_versions_api import check_replace_allowed
+  part,u=check_replace_allowed(request,a.part_id)
+  if project_of_revision(part['revision_id'])!=pid:raise HTTPException(422,'Part is not in this project')
+ else:u=editor(request,'revision.upload',pid)
  if not db.row('SELECT id FROM projects WHERE id=?',(pid,)):raise HTTPException(404,'Project not found')
  filename,ext=cad_name(a.filename)
  if a.size>upload_limit():raise HTTPException(413,f'File exceeds the configured upload limit ({upload_limit()//1048576} MB)')
  sweep_uploads()
  uid=uuid.uuid4().hex;d=upload_dir(uid);d.mkdir(parents=True)
  n=(a.size+CHUNK-1)//CHUNK
- (d/'meta.json').write_text(json.dumps({'project':pid,'user':u['id'],'filename':filename,'ext':ext,'size':a.size,'notes':a.notes,'chunks':n,'chunk':CHUNK}))
+ (d/'meta.json').write_text(json.dumps({'project':pid,'user':u['id'],'filename':filename,'ext':ext,'size':a.size,'notes':a.notes,'chunks':n,'chunk':CHUNK,'part_id':a.part_id}))
  return {'upload_id':uid,'chunk_size':CHUNK,'chunks':n}
 @app.put('/api/uploads/{uid}/chunks/{index}')
 async def upload_chunk(uid:str,index:int,request:Request):
@@ -262,11 +267,25 @@ def upload_status(uid:str,request:Request):
 @app.post('/api/uploads/{uid}/complete')
 def upload_complete(uid:str,request:Request):
  import shutil
- d,m=upload_meta(uid,user(request));u=editor(request,'revision.upload',m['project'])
+ d,m=upload_meta(uid,user(request))
+ if m.get('part_id'):
+  from .part_versions_api import check_replace_allowed
+  _,u=check_replace_allowed(request,m['part_id'])
+ else:u=editor(request,'revision.upload',m['project'])
  missing=[i for i in range(m['chunks']) if not (d/f'{i}.chunk').exists()]
  if missing:raise HTTPException(409,f'{len(missing)} chunk(s) still missing: {missing[:10]}')
  p=db.row('SELECT * FROM projects WHERE id=?',(m['project'],))
  if not p:raise HTTPException(404,'Project not found')
+ if m.get('part_id'):
+  dest=d/('assembled'+m['ext']);h=hashlib.sha256();size=0
+  with dest.open('wb') as out:
+   for i in range(m['chunks']):
+    with (d/f'{i}.chunk').open('rb') as src:
+     while b:=src.read(1024*1024):h.update(b);out.write(b);size+=len(b)
+  if size!=m['size']:shutil.rmtree(d,ignore_errors=True);raise HTTPException(422,'Assembled file size does not match')
+  from .part_versions_api import start_replacement
+  try:return start_replacement(m['part_id'],u,dest,m['filename'],m['ext'],size,h.hexdigest(),m.get('notes',''))
+  finally:shutil.rmtree(d,ignore_errors=True)
  rid=db.uid();dest=db.revdir(rid)/('source'+m['ext']);h=hashlib.sha256();size=0
  with dest.open('wb') as out:
   for i in range(m['chunks']):
@@ -298,6 +317,14 @@ def revision(rid:str,request:Request):
  for p in db.rows('SELECT * FROM parts WHERE revision_id=? ORDER BY name',(rid,)):
   p=deserialize(p);g=p['geometry'];p['findings']=evaluate(g,p['spec'],rules);p['assets']=[x.name for x in (db.revdir(rid)/'parts'/p['id']).glob('*') if x.suffix in ('.pdf','.dxf','.glb','.json','.step','.png')];r['parts'].append(p)
  for p in r['parts']:p['drawing_options']=json.loads(p.get('drawing_options') or '{}');p['assets']=[a for a in p['assets'] if a not in ('model.glb','flat.glb','shape.brep')]
+ vinfo={}
+ for v in db.rows('SELECT part_id,number,active,status,filename,created,author FROM part_versions WHERE revision_id=? ORDER BY number',(rid,)):
+  e=vinfo.setdefault(v['part_id'],{'count':0,'active':1,'processing':False,'failed':''})
+  e['count']+=1
+  if v['active']:e.update(active=v['number'],filename=v['filename'],at=v['created'],by=v['author'])
+  if v['status']=='processing':e['processing']=True
+  e['failed']=v['filename'] if v['status']=='failed' else ''
+ for p in r['parts']:p['version']=vinfo.get(p['id'])
  try:bend_default=bool(db.project_settings(r['project_id']).get('bend_simulation',True))
  except Exception:bend_default=True
  for p in r['parts']:
@@ -454,6 +481,7 @@ def editable_drawing(pid:str,request:Request):
  return {'scene':scene,'edits':edits,'version':version,'name':p['name'],'editable':editable,
   'can_review':access['role']!='vendor' and can(access,'drawing.review',pr) and r['status']=='ready','doc_reviewed':bool(p.get('doc_reviewed')),'doc_reviewed_by':p.get('doc_reviewed_by',''),'doc_reviewed_at':p.get('doc_reviewed_at',''),
   'drawing_options':json.loads(p.get('drawing_options') or '{}'),'revision_id':p['revision_id'],'drawing_templates':[{**t,'data':json.loads(t['data'])} for t in tmpl],'category':p['category'],
+  **_flat_info(p),
   'pictorials':pictorials.normalize(edits.get('pictorials')),'pictorial_presets':pictorials.presets()}
 
 @app.get('/api/parts/{pid}/drawing/blank-sheet')
@@ -734,6 +762,12 @@ def cancel_job(jid:str,request:Request):
   elif cur!='cancelling':raise HTTPException(409,'The job has already finished')
   db.audit(c,u['name'],'job.cancelled',{'job':jid,'kind':j['kind']},j['revision_id'])
  return {'ok':True,'status':'cancelled' if cur=='queued' else 'cancelling'}
+def _flat_info(p):
+ g=p.get('geometry') or {}
+ if isinstance(g,str):
+  try:g=json.loads(g)
+  except Exception:g={}
+ return {'flat_status':g.get('flat_status'),'flat_message':g.get('flat_message') or ('' if g.get('bends') else 'No bends detected')}
 @app.get('/api/revisions/{rid}/release-check')
 def release_check(rid:str,request:Request):
  revision_access(request,rid);r=get_rev(rid);reasons=[];rules=json.loads(r['manifest']).get('rules_snapshot',db.DEFAULT_RULES)
@@ -746,8 +780,11 @@ def release_check(rid:str,request:Request):
   if not p.get('doc_reviewed'):reasons.append(p['name']+': drawing not reviewed')
   for f in evaluate(p['geometry'],p['spec'],rules):
    if f['severity']=='blocker' and (not f['waiver'] or f['code'] in ('GEO001','FLAT001')):reasons.append(p['name']+': '+f['title'])
- if db.row('SELECT id FROM fits WHERE revision_id=? AND approved=0',(rid,)):reasons.append('Unapproved mating records')
- return {'can_release':not reasons,'reasons':reasons}
+ # Mating records are no longer generated on import (placements come from the STEP assembly); records left from
+ # earlier imports have no review screen, so they are reported, not blocking.
+ warnings=[];n=db.row('SELECT COUNT(*) AS n FROM fits WHERE revision_id=? AND approved=0',(rid,))['n']
+ if n:warnings.append(f'{n} unapproved mating record{"s" if n!=1 else ""} from an earlier import will appear in the assembly record as not approved')
+ return {'can_release':not reasons,'reasons':reasons,'warnings':warnings}
 @app.post('/api/revisions/{rid}/release')
 def release(rid:str,request:Request):
  u=revision_access(request,rid,True,'revision.release');mutable(rid);check=release_check(rid,request)
@@ -872,7 +909,7 @@ def part_asset(pid:str,filename:str,request:Request):
  p=get_part(pid);access=revision_access(request,p['revision_id'])
  if filename in ('model.glb','flat.glb'):raise HTTPException(403,'3D models are streamed to the Forge viewer only')
  if filename in ('part.step','drawing.dxf','flat.dxf'):cad_download(access,p['revision_id'])
- if filename not in ('model.glb','thumb.png') and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind="documents" AND status IN ("queued","running","cancelling")',(p['revision_id'],)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
+ if filename not in ('model.glb','thumb.png') and db.row('SELECT id FROM jobs WHERE revision_id=? AND kind IN ("documents","replace") AND status IN ("queued","running","cancelling")',(p['revision_id'],)):raise HTTPException(409,'Documents are being generated; retry when the job completes')
  if filename not in ('model.glb','thumb.png','drawing.pdf','drawing.dxf','review.pdf','flat.glb','flat.dxf','flat.json','projections.json','part.step'):raise HTTPException(404,'Asset not found')
  f=db.revdir(p['revision_id'])/'parts'/pid/filename
  if filename in ('drawing.pdf','drawing.dxf','review.pdf','flat.dxf','flat.json','flat.glb') and (f.parent/'.drawing-invalid').exists():raise HTTPException(409,'Part specification changed; regenerate documents')
@@ -888,6 +925,8 @@ def part_asset(pid:str,filename:str,request:Request):
  return FileResponse(f,filename=p['name'].replace('/','_')+'_'+filename if filename.endswith(('.pdf','.dxf')) else None)
 from .workspace import router as platform_router
 app.include_router(platform_router)
+from .part_versions_api import router as part_versions_router
+app.include_router(part_versions_router)
 from .costing import router as costing_router
 app.include_router(costing_router)
 from .quality import router as quality_router

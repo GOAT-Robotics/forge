@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { flatReason } from './constants';
 import { usePinchZoom } from './pinchZoom';
 import { api, asset, saveBlob } from './api';
 import { X, Save, Download, Undo2, Redo2, Plus, Eye, EyeOff, RotateCcw, ZoomIn, ZoomOut, Trash2, CheckCircle2, Circle, FileText, ScanSearch, GripVertical, Hexagon } from 'lucide-react';
@@ -503,7 +504,7 @@ export default function DrawingEditor({ partId, close, onSaved, balloons: balloo
     } catch (e: Any) { setError(e.message); } finally { setBusy(false); }
   }
   return <div className="fixed inset-0 z-50 flex bg-black/60 p-3"><section className="flex size-full flex-col overflow-hidden rounded-xl border bg-background text-foreground shadow-pop" role="dialog" aria-modal="true" aria-label="Drawing editor">
-    <header className="flex items-center justify-between gap-3 border-b bg-card px-4 py-2 max-lg:flex-wrap"><div className="min-w-0"><div className="truncate text-sm font-semibold">{data?.name || 'Drawing editor'}</div><small className="mt-0.5 block text-xs text-muted-foreground">{data ? (data.editable ? 'STEP-linked drawing · ' + (dirty ? 'Unsaved changes' : 'Saved') : 'Read-only drawing') : 'Loading drawing…'}{data && (data.doc_reviewed ? ' · Reviewed' : ' · Not reviewed')}</small></div>
+    <header className="flex items-center justify-between gap-3 border-b bg-card px-4 py-2 max-lg:flex-wrap"><div className="min-w-0"><div className="truncate text-sm font-semibold">{data?.name || 'Drawing editor'}</div><small className="mt-0.5 block text-xs text-muted-foreground">{data ? (data.editable ? 'STEP-linked drawing · ' + (dirty ? 'Unsaved changes' : 'Saved') : 'Read-only drawing') : 'Loading drawing…'}{data && (data.doc_reviewed ? ' · Reviewed' : ' · Not reviewed')}</small>{data?.category === 'sheet_metal' && data.flat_status && data.flat_status !== 'supported' && (() => { const r = flatReason(data.flat_message); return r ? <small className="mt-0.5 block max-w-[60vw] truncate text-xs text-warning" title={`${r.reason} Fix: ${r.fix}\n(${r.raw})`}>Flat pattern not developed — {r.reason} {r.fix}</small> : null; })()}</div>
       <nav className="flex items-center gap-1 max-lg:flex-wrap"><Button variant="ghost" size="icon-sm" onClick={undo} disabled={!writable || !past.length} title="Undo"><Undo2 /></Button><Button variant="ghost" size="icon-sm" onClick={redo} disabled={!writable || !future.length} title="Redo"><Redo2 /></Button>
         <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-5" />
         <Button variant="ghost" size="sm" disabled={!writable} onClick={() => { const id = 'note:' + crypto.randomUUID(); change({ ...edits, notes: [...edits.notes, { id, page, x: 150, y: sheet.height - 180, text: 'Manufacturing note', size: 10 }] }); select(id); }}><Plus />Note</Button>

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { X, Crosshair, Trash2, Flame, LoaderCircle, ClipboardList, Layers, Target } from 'lucide-react';
+import { X, Crosshair, Trash2, Flame, LoaderCircle, ClipboardList, Layers, Target, Box } from 'lucide-react';
 import PartScene, { type SceneApi, type SceneBody } from './partScene';
 import { api, assetJson } from './api';
 import type { Any } from './constants';
@@ -192,6 +192,24 @@ export default function WeldConfig({ revision, partIds: initialParts, weldment, 
     s.invalidate();
   };
   useEffect(drawAll, [seams, welds, hover, focus, drag, side, picked, hotPart]);
+  /** Hovering a part in the list lights it up in the scene and fades the others, so it is easy to find. */
+  useEffect(() => {
+    const sc = scene.current;
+    if (!sc) return;
+    for (const b of sc.bodies) {
+      const m = b.mesh.material as THREE.MeshStandardMaterial;
+      const base = (m.userData.base ||= { color: m.color.getHex(), opacity: m.opacity, transparent: m.transparent });
+      const hot = !!hotPart && b.body.part === hotPart, dim = !!hotPart && !hot;
+      m.color.setHex(hot ? 0x7fb2ff : base.color);
+      m.emissive.setHex(hot ? 0x1d4ed8 : 0x000000); m.emissiveIntensity = hot ? 0.45 : 0;
+      m.transparent = dim || base.transparent; m.opacity = dim ? 0.18 : base.opacity; m.depthWrite = !dim;
+      m.needsUpdate = true;
+      const em = b.edges.material as THREE.LineBasicMaterial;
+      em.color.setHex(hot ? 0x1d4ed8 : 0x5b626c); em.opacity = dim ? 0.12 : hot ? 0.95 : 0.55;
+      b.mesh.renderOrder = hot ? 2 : 0;
+    }
+    sc.invalidate();
+  }, [hotPart]);
 
   // ---------------------------------------------------------------- picking
   const seamAt = (e: PointerEvent, s: SceneApi, only?: Seam): Hit | null => {
@@ -388,13 +406,23 @@ export default function WeldConfig({ revision, partIds: initialParts, weldment, 
               <h4 className="flex items-center gap-2 text-sm font-semibold"><Layers className="size-4 text-[#e0479e]" />Weld assembly</h4>
               <Input className="font-medium" aria-label="Weld assembly name" value={name} disabled={!editable} placeholder="Name — left empty, Forge names it" maxLength={120}
                 onChange={e => setName(e.target.value)} onBlur={saveName} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setName(asm.name); }} />
-              <div className="flex flex-wrap gap-1.5">{partIds.map(pid => {
+              <div className="flex items-center justify-between text-2xs font-medium tracking-wider text-muted-foreground uppercase"><span>Parts · {partIds.length}</span><span className="font-normal tracking-normal normal-case">Hover to locate</span></div>
+              <ul className="-mx-1 grid gap-0.5" onMouseLeave={() => setHotPart(null)}>{partIds.map(pid => {
+                const p = parts.find(x => x.id === pid);
                 const n = welds.filter(w => (w.data.parts || []).includes(pid)).length;
-                return <span key={pid} className={cn('inline-flex max-w-full items-center gap-1 rounded-full border bg-subtle py-0.5 pr-0.5 pl-2.5 text-xs', !editable && 'pr-2.5', hotPart === pid && 'border-primary/40 bg-selection')} title={names[pid] || pid} onMouseEnter={() => setHotPart(pid)} onMouseLeave={() => setHotPart(null)}>
-                  <span className="max-w-[180px] truncate">{short(pid)}</span>{n > 0 && <small className="min-w-[18px] rounded-full bg-[#e0479e]/10 px-1.5 text-center text-2xs font-medium text-pink-700 dark:text-pink-300">{n}</small>}
-                  {editable && <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full text-faint hover:bg-danger-soft hover:text-destructive dark:hover:bg-danger-soft" aria-label={`Remove ${names[pid] || 'part'} from the weld assembly`} title="Remove from the weld assembly" disabled={busy} onClick={() => removePart(pid)}><X /></Button>}
-                </span>;
-              })}</div>
+                const sheet = p?.category === 'sheet_metal';
+                const hot = hotPart === pid;
+                return <li key={pid} className={cn('group/wp flex min-h-10 items-center gap-2.5 rounded-md px-1.5 py-1 transition-colors', hot ? 'bg-selection' : 'hover:bg-accent')}
+                  onMouseEnter={() => setHotPart(pid)} onFocus={() => setHotPart(pid)} tabIndex={0} title={names[pid] || pid}>
+                  <span className={cn('grid size-7 shrink-0 place-items-center rounded-md', sheet ? 'bg-sheet/10 text-sheet' : 'bg-machining/10 text-machining')}>{sheet ? <Layers className="size-4" /> : <Box className="size-4" />}</span>
+                  <span className="grid min-w-0 flex-1 leading-tight">
+                    <span className="truncate text-sm font-medium text-foreground">{short(pid)}</span>
+                    <span className="truncate text-2xs text-muted-foreground">{p?.alias ? p.name : (sheet ? 'Sheet metal' : p?.category === 'machining' ? 'Machining' : 'Part')}{p?.spec?.material ? ` · ${p.spec.material}` : ''}{p?.quantity > 1 ? ` · Qty ${p.quantity}` : ''}</span>
+                  </span>
+                  <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-2xs font-medium tabular-nums', n ? 'bg-[#e0479e]/10 text-pink-700 dark:text-pink-300' : 'bg-muted text-muted-foreground')}>{n ? `${n} weld${n === 1 ? '' : 's'}` : 'No welds'}</span>
+                  {editable && <Button type="button" variant="ghost" size="icon-xs" className="shrink-0 text-faint opacity-0 group-hover/wp:opacity-100 group-focus-within/wp:opacity-100 hover:bg-danger-soft hover:text-destructive dark:hover:bg-danger-soft" aria-label={`Remove ${names[pid] || 'part'} from the weld assembly`} title="Remove from the weld assembly" disabled={busy} onClick={() => removePart(pid)}><X /></Button>}
+                </li>;
+              })}</ul>
             </section>}
             <section className={cardCls}>
               <h4 className="text-sm font-semibold">Weld type</h4>

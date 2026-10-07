@@ -138,6 +138,12 @@ def geometric_category(g):
  th=g.get('thickness',0) or 0;est=2*g.get('volume',0)/max(g.get('area',1e-10),1e-10)
  return 'sheet_metal' if th and (g.get('bends') or th<=6) and est/th>.35 else 'machining'
 
+def _axial_overlap(a,c):
+ """Inner and outer face of one bend: same axis/angle and overlapping along the axis. Equal ends are not required -
+ a mitred (closed) corner makes the inner bend face shorter or longer than the outer one."""
+ if abs(a['start']-c['start'])<.1 and abs(a['end']-c['end'])<.1:return True
+ ov=min(a['end'],c['end'])-max(a['start'],c['start']);short=min(a['end']-a['start'],c['end']-c['start'])
+ return short>0 and ov>=.5*short
 def analyze(s,name):
  b=bounds(s);size=np.array(b[3:])-b[:3];vol,center=props(s,True);area,_=props(s);faces,planes,cyl,cones=face_features(s)
  thickness_candidates=[];bend_pairs=[]
@@ -145,7 +151,7 @@ def analyze(s,name):
   if a['angle']>math.pi+0.02 or a['angle']<.15:continue
   for j,c in enumerate(cyl[i+1:],i+1):
    dr=abs(a['radius']-c['radius'])
-   if .2<dr<20 and np.dot(a['axis'],c['axis'])>.99999 and np.linalg.norm(a['origin']-c['origin'])<.01 and abs(a['start']-c['start'])<.1 and abs(a['end']-c['end'])<.1 and abs(a['angle']-c['angle'])<.02:
+   if .2<dr<20 and np.dot(a['axis'],c['axis'])>.99999 and np.linalg.norm(a['origin']-c['origin'])<.01 and abs(a['angle']-c['angle'])<.02 and _axial_overlap(a,c):
     thickness_candidates.append(dr);bend_pairs.append((a,c))
  # A constant thickness plane pair should have substantial matching area.
  largest=sorted(planes,key=lambda p:-p['area'])[:24]

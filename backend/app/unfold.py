@@ -7,6 +7,35 @@ from OCP.TopAbs import TopAbs_EDGE,TopAbs_WIRE
 from OCP.TopoDS import TopoDS
 from .cad import face_features,explore,wire_points,props
 
+class UnfoldError(ValueError):
+ """Refused development with the places on the part that caused it (part-definition coordinates), so the viewer
+ can point at them: [{kind,title,detail,fix,point:[x,y,z],outlines:[[[x,y,z],..],..]}]."""
+ def __init__(self,message,issues=None):super().__init__(message);self.issues=issues or []
+
+def _outline(face,limit=28):
+ """Edges of one B-rep face as polylines (part coordinates), thinned for the viewer."""
+ from .cad import sample_edge
+ out=[]
+ for e in explore(face,TopAbs_EDGE):
+  pts=sample_edge(e)
+  if len(pts)>limit:pts=pts[np.linspace(0,len(pts)-1,limit).round().astype(int)]
+  out.append(np.round(pts,3).tolist())
+ return out
+
+def _face_point(face):
+ from .cad import sample_edge
+ pts=np.vstack([sample_edge(e) for e in explore(face,TopAbs_EDGE)]);return np.round(pts.mean(axis=0),3).tolist()
+
+def _snap(point,faces):
+ """Nearest sampled boundary point of the given faces: a flat->3D back-mapped point lands on real geometry."""
+ from .cad import sample_edge
+ pts=np.vstack([sample_edge(e) for f in faces for e in explore(f,TopAbs_EDGE)])
+ d=np.linalg.norm(pts-np.asarray(point,float),axis=1);i=int(np.argmin(d));return np.round(pts[i],3).tolist()
+
+def issue(kind,title,detail,fix,faces,point=None):
+ return {'kind':kind,'title':title,'detail':detail,'fix':fix,'point':point if point is not None else (_face_point(faces[0]) if faces else None),
+         'outlines':[l for f in faces[:6] for l in _outline(f)]}
+
 def unfold(s,g,k=.4):
  try:return _unfold(s,g,k)
  except ValueError as e:
@@ -14,8 +43,20 @@ def unfold(s,g,k=.4):
   except ValueError:raise e
 
 def _unfold(s,g,k=.4):
- faces,planes,cyl,_=face_features(s);by_index={p['index']:p for p in planes};th=g['thickness']
+ faces,planes,cyl,cones=face_features(s);by_index={p['index']:p for p in planes};th=g['thickness']
  if not planes or th<=0:raise ValueError('Constant thickness could not be established')
+ # Every partial cylinder longer than the sheet is thick is a bend (or a roll); one that was not paired into a bend
+ # would silently vanish from the flat. Short ones are cut-profile radii and slot ends through the thickness.
+ in_bend={ci for b in g['bends'] for ci in b['faces']}
+ loose=[c for c in cyl if c['index'] not in in_bend and c['angle']<2*math.pi-.03 and c['end']-c['start']>1.5*th]
+ if loose:
+  raise UnfoldError(f'{len(loose)} curved face{"s" if len(loose)!=1 else ""} not recognised as a bend',[issue('unpaired_bend','Bend not recognised',
+   f"Curved face R{c['radius']:.2f}, {math.degrees(c['angle']):.0f}deg, {c['end']-c['start']:.1f} mm long has no matching face on the other side of the sheet.",
+   'Check that this bend has a constant thickness and inside radius; re-model it as a sheet-metal bend.',[faces[c['index']]]) for c in loose[:8]])
+ freeform=[i for i in range(len(faces)) if i not in by_index and i not in {c['index'] for c in cyl}]
+ if cones or freeform:
+  raise UnfoldError('Conical or freeform faces cannot be developed',[issue('freeform','Conical face' if i in cones else 'Freeform face',
+   'Only flat faces, straight bends and rolled cylinders can be unfolded.','Re-model this area as a straight bend, or supply the flat pattern from CAD.',[faces[i]]) for i in (list(cones)+freeform)[:8]])
  root=max(planes,key=lambda p:p['area']);n=root['normal'];x=root['x'];y=root['y'];R=np.vstack([x,y,n]);origin=root['origin'];maps={root['index']:(R,-R@origin)}
  from .cad import sample_edge as _se
  # Skin graph: planes and bend (cylinder) faces. A bend face touches the planes it is tangent to (their normal is
@@ -72,8 +113,10 @@ def _unfold(s,g,k=.4):
         if key not in bend_lookup:bend_lookup[key]=[bend_of[ci]];links.setdefault(pa,[]).append((pc,[bend_of[ci]],pe,ce))
      break
     chain.append(nxt[0]);cur=nxt[0]
- if g['bends'] and root['index'] not in links:raise ValueError('Could not connect the largest planar skin to the bend graph')
- rectangles=[];bend_lines=[];queue=[root['index']];used=set();done_pairs={}
+ if g['bends'] and root['index'] not in links:
+  raise UnfoldError('Could not connect the largest planar skin to the bend graph',[issue('disconnected','Base face not joined to the bends',
+   'The largest flat face does not meet any bend through a plain tangent edge.','Look for a fillet, gap or freeform blend between this face and its flanges.',[root['face']])])
+ rectangles=[];bend_lines=[];queue=[root['index']];used=set();done_pairs={};via={};rect_src=[]
  from .cad import sample_edge
  while queue:
   pi=queue.pop(0);Rp,tp=maps[pi];parent=by_index[pi]
@@ -96,7 +139,8 @@ def _unfold(s,g,k=.4):
    q=q+axis*np.dot(axis,p-q)
    outward=p-parent['center'];outward-=axis*np.dot(axis,outward)
    inside=by_index[ci]['center']-q;inside-=axis*np.dot(axis,inside)
-   if np.linalg.norm(outward)<1e-6 or np.linalg.norm(inside)<1e-6:raise ValueError('Ambiguous flange orientation')
+   if np.linalg.norm(outward)<1e-6 or np.linalg.norm(inside)<1e-6:
+    raise UnfoldError('Ambiguous flange orientation',[issue('ambiguous',f"Bend {b['id']} direction unclear",'The flange direction at this bend could not be resolved (zero-length or 0/180deg bend).','Remove or re-model this bend.',[faces[i] for i in b['faces']])])
    outward/=np.linalg.norm(outward);inside/=np.linalg.norm(inside)
    target_t=Rp@axis;target_o=Rp@outward
    basis_source=np.column_stack([axis,inside,np.cross(axis,inside)]);basis_target=np.column_stack([target_t,target_o,np.cross(target_t,target_o)])
@@ -104,7 +148,7 @@ def _unfold(s,g,k=.4):
    # developed length of the bend (or of a rolled chain of tangent arcs): sum of the neutral-fibre arcs
    allow=[math.radians(x['angle'])*(x['radius']+k*th) for x in bs];ba=sum(allow)
    if ci not in maps:
-    target_q=Rp@p+tp+target_o*ba;tc=target_q-Rc@q;maps[ci]=(Rc,tc);queue.append(ci)
+    target_q=Rp@p+tp+target_o*ba;tc=target_q-Rc@q;maps[ci]=(Rc,tc);queue.append(ci);via[ci]=[x['id'] for x in bs]
    elif closure:
     # the loop closes only if this bend develops the flange exactly where the other path already put it
     target_q=Rp@p+tp+target_o*ba;tc=target_q-Rc@q;Rm,tm=maps[ci]
@@ -126,7 +170,7 @@ def _unfold(s,g,k=.4):
     if min(abs(tangent_radius-b['radius']),abs(tangent_radius-b['radius']-th))<.02:
      correction=max(0,b['radius']+th-tangent_radius)
      outside_height=float(np.max(np.abs((child_points-p)@nparent))+correction)
-   rectangles.append(Polygon([a[:2],z[:2],(z+target_o*ba)[:2],(a+target_o*ba)[:2]]))
+   rectangles.append(Polygon([a[:2],z[:2],(z+target_o*ba)[:2],(a+target_o*ba)[:2]]));rect_src.append((pi,bs))
    off=0.0
    for x,al in zip(bs,allow):
     mid=off+al/2;off+=al
@@ -135,8 +179,10 @@ def _unfold(s,g,k=.4):
                        **({'rolled':True} if len(bs)>1 else {})})
     used.add(x['id'])
  if len(used)!=len(g['bends']):
-  raise ValueError('Not all bends belong to a single developable skin; manual unfolding required')
- polys=[]
+  left=[b for b in g['bends'] if b['id'] not in used]
+  raise UnfoldError('Not all bends belong to a single developable skin; manual unfolding required',[issue('unconnected_bend',f"Bend {b['id']} not reachable",
+   'This bend is not joined to the rest of the sheet through flat faces, so it cannot be opened with the others.','Flanges joined at a closed corner or a weld form a loop; add a corner relief or gap so each flange hangs off one bend.',[faces[i] for i in b['faces']]) for b in left[:8]])
+ polys=[];poly_src=[]
  from OCP.BRepTools import BRepTools
  for pi,(r,t) in maps.items():
   f=by_index[pi]['face'];outer=BRepTools.OuterWire_s(f);rings=[];shell=None
@@ -147,8 +193,9 @@ def _unfold(s,g,k=.4):
    else:rings.append(coords)
   if shell is not None:
    poly=Polygon(shell,rings)
-   if not poly.is_valid:raise ValueError('Projected flange contour is invalid')
-   polys.append(poly)
+   if not poly.is_valid:
+    raise UnfoldError('Projected flange contour is invalid',[issue('invalid_face','Face folds over itself when flattened','This flat face self-intersects after development.','Check this face for slivers or a sharp internal corner without relief.',[f])])
+   polys.append(poly);poly_src.append(pi)
  if not polys:raise ValueError('No developable faces')
  if not g['bends']:
   # Require an extruded constant-thickness plate, not an arbitrary solid's largest face.
@@ -160,9 +207,50 @@ def _unfold(s,g,k=.4):
   if projected_area<approx_skin_area*.60:raise ValueError('Unfold coverage incomplete')
  # Snap only sub-micron round-off at shared flange/bend edges.
  merged=union_all(polys+rectangles,grid_size=0.00001)
- if merged.geom_type!='Polygon' or not merged.is_valid:raise ValueError('Unfold produced disconnected or invalid outline')
+ items=[('face',pi,polys[i]) for i,pi in enumerate(poly_src)]+[('bend',src,rectangles[i]) for i,src in enumerate(rect_src)]
+ def item_faces(it):
+  return [by_index[it[1]]['face']] if it[0]=='face' else [faces[ci] for x in it[1][1] for ci in x['faces']]
+ def item_name(it):
+  if it[0]=='bend':return 'bend '+'/'.join(x['id'] for x in it[1][1])
+  return 'base face' if it[1]==root['index'] else 'flange on '+'/'.join(via.get(it[1],['?']))
+ def to3d(xy,it):
+  pi=it[1] if it[0]=='face' else it[1][0];R_,t_=maps[pi];z0=float((R_@by_index[pi]['center']+t_)[2])
+  return _snap(R_.T@(np.array([xy[0],xy[1],z0])-t_),item_faces(it))
+ if merged.geom_type!='Polygon' or not merged.is_valid:
+  found=[]
+  if merged.geom_type=='MultiPolygon':
+   pieces=sorted(merged.geoms,key=lambda q:-q.area)
+   for piece in pieces[1:6]:
+    hit=[it for it in items if it[2].intersects(piece) and it[2].intersection(piece).area>1e-6]
+    if hit:found.append(issue('disconnected','Piece not attached when flattened',f"{item_name(hit[0])} ends up separate from the rest of the blank.",
+     'A flange is attached only through a closed corner or weld, not a bend. Add the connecting bend or supply the flat from CAD.',[f for it in hit for f in item_faces(it)],to3d(piece.representative_point().coords[0],hit[0])))
+  raise UnfoldError('Unfold produced disconnected or invalid outline',found)
  summed=sum(p.area for p in polys+rectangles)
- if summed-merged.area>max(1,summed*.003):raise ValueError('Unfolded flanges overlap')
+ if summed-merged.area>max(1,summed*.003):
+  found=[]
+  for i in range(len(items)):
+   for j in range(i+1,len(items)):
+    a_,b_=items[i],items[j]
+    if not a_[2].intersects(b_[2]):continue
+    ov=a_[2].intersection(b_[2])
+    if ov.area<=max(.5,1e-4*min(a_[2].area,b_[2].area)):continue
+    found.append({'area':ov.area,'items':[a_,b_],'point':np.array(to3d(ov.representative_point().coords[0],a_))})
+  # one issue per corner: overlaps of a flange, its bend strip and the base at the same place are one problem
+  corners=[]
+  for f in sorted(found,key=lambda t:-t['area']):
+   near=next((c for c in corners if np.linalg.norm(c['point']-f['point'])<max(10*th,15)),None)
+   if near:near['area']+=f['area'];near['items']+=[it for it in f['items'] if not any(it is x for x in near['items'])]
+   else:corners.append({**f,'items':list(f['items'])})
+  out=[]
+  for n,c in enumerate(corners[:8],1):
+   bends_=sorted({x['id'] for it in c['items'] for x in ([*it[1][1]] if it[0]=='bend' else [b for b in g['bends'] if b['id'] in via.get(it[1],[])])})
+   flt=[it for it in c['items'] if not (it[0]=='face' and it[1]==root['index'])]
+   faces_=[f for it in (flt or c['items']) for f in item_faces(it)]
+   out.append(issue('overlap',f"Flanges overlap at corner {n}"+(f" ({', '.join(bends_)})" if bends_ else ''),
+    f"Flattened, the flange{'s' if len(bends_)>1 else ''} here run{'' if len(bends_)>1 else 's'} into neighbouring material by about {c['area']:.0f} mm\u00b2. The flange is continuous around a corner where the edge turns away from it, so a single blank would need the same material twice.",
+    'Add a corner relief (or a 0.5-1 mm gap) at this corner so each flange bends on its own; weld the corner afterwards if it must be closed.',
+    faces_,np.round(c['point'],3).tolist()))
+  raise UnfoldError(f'Unfolded flanges overlap at {len(corners)} corner'+('s' if len(corners)!=1 else ''),out)
  # 3D -> flat transform of every developed skin plane (hardware hole resizing maps hole centres with it)
  unfold.maps=[(np.array(by_index[pi]['origin'],float),np.array(by_index[pi]['normal'],float),r,t) for pi,(r,t) in maps.items()]
  return merged,bend_lines

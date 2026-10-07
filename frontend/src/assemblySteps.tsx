@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
-  X, Plus, Trash2, Loader2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play, Pause, RotateCcw, FileDown, Pencil, Eye, Crosshair, Search, Wrench, ListOrdered, Check, Boxes, Package,
+  X, Plus, Trash2, Loader2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play, Pause, RotateCcw, FileDown, Pencil, Eye, Crosshair, Search, Wrench, ListOrdered, Check, Boxes, Package, Camera, RefreshCw,
 } from 'lucide-react';
 import PartScene, { type SceneApi, type SceneBody } from './partScene';
 import { cn } from '@/lib/utils';
@@ -19,7 +19,9 @@ import type { NavStyle } from './cadControls';
 type Occ = { part: string; occurrences: number[] };
 type HoleRef = { part: string; occurrence: number; hole: string };
 type Fastener = { kind: string; standard?: string; size?: string; length?: number; item?: string; name?: string; pn?: string; qty: number; torque?: string; threadlock?: string; note?: string; holes: HoleRef[]; designation?: string; _qtyManual?: boolean };
-export type Step = { id: string; seq: number; group: string; subs: string[]; title: string; parts: Occ[]; method: string; fasteners: Fastener[]; welds: string[]; notes: string; tools: string; check: string; approach: string };
+/** A saved camera angle of a step (assembly mm); the instructions PDF draws the step from every shot, in order. */
+type Shot = { id: string; name: string; position: number[]; target: number[]; up: number[]; fov: number; aspect: number };
+export type Step = { id: string; seq: number; group: string; subs: string[]; title: string; parts: Occ[]; method: string; fasteners: Fastener[]; welds: string[]; notes: string; tools: string; check: string; approach: string; shots?: Shot[] };
 type Group = { id: string; name: string; seq: number; notes?: string };
 type State = Map<string, 'new' | 'done'>;
 
@@ -112,6 +114,8 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
   const byId = useMemo(() => Object.fromEntries(parts.map(p => [p.id, p])), [parts]);
   const handled = useRef<number | undefined>(undefined);
   const [loaded, setLoaded] = useState(false);
+  const [shotAt, setShotAt] = useState<number | null>(null);   // saved camera shot currently shown
+  const framedKey = useRef('');
 
   // ------------------------------------------------------------------ load
   const reload = async () => {
@@ -274,6 +278,30 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     if (!s || !st) return;
     for (const b of s.bodies) if (stateAt(cur).get(occKey(b.body.part, b.body.occurrence || 0)) === 'new') dirs.current.set(occKey(b.body.part, b.body.occurrence || 0), approachDir(b, cur, st));
   }, [cur, steps, ready, states]);
+  // ------------------------------------------------------------------ camera shots
+  const applyShot = (sh: Shot) => {
+    const s = scene.current; if (!s) return;
+    s.camera.position.set(sh.position[0], sh.position[1], sh.position[2]);
+    s.camera.up.set(sh.up[0], sh.up[1], sh.up[2]);
+    s.controls.target.set(sh.target[0], sh.target[1], sh.target[2]);
+    if (sh.fov && Math.abs(s.camera.fov - sh.fov) > 0.01) { s.camera.fov = sh.fov; s.camera.updateProjectionMatrix(); }
+    s.controls.update(); s.invalidate();
+  };
+  const currentShot = (name: string, id?: string): Shot | null => {
+    const s = scene.current; if (!s) return null;
+    const r = s.dom.getBoundingClientRect();
+    const v = (x: THREE.Vector3) => [x.x, x.y, x.z].map(n => Math.round(n * 1e4) / 1e4);
+    return { id: id || Math.random().toString(36).slice(2, 10), name, position: v(s.camera.position), target: v(s.controls.target), up: v(s.camera.up), fov: s.camera.fov, aspect: Math.round(Math.max(r.width, 1) / Math.max(r.height, 1) * 1000) / 1000 };
+  };
+  const saveShot = () => {
+    if (!step) return;
+    const list = step.shots || [];
+    const sh = currentShot(list.length ? `View ${list.length + 1}` : 'Main view'); if (!sh) return;
+    change({ shots: [...list, sh] }, true); setShotAt(list.length);
+  };
+  const updateShot = (i: number) => { if (!step) return; const list = step.shots || []; const sh = currentShot(list[i].name, list[i].id); if (sh) change({ shots: list.map((x, k) => k === i ? sh : x) }, true); };
+  const moveShot = (i: number, d: number) => { if (!step) return; const list = [...(step.shots || [])]; const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; change({ shots: list }, true); setShotAt(j); };
+
   // frame what is built so far (this step included), keeping the reader's viewing direction
   useEffect(() => {
     const s = scene.current; if (!s || !steps?.length) return;
@@ -291,6 +319,12 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
         dir = d.clone().addScaledVector(side, 0.55).add(new THREE.Vector3(0, 0, 0.45)).normalize();
       }
     }
+    const shots = steps[cur]?.shots || [];
+    // a step with saved shots opens on its first shot; editing the step (names, order) does not move the camera
+    const key = `${cur}|${ready}`;
+    if (shots.length) { if (framedKey.current !== key) { applyShot(shots[0]); setShotAt(0); } framedKey.current = key; return; }
+    framedKey.current = key;
+    setShotAt(null);
     s.fit(dir.lengthSq() > 0.5 ? dir : undefined); s.invalidate();
   }, [cur, ready, states, autoCam]);
 
@@ -336,7 +370,7 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
     if (!s) return;
     setSaving(true);
     try {
-      const body = { title: s.title, parts: s.parts, method: s.method, fasteners: s.fasteners.map(({ designation: _d, _qtyManual: _q, ...f }) => f), welds: s.welds, notes: s.notes, tools: s.tools, check: s.check, approach: s.approach, subs: s.subs || [] };
+      const body = { title: s.title, parts: s.parts, method: s.method, fasteners: s.fasteners.map(({ designation: _d, _qtyManual: _q, ...f }) => f), welds: s.welds, notes: s.notes, tools: s.tools, check: s.check, approach: s.approach, subs: s.subs || [], shots: s.shots || [] };
       const saved = await api(`/assembly-steps/${s.id}`, 'PUT', body);
       setSteps(list => list ? list.map(x => x.id === s.id ? { ...x, fasteners: saved.fasteners.map((f: Fastener, i: number) => ({ ...f, _qtyManual: s.fasteners[i]?._qtyManual })) } : x) : list);
       setError('');
@@ -518,6 +552,11 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
               onHover={onHover} onClick={onClick} cursor={pick !== null && hoverHole ? 'pointer' : undefined}>
               <Button type="button" variant="outline" size="sm" className={cn(SCENE_TOGGLE, 'left-[84px]', autoCam && SCENE_TOGGLE_ON)} title="Turn the view to the side each step's components are fitted from" onClick={() => setAutoCam(!autoCam)}><Crosshair className="size-3.5" />Auto camera</Button>
               <Button type="button" variant="outline" size="sm" className={cn(SCENE_TOGGLE, 'left-[214px]', ghost && SCENE_TOGGLE_ON)} title="See through the parts already assembled" onClick={() => { setGhost(g => !g); scene.current?.invalidate(); }}><Eye className="size-3.5" />X-ray built parts</Button>
+              {step && ((step.shots || []).length > 0 || (edit && editable)) && <div className="absolute top-3 right-3 z-[2] flex max-w-[55%] flex-wrap items-center justify-end gap-1 rounded-lg border bg-card/90 p-1 shadow-pop" title="Camera shots: the PDF shows this step from each of them">
+                <Camera className="mx-1 size-3.5 shrink-0 text-muted-foreground" />
+                {(step.shots || []).map((sh, i) => <Button key={sh.id} type="button" variant="ghost" size="xs" className={cn('h-6 max-w-[140px] px-2 font-normal', shotAt === i && 'bg-selection text-selection-foreground hover:bg-selection')} onClick={() => { applyShot(sh); setShotAt(i); }}><span className="truncate">{sh.name}</span></Button>)}
+                {edit && editable && <Button type="button" variant="outline" size="xs" className="h-6 px-2" onClick={saveShot} title="Save the current camera as a shot of this step"><Plus />Save view</Button>}
+              </div>}
               {pick !== null && step && <div className="absolute top-3 left-1/2 z-[3] flex max-w-[calc(100%-120px)] -translate-x-1/2 items-center gap-2 rounded-xl border border-warning/40 bg-warning-soft px-3 py-2 text-sm whitespace-nowrap text-warning shadow-pop"><Crosshair className="size-3.5 shrink-0" />Click holes for <span className="min-w-0 truncate font-medium">{label(step.fasteners[pick])}</span> · {step.fasteners[pick]?.holes.length || 0} picked<Button type="button" variant="outline" size="xs" className="shrink-0" onClick={() => setPick(null)}>Done</Button></div>}
             </PartScene> : <div className={cn('flex flex-1 items-center justify-center gap-2 rounded-xl border border-dashed text-sm text-muted-foreground', !edit && 'col-start-1 row-start-1')}>{steps === null ? <><Loader2 className="size-4 animate-spin text-primary" />Loading…</> : 'Add components to a step to see it here.'}</div>}
             {step && !edit && <div className="col-start-2 row-start-1 overflow-auto rounded-xl border bg-card px-4.5 py-4">
@@ -584,6 +623,22 @@ export default function AssemblySteps({ revision, parts, editable, navStyle, add
               <Label className={FIELD}><span className={EYEBROW_INLINE}>Check before moving on</span><Input value={step.check} maxLength={600} placeholder="e.g. Bracket flush with frame edge; all screws torque-marked" onChange={e => change({ check: e.target.value })} /></Label>
               <Label className={cn(FIELD, 'flex-row items-center justify-between')}><span className={EYEBROW_INLINE}>Animate from</span>
                 <Select className="w-auto max-w-[230px]" value={step.approach} onChange={v => change({ approach: v }, true)} options={(cfg?.approach || []).map(a => ({ value: a, label: a === 'auto' ? 'Automatic (away from the build)' : a.toUpperCase() }))} /></Label>
+
+              <div className={FIELD}><span className={EYEBROW_INLINE}><Camera className="size-3" /> Camera shots for the PDF</span>
+                {(step.shots || []).length === 0 && <small className="text-xs text-muted-foreground">No shots yet — the PDF picks a view automatically. Set up the view in 3D and save it; add more shots for other angles.</small>}
+                {(step.shots || []).map((sh, i, list) => (
+                  <div key={sh.id} className={cn(COMP_ROW, shotAt === i && 'border-primary/40 bg-selection/50')}>
+                    <span className="grid size-5 shrink-0 place-items-center rounded-full bg-muted text-2xs font-medium tabular-nums">{i + 1}</span>
+                    <Input className="h-7 min-w-0 flex-1 px-2 text-sm" value={sh.name} maxLength={60} aria-label={`Shot ${i + 1} name`} onFocus={() => { applyShot(sh); setShotAt(i); }} onChange={e => change({ shots: list.map((x, k) => k === i ? { ...x, name: e.target.value } : x) })} />
+                    <Button type="button" variant="ghost" size="icon-xs" title="Show this shot" onClick={() => { applyShot(sh); setShotAt(i); }}><Eye /></Button>
+                    <Button type="button" variant="ghost" size="icon-xs" title="Replace with the current view" onClick={() => updateShot(i)}><RefreshCw /></Button>
+                    <Button type="button" variant="ghost" size="icon-xs" title="Earlier in the PDF" disabled={i === 0} onClick={() => moveShot(i, -1)}><ChevronUp /></Button>
+                    <Button type="button" variant="ghost" size="icon-xs" title="Later in the PDF" disabled={i === list.length - 1} onClick={() => moveShot(i, 1)}><ChevronDown /></Button>
+                    <Button type="button" variant="ghost" size="icon-xs" className={DANGER} title="Delete shot" onClick={() => { change({ shots: list.filter((_, k) => k !== i) }, true); setShotAt(null); }}><Trash2 /></Button>
+                  </div>))}
+                <Button type="button" variant="outline" size="sm" className="self-start" disabled={!scene.current || (step.shots || []).length >= 12} onClick={saveShot}><Camera />Save current view{(step.shots || []).length ? ' as another shot' : ''}</Button>
+                {(step.shots || []).length > 0 && <small className="text-xs text-muted-foreground">The PDF shows {(step.shots || []).length === 1 ? 'this shot' : `all ${(step.shots || []).length} shots, in this order`} (up to 4 per page).</small>}
+              </div>
             </>}
           </aside>}
         </div>

@@ -82,9 +82,9 @@ def export_flat(shape,g,spec,folder,opts=None):
    roll=(proc.get(b['id']) or default_process(b['radius'],g['thickness']))=='roll'
    m.add_line(b['a'],b['b'],dxfattribs={'layer':'BEND'});m.add_text(f"{b['id']} {'ROLL ' if roll else ''}{b['angle']:.1f}deg {b.get('direction','').upper()} R{b['radius']:.2f}",dxfattribs={'height':2.5,'insert':b['a'],'layer':'LABELS'})
   m.add_text('DEVELOPED GEOMETRY - '+flat['status'].upper()+' - VERIFY TOOLING',dxfattribs={'height':3,'insert':(poly.bounds[0],poly.bounds[1]-8),'layer':'LABELS'});d.saveas(folder/'flat.dxf')
-  flatmesh=trimesh.creation.extrude_polygon(poly,g['thickness'],engine='earcut');flatmesh.export(folder/'flat.glb');g['flat_status']='supported';g['flat_bounds']=list(poly.bounds);g['flat_message']='Developed using configured K; tooling verification required.'
+  flatmesh=trimesh.creation.extrude_polygon(poly,g['thickness'],engine='earcut');flatmesh.export(folder/'flat.glb');g['flat_status']='supported';g['flat_bounds']=list(poly.bounds);g['flat_message']='Developed using configured K; tooling verification required.';g.pop('flat_issues',None)
  except Exception as e:
-  g['flat_status']='needs_review';g['flat_message']=str(e)
+  g['flat_status']='needs_review';g['flat_message']=str(e);g['flat_issues']=getattr(e,'issues',None) or []
   for name in ['flat.json','flat.dxf','flat.glb']:(folder/name).unlink(missing_ok=True)
 
 def detect_fits(parts,instances):
@@ -263,7 +263,15 @@ def draw_part(p,rev,folder,rules,settings):
  from .cad import read_brep
  pf=Path(folder)/'parts'/p['id']
  if os.getenv('FORGE_JOB_ID'):(pf/'.drawing-job').write_text(os.environ['FORGE_JOB_ID'])   # lets a cancel know what this run touched
- export_flat(read_brep(pf/'shape.brep'),p['geometry'],p['spec'],pf,p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}'))
+ shape=read_brep(pf/'shape.brep')
+ if p['category']=='sheet_metal':
+  # parts analysed before mitred-corner bends were recognised: pick up the bends that were missed
+  try:
+   fresh=analyze(shape,p['name'])
+   if len(fresh.get('bends') or [])>len(p['geometry'].get('bends') or []):
+    p['geometry']['bends']=fresh['bends'];p['geometry'].setdefault('recognition_notes',[]).append(f"Bend recognition updated: {len(fresh['bends'])} bends (closed / mitred corners).")
+  except Exception:traceback.print_exc()
+ export_flat(shape,p['geometry'],p['spec'],pf,p.get('drawing_options') if isinstance(p.get('drawing_options'),dict) else json.loads(p.get('drawing_options') or '{}'))
  make_part(p,rev,pf,rules,settings=settings)
  (pf/'.drawing-invalid').unlink(missing_ok=True)
  if not (pf/'thumb.png').exists():
@@ -383,7 +391,7 @@ def process_welding(rid):
  progress(rid,20,'Drawing the welding document');welding_pdf(rid);progress(rid,100,'Welding document ready')
 
 def perform_job(job):
- (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else process_documents(job['revision_id'],json.loads(job['payload'])))
+ (process_import(job['revision_id']) if job['kind']=='import' else process_instructions(job['revision_id']) if job['kind']=='instructions' else process_welding(job['revision_id']) if job['kind']=='welding' else __import__('app.replace',fromlist=['x']).process_replace(job['revision_id'],json.loads(job['payload'])) if job['kind']=='replace' else process_documents(job['revision_id'],json.loads(job['payload'])))
  progress(job['revision_id'],99,'Uploading generated artifacts')
  storage.sync_revision(job['revision_id'],db.revdir(job['revision_id']))
 
@@ -404,7 +412,7 @@ def run_once():
    run_bounded([sys.executable,'-m','app.worker','--job',job['id']],timeout,env={**os.environ,'DATA_DIR':str(db.ROOT),'PYTHONPATH':str(Path(__file__).resolve().parent.parent)+os.pathsep+os.getenv('PYTHONPATH','')},should_stop=stop)
   with db.connect() as c:
    c.execute('UPDATE jobs SET status="complete" WHERE id=?',(job['id'],))
-   c.execute('UPDATE revisions SET progress=100,message=? WHERE id=?',({'import':'Analysis complete','instructions':'Assembly instructions ready','welding':'Welding document ready'}.get(job['kind'],'Documents generated'),job['revision_id']))
+   c.execute('UPDATE revisions SET progress=100,message=? WHERE id=?',({'import':'Analysis complete','instructions':'Assembly instructions ready','welding':'Welding document ready','replace':'Part geometry updated'}.get(job['kind'],'Documents generated'),job['revision_id']))
  except Exception as e:
   from .job_timeout import JobCancelled
   cancelled=isinstance(e,JobCancelled)
@@ -430,6 +438,7 @@ def run_once():
    c.execute('UPDATE revisions SET progress=0,message=? WHERE id=?',(('Cancelled' if cancelled else 'Job failed: '+str(e)[:900]),job['revision_id']))
    if json.loads(job['payload']).get('release'):c.execute('UPDATE revisions SET status="ready",release_by=NULL,release_at=NULL WHERE id=?',(job['revision_id'],))
    if job['kind']=='import':c.execute('UPDATE revisions SET status="failed" WHERE id=?',(job['revision_id'],))
+   if job['kind']=='replace' and payload.get('version_id'):c.execute('UPDATE part_versions SET status="failed",message=? WHERE id=? AND status="processing"',(('Cancelled' if cancelled else str(e)[:1000]),payload['version_id']))
  return True
 if __name__=='__main__':
  import sys

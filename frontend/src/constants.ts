@@ -173,3 +173,25 @@ export const suggestions = {
 export const date = (s: string) =>
   new Date(s).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 export const fmt = (x: number) => Number(x || 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
+
+/** Plain-language reason + fix for a flat pattern the unfolder refused (backend unfold.py messages). */
+const FLAT_REASONS: [RegExp, string, string][] = [
+  [/constant thickness/i, 'The part does not have one constant sheet thickness.', 'Check the STEP for machined pockets, chamfers or a varying wall; model it as a sheet-metal body of one gauge.'],
+  [/largest planar skin to the bend graph/i, 'The main flat face is not joined to the bends through plain bend faces.', 'Look for a missing or non-cylindrical bend (fillet, freeform blend) between the base and a flange.'],
+  [/ambiguous flange orientation/i, 'A flange direction could not be resolved.', 'Usually a zero-length or 0°/180° bend; remove or re-model that bend.'],
+  [/single developable skin/i, 'Some bends are not connected to the rest of the sheet as one skin.', 'Flanges that touch or are joined at corners (closed corners, welded seams) need corner reliefs or a gap so each flange unfolds on its own.'],
+  [/flange contour is invalid|disconnected or invalid outline|disconnected outline|not one connected strip/i, 'The unfolded outline is broken or self-intersecting.', 'Typically closed or overlapping corners. Add corner reliefs / a small gap at corners where flanges meet.'],
+  [/no developable faces/i, 'No flat or bend faces were found.', 'Check the part type — this body may not be sheet metal.'],
+  [/does not match (the )?constant-thickness volume/i, 'The unfolded area does not match the part volume.', 'The part has features that stretch or form material (louvres, embosses, curved flanges along a curved edge, hems). These cannot be unfolded exactly; supply a flat DXF from CAD.'],
+  [/coverage incomplete/i, 'Only part of the sheet could be unfolded.', 'Some faces are freeform or double-curved (e.g. a flange following a curved edge). Simplify the geometry or supply the flat from CAD.'],
+  [/flanges overlap/i, 'Unfolded flanges overlap each other.', 'Flanges meet at corners without relief. Add corner reliefs or a gap so they open without overlapping.'],
+  [/plane and cylinder faces only|double curv|cone/i, 'The part has conical or double-curved (freeform) faces.', 'Only straight bends and rolled cylinders can be developed. Supply the flat from CAD or re-model the formed area.'],
+  [/unpaired curved face/i, 'A curved face has no matching face on the other side of the sheet.', 'The rolled area is not constant thickness — check the STEP.'],
+  [/branched profile/i, 'The rolled profile branches.', 'Split the part or supply the flat from CAD.'],
+  [/closed rolled ring/i, 'The part is a closed ring with no seam.', 'Model a seam gap where the blank should open.'],
+];
+export function flatReason(msg?: string): { reason: string; fix: string; raw: string } | null {
+  if (!msg) return null;
+  const hit = FLAT_REASONS.find(([re]) => re.test(msg));
+  return hit ? { reason: hit[1], fix: hit[2], raw: msg } : { reason: msg, fix: 'Supply the flat pattern from CAD or simplify the bent geometry.', raw: msg };
+}

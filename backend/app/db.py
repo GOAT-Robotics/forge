@@ -39,6 +39,8 @@ def init():
  CREATE TABLE IF NOT EXISTS assembly_groups(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),seq INTEGER NOT NULL,name TEXT NOT NULL,notes TEXT DEFAULT '',created TEXT NOT NULL,author TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS vendors(id TEXT PRIMARY KEY,name TEXT NOT NULL,services TEXT DEFAULT '[]',contact TEXT DEFAULT '',phone TEXT DEFAULT '',email TEXT DEFAULT '',gstin TEXT DEFAULT '',address TEXT DEFAULT '',notes TEXT DEFAULT '',rate_card_id TEXT DEFAULT '',archived INTEGER DEFAULT 0,created TEXT NOT NULL,updated TEXT NOT NULL,author TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS rate_cards(id TEXT PRIMARY KEY,name TEXT NOT NULL,vendor_id TEXT,data TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,author TEXT NOT NULL,archived INTEGER DEFAULT 0);
+ CREATE TABLE IF NOT EXISTS part_versions(id TEXT PRIMARY KEY,part_id TEXT NOT NULL,revision_id TEXT NOT NULL,number INTEGER NOT NULL,filename TEXT NOT NULL,sha256 TEXT DEFAULT '',note TEXT DEFAULT '',created TEXT NOT NULL,author TEXT NOT NULL,status TEXT NOT NULL,message TEXT DEFAULT '',active INTEGER DEFAULT 0,geometry TEXT DEFAULT '{}',spec TEXT DEFAULT '{}',drawing_edits TEXT DEFAULT '',warnings TEXT DEFAULT '[]',UNIQUE(part_id,number));
+ CREATE INDEX IF NOT EXISTS idx_part_versions ON part_versions(part_id,number);
  CREATE TABLE IF NOT EXISTS weldments(id TEXT PRIMARY KEY,revision_id TEXT NOT NULL REFERENCES revisions(id),name TEXT NOT NULL,parts TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,author TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS idx_weldments ON weldments(revision_id);
  CREATE INDEX IF NOT EXISTS idx_assembly_steps ON assembly_steps(revision_id,seq);
