@@ -8,7 +8,7 @@ def evaluate(g,s,rules=None):
   waiver=s.get('rule_waivers',{}).get(code+(':'+feature if feature else ''))
   out.append({'code':code,'severity':severity,'title':title,'detail':detail,'feature':feature,'waiver':waiver or None,'source':'Configured workshop rule' if code.startswith('DFM') else 'Geometry / workflow check'})
  if not g.get('valid'):add('GEO001','blocker','Invalid CAD solid','Repair the source solid before downstream manufacturing.')
- if g.get('category')=='sheet_metal' and g.get('flat_status')!='supported':add('FLAT001','blocker','Flat pattern needs engineering','Unfolding is not supported or failed validation for this topology; do not use a projected outline as a blank.')
+ if g.get('category')=='sheet_metal' and g.get('flat_status')!='supported':add('FLAT001','warning','Flat pattern not generated','Forge could not develop this blank; cut from a flat pattern supplied from CAD. Bypass it on the part to record that decision.')
  for field in ['material','process','general_tolerance','finish','datums']:
   if not str(s.get(field,'')).strip():add('SPEC_'+field,'blocker',field.replace('_',' ').title()+' unspecified','Enter the approved value, or explicitly document not applicable.')
  if g.get('bends') and not s.get('k_factor_approved'):add('BEND_K','blocker','Bend allowance is provisional','Approve the K factor against the material, thickness and actual press tooling.')

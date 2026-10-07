@@ -302,7 +302,7 @@ def process_documents(rid,payload):
  if payload.get('release'):
   from .rules import evaluate
   for p in selected:
-   failures=[f for f in evaluate(p['geometry'],p['spec'],rules) if f['severity']=='blocker' and (not f['waiver'] or f['code'] in ('GEO001','FLAT001'))]
+   failures=[f for f in evaluate(p['geometry'],p['spec'],rules) if f['severity']=='blocker' and (not f['waiver'] or f['code']=='GEO001')]
    if failures:raise ValueError('Release checks changed during regeneration: '+p['name']+' '+str([f['code'] for f in failures]))
  for p in selected:
   saved=db.row('SELECT * FROM drawing_edits WHERE part_id=?',(p['id'],))

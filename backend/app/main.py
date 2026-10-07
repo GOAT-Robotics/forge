@@ -654,7 +654,7 @@ def bulk_ready(rid:str,a:BulkReady,request:Request):
    with db.connect() as c:c.execute('UPDATE parts SET spec=? WHERE id=?',(json.dumps(spec),pid))
    invalidate(rid,pid)
   findings=evaluate(p['geometry'],spec,rules)
-  open_=[f['title'] for f in findings if f['severity']=='blocker' and (not f['waiver'] or f['code'] in ('GEO001','FLAT001'))]
+  open_=[f['title'] for f in findings if f['severity']=='blocker' and (not f['waiver'] or f['code']=='GEO001')]
   open_+=[f['title']+' (warning)' for f in findings if f['severity']=='warning' and not f['waiver']]
   reviewed=bool(p['reviewed']) and not changed
   if a.design_review and not open_ and not reviewed:
@@ -779,10 +779,14 @@ def release_check(rid:str,request:Request):
   if not p['reviewed']:reasons.append(p['name']+': design review not complete')
   if not p.get('doc_reviewed'):reasons.append(p['name']+': drawing not reviewed')
   for f in evaluate(p['geometry'],p['spec'],rules):
-   if f['severity']=='blocker' and (not f['waiver'] or f['code'] in ('GEO001','FLAT001')):reasons.append(p['name']+': '+f['title'])
+   if f['severity']=='blocker' and (not f['waiver'] or f['code']=='GEO001'):reasons.append(p['name']+': '+f['title'])
  # Mating records are no longer generated on import (placements come from the STEP assembly); records left from
  # earlier imports have no review screen, so they are reported, not blocking.
- warnings=[];n=db.row('SELECT COUNT(*) AS n FROM fits WHERE revision_id=? AND approved=0',(rid,))['n']
+ warnings=[]
+ for p in db.rows("SELECT name,geometry,spec FROM parts WHERE revision_id=? AND category='sheet_metal' AND COALESCE(excluded,0)=0",(rid,)):
+  g=json.loads(p['geometry']);sp=json.loads(p['spec'])
+  if g.get('flat_status')!='supported' and not (sp.get('rule_waivers') or {}).get('FLAT001'):warnings.append(f"{p['name']}: flat pattern not generated - cut from a CAD flat")
+ n=db.row('SELECT COUNT(*) AS n FROM fits WHERE revision_id=? AND approved=0',(rid,))['n']
  if n:warnings.append(f'{n} unapproved mating record{"s" if n!=1 else ""} from an earlier import will appear in the assembly record as not approved')
  return {'can_release':not reasons,'reasons':reasons,'warnings':warnings}
 @app.post('/api/revisions/{rid}/release')

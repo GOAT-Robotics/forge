@@ -146,19 +146,29 @@ export function CadSourceRow({ part, editable, busy, onReplace, onHistory }: { p
 
 /** Why the flat pattern was not developed: numbered issues that match the markers in the 3D view.
  *  Compact by default (one line + toggle) so the part panel below stays reachable; the list scrolls on its own. */
-export function FlatIssuesCard({ part, issues, active, onActive, onPin, pinned, editable, busy, onRecheck, onReplace }: {
+export function FlatIssuesCard({ part, issues, active, onActive, onPin, pinned, editable, busy, onRecheck, onReplace, onBypass }: {
   part: Any; issues: FlatIssue[]; active: number | null; onActive: (i: number | null) => void; pinned: number | null; onPin: (i: number | null) => void;
-  editable: boolean; busy: boolean; onRecheck: () => void; onReplace: () => void;
+  editable: boolean; busy: boolean; onRecheck: () => void; onReplace: () => void; onBypass: (reason: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  useEffect(() => { setOpen(false); }, [part.id]);
+  const [bypassing, setBypassing] = useState(false);
+  const [reason, setReason] = useState('Flat pattern taken from CAD (DXF)');
+  useEffect(() => { setOpen(false); setBypassing(false); }, [part.id]);
+  const waived: string | undefined = part.spec?.rule_waivers?.FLAT001;
+  if (waived) return (
+    <div className="mx-4 mb-3 flex shrink-0 items-start gap-2.5 rounded-lg border bg-subtle px-3 py-2">
+      <Check className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1"><span className="block text-sm font-medium">Flat pattern bypassed</span><span className="block text-xs text-muted-foreground [overflow-wrap:anywhere]">{waived}</span></span>
+      {editable && <Button type="button" variant="ghost" size="xs" disabled={busy} onClick={() => onBypass('')}>Undo</Button>}
+    </div>
+  );
   const fallback = flatReason(part.geometry.flat_message || (part.geometry.bends?.length ? '' : 'No bends detected'));
   const kinds = [...new Set(issues.map(i => i.title.replace(/\s*\d+.*$/, '').replace(/ at corner$/, '')))];
   return (
     <div className="mx-4 mb-3 shrink-0 overflow-hidden rounded-lg border border-warning/40">
       <button type="button" className="flex w-full items-start gap-2.5 bg-warning-soft px-3 py-2 text-left text-warning" onClick={() => setOpen(o => !o)} aria-expanded={open}>
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-        <span className="min-w-0 flex-1"><span className="block text-sm font-medium">Flat pattern not generated</span>
+        <span className="min-w-0 flex-1"><span className="block text-sm font-medium">Flat pattern not generated <span className="font-normal text-foreground/60">· warning</span></span>
           <span className="block truncate text-xs text-foreground/75">{issues.length ? `${issues.length} problem${issues.length === 1 ? '' : 's'} · ${kinds.slice(0, 2).join(', ')}` : fallback?.reason}</span></span>
         <span className="mt-0.5 shrink-0 text-xs font-medium">{open ? 'Hide' : issues.length ? 'Show' : 'Why'}</span>
       </button>
@@ -176,10 +186,16 @@ export function FlatIssuesCard({ part, issues, active, onActive, onPin, pinned, 
             </div>
           </li>);
       })}</ol> : fallback && <p className="px-3 py-2 text-xs leading-relaxed"><b className="font-medium">Fix:</b> {fallback.fix} <span className="mt-1 block font-mono text-2xs text-muted-foreground">{fallback.raw}</span></p>)}
-      {open && <div className="flex flex-wrap items-center gap-1.5 border-t bg-subtle px-3 py-1.5">
+      {open && !bypassing && <div className="flex flex-wrap items-center gap-1.5 border-t bg-subtle px-3 py-1.5">
         {editable && <Button type="button" size="xs" onClick={onReplace} disabled={busy}><Upload />Replace with corrected STEP</Button>}
         <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onRecheck} title="Run the unfolder again"><RefreshCw />Re-check</Button>
+        {editable && <Button type="button" size="xs" variant="ghost" className="ml-auto" disabled={busy} onClick={() => setBypassing(true)} title="Go ahead without a Forge flat pattern (e.g. the flat comes from CAD)">Bypass…</Button>}
       </div>}
+      {bypassing && <form className="grid gap-1.5 border-t bg-subtle px-3 py-2" onSubmit={e => { e.preventDefault(); if (reason.trim()) { onBypass(reason.trim()); setBypassing(false); } }}>
+        <label className="text-xs text-muted-foreground">Why is it fine without a Forge flat? <span className="text-faint">(kept on the part and the drawing note)</span></label>
+        <input className="h-8 rounded-md border bg-card px-2 text-sm" value={reason} maxLength={300} autoFocus onChange={e => setReason(e.target.value)} />
+        <div className="flex gap-1.5"><Button type="submit" size="xs" disabled={!reason.trim() || busy}>Bypass flat pattern</Button><Button type="button" size="xs" variant="ghost" onClick={() => setBypassing(false)}>Cancel</Button></div>
+      </form>}
     </div>
   );
 }

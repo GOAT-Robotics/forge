@@ -14,7 +14,7 @@ step edges, grouped hole callouts (count, diameter, depth/THRU, counterbore/coun
 radius notes, isometric. Sheet metal (laser cut): no hole locations or callouts; overall and flange ordinates,
 bend lines and table on a flat-pattern sheet.
 """
-import math, re, datetime
+import math, re, datetime, json
 from pathlib import Path
 import numpy as np
 from reportlab.pdfbase import pdfmetrics
@@ -2502,7 +2502,9 @@ def build_sheets(shape, p, rev, settings, flat=None, pictorials=None, options=No
     sm = p.get('category') == 'sheet_metal'
     has_flat = sm and flat is not None and p['geometry'].get('bends')
     if sm and not flat and p['geometry'].get('bends'):
-        notes = notes + ['FLAT PATTERN NOT DEVELOPED - ENGINEERING REVIEW']
+        sp_ = p.get('spec') or {}
+        bypass = ((json.loads(sp_) if isinstance(sp_, str) else sp_).get('rule_waivers') or {}).get('FLAT001')
+        notes = notes + (['FLAT PATTERN SUPPLIED SEPARATELY (CAD)'] if bypass else ['FLAT PATTERN NOT DEVELOPED - ENGINEERING REVIEW'])
     if sm:
         notes = notes + [f"SHEET METAL - LASER CUT - THK {p['geometry'].get('thickness', 0):.2f}"]
     gt = (p.get('spec') or {}).get('general_tolerance') or ((settings or {}).get('conventions') or {}).get('general_tolerance')

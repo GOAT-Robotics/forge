@@ -404,13 +404,13 @@ function App() {
   const findings = parts.flatMap((p: Any) => (noChecks(p) ? [] : p.findings));
   const selectedFindings = part?.findings || [];
   /** problems the unfolder located on the selected part (sheet metal whose flat pattern was refused) */
-  const flatIssues: FlatIssue[] = part && part.category === 'sheet_metal' && part.geometry.flat_status === 'needs_review' ? (part.geometry.flat_issues || []) : [];
+  const flatIssues: FlatIssue[] = part && part.category === 'sheet_metal' && part.geometry.flat_status === 'needs_review' && !part.spec?.rule_waivers?.FLAT001 ? (part.geometry.flat_issues || []) : [];
   /** changes whenever a part's active geometry version changes: the viewer reloads the assembly mesh */
   const modelStamp = (rev?.parts || []).filter((p: Any) => p.version && p.version.count > 1).map((p: Any) => p.id.slice(-6) + '.' + p.version.active).join('-') || '0';
   /** A part is production ready when its spec has no open blocker, its design review and its drawing review are done.
    *  Purchased, other and not-for-production parts need nothing. */
   const partReady = (p: Any) => noChecks(p) || (!!p.reviewed && !!p.doc_reviewed
-    && !(p.findings || []).some((f: Any) => f.severity === 'blocker' && (!f.waiver || ['GEO001', 'FLAT001'].includes(f.code))));
+    && !(p.findings || []).some((f: Any) => f.severity === 'blocker' && (!f.waiver || f.code === 'GEO001')));
   const releaseParts = (rev?.parts || []).filter((p: Any) => !noChecks(p));
   const readyCount = releaseParts.filter(partReady).length;
   const blocking = findings.filter((f: Any) => f.severity === 'blocker' && !f.waiver).length;
@@ -1144,7 +1144,8 @@ function App() {
                           </header>
 
                           {part.category === 'sheet_metal' && part.geometry.flat_status === 'needs_review' && !part.excluded && <FlatIssuesCard part={part} issues={flatIssues} active={flatHover} onActive={setFlatHover} pinned={flatPin} onPin={i => { setFlatPin(i); if (i !== null && mode !== '3d') setMode('3d'); }}
-                            editable={editable} busy={busy || !!job} onRecheck={() => generate(part.id)} onReplace={() => setReplacing(part)} />}
+                            editable={editable} busy={busy || !!job} onRecheck={() => generate(part.id)} onReplace={() => setReplacing(part)}
+                            onBypass={reason => action(async () => { await api(`/parts/${part.id}/flat-bypass`, 'POST', { reason }); await loadRevision(rev.id); notify(reason ? 'Flat pattern bypassed — release is not held for it' : 'Bypass removed'); })} />}
                           {(() => { const wm = weldmentOf(part.id); if (!wm) return null; return (
                             <div className={card}><Flame className="mt-px size-4 flex-none text-pink-500" /><div className="min-w-0"><div className="text-sm font-medium">{wm.name}</div><p className={cardText}>Weld assembly · {wm.parts.length} part{wm.parts.length === 1 ? '' : 's'} · {(wm.welds || []).length} weld{(wm.welds || []).length === 1 ? '' : 's'}</p>
                               <div className="flex flex-wrap items-center gap-1.5"><Button type="button" variant="outline" size="xs" onClick={() => openWeldment(wm)}><Flame />Weld configuration</Button>

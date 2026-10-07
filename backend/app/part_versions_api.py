@@ -122,3 +122,29 @@ def version_file(pid: str, vid: str, filename: str, request: Request):
         raise HTTPException(404, 'This version has no such file')
     stem = p['name'].replace('/', '_') + f'_v{v["number"]}_'
     return FileResponse(f, filename=stem + filename if filename.endswith(('.pdf', '.dxf', '.step')) else None)
+
+
+class FlatBypass(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    reason: str = Field(default='', max_length=300)
+
+
+@router.post('/api/parts/{pid}/flat-bypass')
+def flat_bypass(pid: str, a: FlatBypass, request: Request):
+    """Record that this part goes to production without a Forge-developed flat (e.g. the flat comes from CAD).
+    Empty reason removes the bypass. Regenerates the part's drawing so its note matches."""
+    p, u = check_replace_allowed(request, pid)
+    spec = json.loads(p['spec'])
+    w = dict(spec.get('rule_waivers') or {})
+    reason = a.reason.strip()
+    if reason:
+        w['FLAT001'] = f"{reason} — {u['name']}, {db.now()[:10]}"
+    else:
+        w.pop('FLAT001', None)
+    spec['rule_waivers'] = w
+    from .main import enqueue
+    with db.connect() as c:
+        c.execute('UPDATE parts SET spec=? WHERE id=?', (json.dumps(spec), pid))
+        enqueue(c, p['revision_id'], 'documents', {'part_id': pid})
+        db.audit(c, u['name'], 'part.flat_bypassed' if reason else 'part.flat_bypass_removed', {'part': pid, 'name': p['name'], 'reason': reason}, p['revision_id'])
+    return {'ok': True, 'waiver': w.get('FLAT001')}
