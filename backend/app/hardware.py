@@ -85,9 +85,11 @@ def designation(item):
     t = item['type']
     if t == 'tap':
         thread = item['thread'].replace('×', ' X ')
+        cls = str(item.get('thread_class') or '').strip().upper()
         if item.get('units') == 'metric':
-            return f'{thread} - 6H'
-        return f"{thread} {'UNF' if item['thread'] == '#10-32' else 'UNC'}-2B"
+            return f'{thread} - {cls or "6H"}'
+        series = 'UNF' if item['thread'] == '#10-32' else 'UNC'
+        return f"{thread} {series}-{cls or '2B'}"
     if t == 'countersink':
         return f"CSK Ø {item['csk']:.2f} X {item.get('angle', 90)}°" if item.get('csk') else f"CSK X {item.get('angle', 90)}°"
     label = {'nut': 'SELF-CLINCHING NUT', 'flush_nut': 'FLUSH NUT', 'stud': 'STUD', 'standoff': 'STANDOFF', 'rivnut': 'RIVET NUT', 'weld_nut': 'WELD NUT'}.get(t, 'HARDWARE')

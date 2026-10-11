@@ -120,6 +120,8 @@ function App() {
   const [editing, setEditing] = useState<Any>(null);
   const [comparison, setComparison] = useState<Any>(null);
   const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [droppedName, setDroppedName] = useState('');
   const [drawingPart, setDrawingPart] = useState<string | null>(null);
   const [balloonMode, setBalloonMode] = useState(false);
   const [readyFor, setReadyFor] = useState<string | null>(null);
@@ -1211,6 +1213,7 @@ function App() {
                                   {part.geometry.thickness > 0 && <div className={kv}><span className="shrink-0 text-muted-foreground">Thickness</span><span className={kvValue}>{fmt(part.geometry.thickness)} mm</span></div>}
                                   {part.geometry.mass_kg !== undefined && <div className={kv}><span className="shrink-0 text-muted-foreground">Mass</span><span className={kvValue}>{fmt(part.geometry.mass_kg)} kg <small className="text-muted-foreground">{part.geometry.mass_basis}</small></span></div>}
                                   {part.geometry.step && Object.keys(part.geometry.step).length > 0 && <div className={kv}><span className="shrink-0 text-muted-foreground">From STEP</span><span className={cn(kvValue, 'flex items-center justify-end gap-2')}>{part.geometry.step.color && <Swatch hex={part.geometry.step.color} title="CAD appearance" />}{[part.geometry.step.material, part.geometry.step.density && part.geometry.step.density + ' g/cm³'].filter(Boolean).join(' · ') || 'appearance only'}</span></div>}
+                                  {part.geometry.cad && <div className={kv}><span className="shrink-0 text-muted-foreground">From CAD</span><span className={kvValue} title={[part.geometry.cad.file, part.geometry.cad.configuration && `configuration ${part.geometry.cad.configuration}`, part.geometry.cad.description].filter(Boolean).join(' · ')}>{[part.geometry.cad.part_number, part.geometry.cad.revision && `rev ${part.geometry.cad.revision}`, part.geometry.cad.threaded > 0 && `${part.geometry.cad.threaded} threaded hole${part.geometry.cad.threaded === 1 ? '' : 's'}`, part.geometry.cad.mass_kg != null && `${fmt(part.geometry.cad.mass_kg)} kg`].filter(Boolean).join(' · ') || part.geometry.cad.description || 'package data'}</span></div>}
                                   <div className={kv}><span className="shrink-0 text-muted-foreground">Classified by</span><span className={kvValue}>{part.geometry.classification_confidence}</span></div>
                                   {part.category === 'sheet_metal' && <div className={kv}><span className="shrink-0 text-muted-foreground">Flat pattern</span><span className={cn(kvValue, part.geometry.flat_status === 'supported' ? 'text-success' : 'text-destructive')}>{part.geometry.flat_status === 'supported' ? 'Available' : 'Not developed'}</span></div>}
                                   {canBend(part) && <div className={kv}><span className="shrink-0 text-muted-foreground">Bending simulation</span><span className={cn(kvValue, 'flex items-center justify-end gap-2')}>{part.bend_sim ? 'Shared' : 'Not shared'}{showBend(part) && <Button type="button" variant="outline" size="xs" onClick={() => setBendSim(part.id)}><FoldVertical />Play</Button>}</span></div>}
@@ -1273,6 +1276,26 @@ function App() {
                             <div className="grid grid-cols-2 gap-2.5"><div className="rounded-lg border bg-subtle px-3 py-3.5"><span className="block text-2xl font-semibold tabular-nums">{parts.length}</span><span className="text-xs text-muted-foreground">Part definitions</span></div><div className="rounded-lg border bg-subtle px-3 py-3.5"><span className="block text-2xl font-semibold tabular-nums">{holes}</span><span className="text-xs text-muted-foreground">Named bores</span></div></div>
                             <div className="mt-1.5 mb-3.5">{Object.entries(categories).map(([k, v]) => <div key={k} className={kv}><span className="flex items-center gap-2 text-muted-foreground"><Swatch hex={categoryColors[k]} /> {v}</span><span className={cn(kvValue, 'font-medium tabular-nums')}>{parts.filter((p: Any) => p.category === k).length}</span></div>)}</div>
                             <div className="my-3.5 flex gap-2.5 rounded-lg border border-warning/30 bg-warning-soft p-3 text-warning"><ShieldCheck className="size-5 shrink-0" /><div><div className="text-sm font-medium">{blocking} release blockers</div><p className="mt-0.5 text-sm leading-relaxed">Includes missing specifications and manual engineering checks.</p></div></div>
+                            {rev.manifest.package && (() => {
+                              const pk = rev.manifest.package; const h = pk.holes || {}; const ins = pk.inserts || {}; const unmatched = (h.unmatched || []).length + (ins.unmatched || []).length + (pk.unmatched_parts || []).length;
+                              return <div className="my-3.5 rounded-lg border bg-subtle p-3">
+                                <div className="flex items-center gap-2 text-sm font-medium"><Layers className="size-4 shrink-0 text-muted-foreground" />From CAD <span className="font-normal text-muted-foreground">· {[pk.source?.cad, pk.source?.version].filter(Boolean).join(' ') || pk.generator?.name || 'Forge package'}</span></div>
+                                <ul className="mt-2 grid gap-1 text-sm text-muted-foreground">
+                                  <li>{pk.matched_parts} of {pk.parts} part{pk.parts === 1 ? '' : 's'} linked{pk.source?.file ? ` · ${pk.source.file}` : ''}</li>
+                                  <li>{h.applied || 0} tapped hole{h.applied === 1 ? '' : 's'} applied{h.kept ? ` · ${h.kept} kept as you set them` : ''}</li>
+                                  {ins.total > 0 && <li>{ins.applied || 0} of {ins.total} press-in insert{ins.total === 1 ? '' : 's'} placed</li>}
+                                  {(pk.k_factors > 0 || pk.materials > 0) && <li>{[pk.k_factors > 0 && `${pk.k_factors} K-factor${pk.k_factors === 1 ? '' : 's'}`, pk.materials > 0 && `${pk.materials} material${pk.materials === 1 ? '' : 's'}`].filter(Boolean).join(' · ')} pre-filled</li>}
+                                  {pk.fasteners?.total > 0 && <li>{pk.fasteners.total} fastener{pk.fasteners.total === 1 ? '' : 's'} in the assembly</li>}
+                                </ul>
+                                {unmatched > 0 && <details className="mt-2 text-sm text-warning"><summary className="cursor-pointer">{unmatched} item{unmatched === 1 ? '' : 's'} could not be linked — set by hand</summary><ul className="mt-1 grid gap-0.5 pl-4 text-xs">
+                                  {(pk.unmatched_parts || []).map((n: string) => <li key={'p' + n}>Part {n}: no matching geometry</li>)}
+                                  {(h.unmatched || []).map((u: Any, i: number) => <li key={'h' + i}>{u.part} · {u.feature}{u.thread ? ` (${u.thread}, Ø${Number(u.diameter).toFixed(2)})` : ''}</li>)}
+                                  {(ins.unmatched || []).map((u: Any, i: number) => <li key={'i' + i}>Insert {u.name}{u.path ? ` · ${u.path}` : ''}</li>)}
+                                </ul></details>}
+                                {pk.native?.geometry && <p className="mt-2 text-xs text-muted-foreground" title={(pk.native.attempts || []).join('\n')}>Geometry: {pk.native.geometry}</p>}
+                                {(pk.warnings || []).length > 0 && <ul className="mt-2 grid gap-0.5 text-xs text-warning">{pk.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}</ul>}
+                              </div>;
+                            })()}
                             <h4 className={cn('mb-2', eyebrow)}>Drawing sets</h4>
                             {[['machining-drawings.pdf', 'All machining drawings', 'One PDF · every machined part'], ['sheet-metal-drawings.pdf', 'All sheet-metal drawings', 'One PDF · flat patterns and bend tables'], ['assembly.pdf', 'Assembly & mating record', 'PDF · assembly view and fits']].map(([file, title, sub]) => (
                               <Button variant="outline" className="mb-2 h-auto w-full justify-between gap-3 p-3 text-left font-normal whitespace-normal text-muted-foreground shadow-none" key={file} disabled={!rev.assets?.includes(file)} onClick={() => doc(`/revisions/${rev.id}/assets/${file}`, file, title)}><Files className="size-[22px]" /><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-foreground">{title}</span><span className="mt-0.5 block text-2xs">{rev.assets?.includes(file) ? sub : 'Generate the manufacturing pack first'}</span></span><Eye /></Button>
@@ -1441,17 +1464,27 @@ function App() {
       {modal === 'project-settings' && project && <ProjectSettingsDialog project={project} workspace={settings || {}} config={config} ctx={{ busy, action, notify }} close={() => setModal('')} onSaved={p => { setProject(p); setModal(''); notify('Project settings saved. They apply to the next upload and drawing generation; use Re-run classification for the current revision.'); }} />}
 
       {modal === 'upload' && (
-        <Modal title="Upload a CAD revision" close={() => !busy && setModal('')}>
+        <Modal title="Upload a CAD revision" close={() => { if (!busy) { setModal(''); setDroppedName(''); setDragOver(false); } }}>
           {importingRevision ? <div className="grid gap-3" role="status" aria-live="polite">
             <h3 className="text-base font-semibold">Revision {importingRevision.number} is processing · {importingRevision.progress || 0}%</h3>
             <p className="text-sm">{importingRevision.message || 'Import queued'}</p>
             <span role="progressbar" aria-label="CAD import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={importingRevision.progress || 0}><Progress value={importingRevision.progress || 0} /></span>
             <p className="text-sm text-muted-foreground">Progress updates automatically. You can upload the next revision after this import finishes.</p>
             <ModalFooter><Button onClick={showImport}>View import progress</Button></ModalFooter>
-          </div> : <form className="grid gap-4" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const file = f.get('file') as File; action(() => uploadFile(file, String(f.get('notes') || ''))); }}>
-            <Label className="flex cursor-pointer flex-col items-center gap-3 rounded-lg border border-dashed border-input bg-subtle p-7 font-normal leading-normal text-muted-foreground"><Upload className="size-8" /><span className="text-lg font-semibold text-foreground">Choose your part or assembly</span><span className="text-sm">STEP · STP · BREP · IGES / up to 1 GB</span><Input name="file" type="file" accept=".step,.stp,.brep,.brp,.igs,.iges" required className="h-auto max-w-[320px] border-0 bg-transparent shadow-none dark:bg-transparent" /></Label>
+          </div> : <form className="grid gap-4" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const file = f.get('file') as File; action(() => uploadFile(file, String(f.get('notes') || ''))); }}
+            onDragOver={e => { e.preventDefault(); }} onDrop={e => { e.preventDefault(); }}>
+            <Label className={cn('flex cursor-pointer flex-col items-center gap-3 rounded-lg border border-dashed border-input bg-subtle p-7 font-normal leading-normal text-muted-foreground transition-colors', dragOver && 'border-primary bg-selection')}
+              onDragEnter={e => { e.preventDefault(); setDragOver(true); }} onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOver(true); }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
+              onDrop={e => {
+                // a file dropped anywhere on the zone lands in the file input, exactly as if chosen with the button
+                e.preventDefault(); setDragOver(false);
+                const file = e.dataTransfer.files?.[0]; if (!file) return;
+                const input = e.currentTarget.querySelector('input[type=file]') as HTMLInputElement | null; if (!input) return;
+                const dt = new DataTransfer(); dt.items.add(file); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); setDroppedName(file.name);
+              }}><Upload className="size-8" /><span className="text-lg font-semibold text-foreground">{droppedName ? droppedName : 'Choose or drop your part or assembly'}</span><span className="text-sm">STEP · STP · BREP · IGES · FORGE package{config?.formats?.includes('.sldprt') ? ' · SolidWorks part (SLDPRT) · SolidWorks assembly folder (ZIP)' : ''} / up to 1 GB</span><Input name="file" type="file" accept={config?.formats?.join(',') || '.step,.stp,.brep,.brp,.igs,.iges,.forge'} required className="h-auto max-w-[320px] border-0 bg-transparent shadow-none dark:bg-transparent" onChange={e => setDroppedName(e.target.files?.[0]?.name || '')} /></Label>
             <Label className={field}>Revision notes<Textarea name="notes" placeholder="What changed in this version?" /></Label>
             <p className="text-sm text-muted-foreground">The previous revision stays active until this file processes successfully. No review approvals carry over automatically.</p>
+            <p className="text-sm text-muted-foreground">A <b>.forge</b> package from the SolidWorks exporter also brings tapped holes, cosmetic threads, sheet-metal K-factors, material and press-in inserts — Forge fills them in and marks them <i>from CAD</i>.{config?.formats?.includes('.sldprt') && <> A native <b>.SLDPRT</b> is read here with its exact geometry: Hole Wizard holes, threads, material and colour come along; an assembly comes as a <b>.zip</b> of its folder (SolidWorks Pack and Go, or just zip the folder) with every part in it.</>}</p>
             {uploadPercent !== null && <span role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={uploadPercent}><Progress value={uploadPercent} /></span>}
             <ModalFooter><Button disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : <Upload />}Upload & analyze {uploadPercent !== null && uploadPercent + '%'}</Button></ModalFooter>
           </form>}

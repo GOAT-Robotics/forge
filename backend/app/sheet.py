@@ -1259,7 +1259,9 @@ def callout_lines(group, spec, view=None):
     if desig:
         side = hardware_side(hw, view)
         if hw and hw.get('type') == 'tap':
-            lines.insert(1, str(desig) + (' ' + thru if h['through'] else ''))  # tapped through: no insertion side
+            # tapped through: no insertion side; a blind tap from CAD carries its own thread depth
+            td = hw.get('thread_depth')
+            lines.insert(1, str(desig) + (' ' + thru if h['through'] else f" {DEPTH} {float(td):.2f}" if td else ''))
         else:
             lines.insert(1, str(desig) + (f', {side}' if side else ''))
     else:

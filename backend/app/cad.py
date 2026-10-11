@@ -183,12 +183,21 @@ def analyze(s,name):
  thickness=float(min(vals,key=lambda t:abs(t-est))) if vals else 0.
  sheet=bool(thickness and (bend_pairs or thickness<=6) and est/thickness>.35)
  category='purchased' if classify_name(name)=='purchased' else 'sheet_metal' if sheet else 'machining'
- # Merge split cylindrical faces before identifying full bores.
- groups={}
+ # Merge split cylindrical faces before identifying full bores: the halves of one bore share axis, origin and
+ # radius and overlap along the axis, but need not share their extent (a hole breaking out on a curved face
+ # has halves of different length).
+ by_axis={}
  for c in cyl:
-  key=tuple(np.round(np.r_[c['axis'],c['origin'],c['radius'],c['start'],c['end']],4))+(c['internal'],)
-  if key in groups:groups[key]['angle']+=c['angle']
-  else:groups[key]=dict(c)
+  key=tuple(np.round(np.r_[c['axis'],c['origin'],c['radius']],4))+(c['internal'],)
+  by_axis.setdefault(key,[]).append(c)
+ groups={}
+ for key,cs in by_axis.items():
+  cs=sorted(cs,key=lambda c:c['start']);cur=None
+  for c in cs:
+   if cur is not None and c['start']<=cur['end']+.01:
+    cur['angle']+=c['angle'];cur['end']=max(cur['end'],c['end'])
+   else:
+    cur=dict(c);groups[key+(round(cur['start'],4),)]=cur
  holes=[];shafts=[]
  for c in groups.values():
   if c['angle']<2*math.pi-.03:continue

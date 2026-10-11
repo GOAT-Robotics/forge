@@ -130,6 +130,33 @@ def apply_defaults(spec,g,settings,carried):
 
 def process_import(rid):
  rev=db.row('SELECT * FROM revisions WHERE id=?',(rid,));folder=db.revdir(rid);project=db.row('SELECT * FROM projects WHERE id=?',(rev['project_id'],));rules=json.loads(rev['manifest']).get('rules_snapshot',json.loads(project['rules']));source=folder/('source'+Path(rev['filename']).suffix.lower())
+ # A Forge package (.forge) is STEP plus the CAD features the STEP cannot carry (docs/FORGE_PACKAGE.md): the STEP
+ # inside goes through the same sanitizing and analysis; the feature data is linked to the geometry afterwards.
+ pkg=None
+ if source.suffix.lower()=='.forge':
+  from . import package
+  with stage(rid,1,f'Unpacking Forge package ({size_text(source)})'):
+   try:pkg=package.unpack(source,folder,int(os.getenv('MAX_UPLOAD_MB','1024'))*1024*1024)
+   except package.PackageError as e:raise ValueError(str(e))
+  source=Path(pkg['source'])
+ elif source.suffix.lower() in ('.sldprt',):
+  # native SolidWorks part: Forge's reader (app/swread) takes the exact geometry and the part data (holes, threads,
+  # material, colour, properties) from the file; the result is a Forge package, so everything after this line is the
+  # same as for a .forge upload
+  from . import native
+  with stage(rid,1,f'Reading SolidWorks part ({size_text(source)})'):
+   try:pkg=native.convert(source,folder,Path(rev['filename']).stem,int(os.getenv('MAX_UPLOAD_MB','1024'))*1024*1024)
+   except native.NativeError as e:raise ValueError(str(e))
+  source=Path(pkg['source'])
+ elif source.suffix.lower()=='.zip':
+  # a SolidWorks assembly with its parts (Pack and Go ZIP, or the zipped project folder): the instance tree gives
+  # structure and placements, every part (and every virtual part the assemblies embed) is read as above
+  from . import native
+  with stage(rid,1,f'Reading SolidWorks assembly ({size_text(source)})'):
+   try:pkg=native.convert_bundle(source,folder,Path(rev['filename']).stem,int(os.getenv('MAX_UPLOAD_MB','1024'))*1024*1024,
+                                 progress=lambda i,n,nm:progress(rid,1+int(3*i/max(n,1)),f'Reading SolidWorks part {i+1}/{n}: {nm[:80]}'))
+   except native.NativeError as e:raise ValueError(str(e))
+  source=Path(pkg['source'])
  # Authoring-system traces (SolidWorks header, feature names, exporter name noise, users, paths, GUIDs) are removed
  # before anything reads the file; only the sanitized copy is kept, hashed, served and downloaded.
  sanitized=None
@@ -145,8 +172,20 @@ def process_import(rid):
     c.execute('UPDATE revisions SET sha256=? WHERE id=?',(h.hexdigest(),rid));db.audit(c,'worker','revision.sanitized',{k:v for k,v in sanitized.items() if k!='solidworks'}|{'sha256':h.hexdigest()},rid)
    rev['sha256']=h.hexdigest()
    storage.upload(rid,source,source.name)
- with stage(rid,3,f'Reading CAD file ({size_text(source)}) and preserving component placements'):leaves=import_model(source)
+  if pkg:
+   # the uploaded archive held the authoring system's STEP; keep only a package built from the sanitized copy
+   from . import package
+   storage.upload(rid,package.repack(folder),'source.forge')
+ elif pkg:
+  from . import package
+  storage.upload(rid,package.repack(folder),'source.forge')
+ with stage(rid,3,f'Reading CAD file ({size_text(source)}) and preserving component placements'):
+  if pkg and pkg.get('bundle'):
+   from . import native
+   leaves=native.bundle_leaves(folder,pkg)
+  else:leaves=import_model(source)
  if source.suffix in ('.brep','.brp','.igs','.iges') and len(leaves)==1:leaves[0]['name']=Path(rev['filename']).stem
+ if pkg and (pkg.get('manifest') or {}).get('native') and len(leaves)==1:leaves[0]['name']=clean_name(Path(rev['filename']).stem)   # name the part after the upload
  scene=trimesh.Scene();parts=[];instances={};assembly_meshes=[];warnings=[];num=0;settings=db.project_settings(rev['project_id'])
  # Engineering data from the current active revision is carried into the new one (by name, then by shape),
  # so specifications only need editing where the design changed. Approvals are never carried.
@@ -224,6 +263,18 @@ def process_import(rid):
     if old and old['geometry'].get('fingerprint')==g['fingerprint']:
      c.execute('INSERT OR IGNORE INTO char_overrides(part_id,key,data,actor,updated) SELECT ?,key,data,actor,updated FROM char_overrides WHERE part_id=?',(pid,old['id']))
  if not parts:raise ValueError('No usable solid bodies found; export solids as STEP or BREP')
+ package_summary=None
+ if pkg:
+  # CAD feature data (taps, cosmetic threads, sheet-metal parameters, material, inserts) linked to the bores and
+  # parts found above; engineer-set hardware carried over from the previous revision is never overridden.
+  with stage(rid,71,'Applying CAD feature data from the Forge package'):
+   from . import package
+   package_summary=package.apply(pkg,parts,instances)
+  with db.connect() as c:
+   for p in parts:
+    if p['id'] in package_summary['changed']:c.execute('UPDATE parts SET spec=?,geometry=? WHERE id=?',(json.dumps(p['spec']),json.dumps(p['geometry']),p['id']))
+   db.audit(c,'worker','revision.package.applied',{k:v for k,v in package_summary.items() if k!='changed'},rid)
+  package_summary.pop('changed',None)
  if prev_rev and pid_map:carry_assembly_steps(prev_rev['id'],rid,pid_map)
  with stage(rid,73,'Writing lightweight assembly mesh'):scene.export(folder/'assembly.glb');(folder/'instances.json').write_text(json.dumps(instances))
  fits=[]  # mates come from the STEP assembly itself (placements); no geometric fit guessing
@@ -231,7 +282,7 @@ def process_import(rid):
   for f in fits:c.execute('INSERT INTO fits VALUES(?,?,?,0)',(db.uid(),rid,json.dumps(f)))
  with stage(rid,82,'Rendering assembly documentation'):
   if assembly_meshes:render_meshes(assembly_meshes,folder/'assembly.png')
- manifest={'step_header':header,'sanitized':{k:v for k,v in (sanitized or {}).items() if k!='solidworks'},'rules_snapshot':rules,'part_count':len(parts),'component_definitions':len(leaves),'occurrences':sum(p['quantity'] for p in parts),'triangles':sum(p['geometry']['triangles']*p['quantity'] for p in parts),'warnings':warnings,'units':'mm','mesh_deflection':rules['mesh_deflection'],'fit_candidates':len(fits),'carried_over':carried,'carried_from':prev_rev['number'] if prev_rev else None,'rule_coverage':'Configured geometry and workflow rules only; manual checks explicitly required','unsupported':['Native proprietary CAD formats','General double-curved sheet forming','Automatic structural certification','Automatic thread specification recovery'],'instances_file':'instances.json'}
+ manifest={'step_header':header,'sanitized':{k:v for k,v in (sanitized or {}).items() if k!='solidworks'},'rules_snapshot':rules,'part_count':len(parts),'component_definitions':len(leaves),'occurrences':sum(p['quantity'] for p in parts),'triangles':sum(p['geometry']['triangles']*p['quantity'] for p in parts),'warnings':warnings,'units':'mm','mesh_deflection':rules['mesh_deflection'],'fit_candidates':len(fits),'carried_over':carried,'carried_from':prev_rev['number'] if prev_rev else None,'rule_coverage':'Configured geometry and workflow rules only; manual checks explicitly required','unsupported':['Native proprietary CAD formats','General double-curved sheet forming','Automatic structural certification','Threads not defined as CAD features' if pkg else 'Automatic thread specification recovery'],'instances_file':'instances.json','package':package_summary}
  # Only promote successful revisions; archive the prior active version atomically.
  with db.connect() as c:
   c.execute('UPDATE revisions SET state="archived" WHERE project_id=? AND state="active"',(rev['project_id'],));c.execute('UPDATE revisions SET state="active",status="ready",progress=100,message="Analysis complete",manifest=? WHERE id=?',(json.dumps(manifest),rid));db.audit(c,'worker','revision.activated',manifest,rid)

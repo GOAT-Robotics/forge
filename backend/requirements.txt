@@ -17,3 +17,4 @@ cryptography>=44,<47
 pytest==8.4.2
 pypdf>=5,<7
 scipy>=1.13,<2
+olefile==0.47

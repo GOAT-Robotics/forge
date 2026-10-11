@@ -1,0 +1,659 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.goat-robotics.com/schemas/forge-package-1.json",
+  "title": "Forge package (.forge) version 1",
+  "description": "JSON members of a .forge archive: manifest.json, parts/<id>.json and assembly.json. See docs/FORGE_PACKAGE.md.",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"
+    },
+    "vec3": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "transform": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 16,
+      "maxItems": 16
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "schema",
+        "model"
+      ],
+      "properties": {
+        "schema": {
+          "const": "forge-package/1"
+        },
+        "generator": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "cad": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "file": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "part",
+                "assembly"
+              ]
+            }
+          }
+        },
+        "created": {
+          "type": "string"
+        },
+        "units": {
+          "const": "mm"
+        },
+        "model": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "enum": [
+                "model.step",
+                "model.stp",
+                "model.brep"
+              ]
+            },
+            "format": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "root": {
+          "type": "string"
+        }
+      }
+    },
+    "hole": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "diameter",
+        "point",
+        "direction"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "feature": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "kind": {
+          "enum": [
+            "tap",
+            "clearance",
+            "counterbore",
+            "countersink",
+            "dowel",
+            "simple",
+            "cosmetic_thread",
+            "thread"
+          ]
+        },
+        "standard": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "fastener": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "thread": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 40
+        },
+        "thread_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 10
+        },
+        "thread_depth": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "thread_through": {
+          "type": "boolean"
+        },
+        "diameter": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "depth": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "through": {
+          "type": "boolean"
+        },
+        "counterbore": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "diameter": {
+              "type": "number"
+            },
+            "depth": {
+              "type": "number"
+            }
+          }
+        },
+        "countersink": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "diameter": {
+              "type": "number"
+            },
+            "angle": {
+              "type": "number"
+            }
+          }
+        },
+        "point": {
+          "$ref": "#/$defs/vec3"
+        },
+        "direction": {
+          "$ref": "#/$defs/vec3"
+        },
+        "face": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 80
+        }
+      }
+    },
+    "sheet_metal": {
+      "type": "object",
+      "properties": {
+        "thickness": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "bend_radius": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "k_factor": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "bend_allowance": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "bend_deduction": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "flat_pattern": {
+          "type": "boolean"
+        },
+        "flat_size": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "bends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "feature": {
+                "type": "string"
+              },
+              "angle": {
+                "type": "number"
+              },
+              "radius": {
+                "type": "number"
+              },
+              "direction": {
+                "enum": [
+                  "up",
+                  "down",
+                  null
+                ]
+              },
+              "k_factor": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "part": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "file": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "configuration": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "step_names": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "maxItems": 8
+        },
+        "part_number": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "revision": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "material": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 120
+        },
+        "density": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "mass_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "volume_mm3": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "bbox": {
+          "$ref": "#/$defs/vec3"
+        },
+        "bodies": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sheet_metal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sheet_metal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "holes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hole"
+          },
+          "maxItems": 5000
+        },
+        "welds": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "unplaced_threads": {
+          "type": "array",
+          "maxItems": 5000,
+          "description": "Threads whose face the writer could not trace (cosmetic threads on mirrored/derived bodies); Forge places them on the bores of the tap-drill size when the count is unambiguous.",
+          "items": {
+            "type": "object",
+            "required": [
+              "thread"
+            ],
+            "properties": {
+              "feature": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 200
+              },
+              "thread": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "diameter": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0.001,
+                "maximum": 5000
+              },
+              "thread_depth": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "thread_through": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "required": [
+        "id",
+        "part",
+        "transform"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "part": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "instance": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "configuration": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "transform": {
+          "$ref": "#/$defs/transform"
+        },
+        "suppressed": {
+          "type": "boolean"
+        },
+        "exclude_from_bom": {
+          "type": "boolean"
+        },
+        "virtual": {
+          "type": "boolean"
+        },
+        "fixed": {
+          "type": "boolean"
+        },
+        "mirrored": {
+          "type": "boolean"
+        }
+      }
+    },
+    "fastener": {
+      "type": "object",
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "screw",
+            "bolt",
+            "nut",
+            "washer",
+            "rivet",
+            "pin",
+            "other"
+          ]
+        },
+        "standard": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "size": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "length": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "transform": {
+          "$ref": "#/$defs/transform"
+        }
+      }
+    },
+    "insert": {
+      "type": "object",
+      "required": [
+        "type",
+        "transform"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "nut",
+            "flush_nut",
+            "stud",
+            "standoff",
+            "rivnut",
+            "weld_nut"
+          ]
+        },
+        "thread": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "pn": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "transform": {
+          "$ref": "#/$defs/transform"
+        },
+        "axis": {
+          "$ref": "#/$defs/vec3"
+        }
+      }
+    },
+    "assembly": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "configuration": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/component"
+          },
+          "maxItems": 100000
+        },
+        "fasteners": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fastener"
+          },
+          "maxItems": 100000
+        },
+        "inserts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/insert"
+          },
+          "maxItems": 100000
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/manifest"
+    },
+    {
+      "$ref": "#/$defs/part"
+    },
+    {
+      "$ref": "#/$defs/assembly"
+    }
+  ]
+}

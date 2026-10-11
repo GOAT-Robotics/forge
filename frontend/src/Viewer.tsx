@@ -568,7 +568,9 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
           while (parent && !id) {
             // GLTFLoader sanitises node names (strips ':' etc.), so read the original name it keeps in userData.
             const raw = String(parent.userData?.name || parent.name || '');
-            id = raw.match(/^([a-f0-9]{10}_\d+_\d+)(?:::|$)/)?.[1] || '';
+            // part ids are <revision>_<component>_<body>; the component is a number for STEP imports and was a
+            // name in early SolidWorks assembly imports, so any component text is accepted
+            id = raw.match(/^([a-f0-9]{10}_.+_\d+?)(?:::\d+)?$/)?.[1] || '';
             parent = parent.parent;
           }
           const k = m.geometry.uuid + '|' + id;
@@ -641,7 +643,16 @@ export default function Viewer({ url, selected, onPick, onIsolateToggle, isolate
         setCount(meshes.reduce((n, m) => n + (m.geometry.index?.count || m.geometry.attributes.position.count) / 3 * (m instanceof THREE.InstancedMesh ? m.count : 1), 0));
         e.loaded = true;
         const cam = assemblyView ? loadView(viewKeyRef.current).camera : null;
-        if (cam && Array.isArray(cam.p) && Array.isArray(cam.t)) {
+        // the remembered camera belongs to the project, not the revision: a new revision can be a different model
+        // (another size, elsewhere in space), so it is only reused when it still frames this model
+        const camFits = (c: Any) => {
+          if (!c || !Array.isArray(c.p) || !Array.isArray(c.t)) return false;
+          const p = new THREE.Vector3().fromArray(c.p), t = new THREE.Vector3().fromArray(c.t);
+          if (![p.x, p.y, p.z, t.x, t.y, t.z].every(Number.isFinite)) return false;
+          const dist = p.distanceTo(t);
+          return t.distanceTo(e.center) < e.radius * 1.5 && dist > e.radius * 0.05 && dist < e.radius * 20;
+        };
+        if (camFits(cam)) {
           // the camera as it was left in this project
           camera.position.fromArray(cam.p); controls.target.fromArray(cam.t); if (Array.isArray(cam.u)) camera.up.fromArray(cam.u);
           camera.near = Math.max(e.radius / 2000, 0.01); camera.far = e.radius * 200; camera.updateProjectionMatrix(); controls.update();

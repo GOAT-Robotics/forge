@@ -548,7 +548,7 @@ def test_chunked_upload_survives_proxy_body_limits(tmp_path, monkeypatch):
         source = tmp_path / 'big.brep'
         BRepTools.Write_s(plate(), str(source))
         data = source.read_bytes()
-        assert client.post(f"/api/projects/{p['id']}/uploads", headers=H, json={'filename': 'x.sldprt', 'size': len(data)}).status_code == 422
+        assert client.post(f"/api/projects/{p['id']}/uploads", headers=H, json={'filename': 'x.sldasm', 'size': len(data)}).status_code == 422
         s = client.post(f"/api/projects/{p['id']}/uploads", headers=H, json={'filename': 'big.brep', 'size': len(data), 'notes': 'via tunnel'}).json()
         n, size = s['chunks'], s['chunk_size']
         assert n > 2

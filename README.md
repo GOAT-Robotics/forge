@@ -35,6 +35,8 @@ Forge is built and used in production at [GOAT Robotics](https://goat-robotics.c
 
 **CAD workspace**
 - Imports STEP, IGES and BREP assemblies. Keeps the assembly tree, component placements, occurrence quantities and multi-body parts.
+- Imports **Forge packages** (`.forge`): STEP plus the CAD feature data STEP cannot carry — tapped holes and cosmetic threads, sheet-metal K-factors, material and properties, press-in inserts and fasteners — written by the SolidWorks exporter in `tools/solidworks/` (uses the seat's own API, no add-on licence). Applied as *from CAD*, editable, never inferred. Format: `docs/FORGE_PACKAGE.md`.
+- Imports **native SolidWorks parts** (`.sldprt`) with Forge's own reader (`backend/app/swread`): the exact B-rep SolidWorks stores for the active configuration (Parasolid data, rebuilt surface for surface), plus Hole Wizard holes, cosmetic thread sizes, material, colour, sheet-metal values and custom properties. Every solid is checked (valid, closed) before use; a part that cannot be read exactly is refused with the reason. SolidWorks assemblies come in as a ZIP of the assembly folder (Pack and Go, or the zipped folder; a Pack and Go name prefix such as `ISO-` is fine): the component tree gives structure and placements, every part is read as above in the configuration the assembly uses, and virtual components are read from inside the assembly file. A part missing from the ZIP becomes a flagged placeholder box.
 - Fast 3D viewer: part navigator with assembly hierarchy, category filters, isolate a part (or one instance of a multi-quantity part), ghosting, section, explode, measure and view cube.
 - Realistic view: each part shows its finish and material — powder coat gloss level and colour, plating, anodising, bare stainless, aluminium or steel with its machined roughness — with studio reflections and an optional studio backdrop.
 - Classifies parts as machining, sheet metal or purchased from geometry and naming rules. Every suggestion is reviewed by an engineer, and sub-assemblies can be re-classified in one step.
@@ -117,7 +119,7 @@ All settings are environment variables, read from `.env` by Docker Compose. See 
 
 ## How a project flows through Forge
 
-1. **Upload** a `.step`/`.stp`/`.iges`/`.igs`/`.brep`. Export native CAD (SolidWorks, Creo, Inventor, …) to STEP first. Assemblies keep their structure; multi-body parts become one record per body.
+1. **Upload** a `.step`/`.stp`/`.iges`/`.igs`/`.brep`, a native SolidWorks part (`.sldprt`) or assembly folder (`.zip`), or a `.forge` package from the SolidWorks exporter (`tools/solidworks/README.md`) to bring threads, sheet-metal parameters and inserts along. Export other native CAD (Creo, Inventor, …) to STEP first. Assemblies keep their structure; multi-body parts become one record per body.
 2. **Classify.** Review the suggested category of every part. Mark purchased items, hide small bought-in parts, and mark anything *Not for production* with a reason.
 3. **Specify.** Fill in how each part is made, directly or with the *Make production ready* walkthrough. Apply process templates to many parts at once.
 4. **Check.** Work through the rule findings and manual checks, and approve fits and joints. Configure welds in the weld studio.

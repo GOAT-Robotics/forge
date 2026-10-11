@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to forge-export.json next to forge_export.py to upload every export automatically. Needs a Forge account with local login (FORGE_ALLOW_LOCAL_LOGIN) and revision.upload on the project; use a dedicated upload account rather than your own. Entra-only workspaces: leave this file out and upload the .forge in the browser.",
+  "url": "https://forge.example.com",
+  "project": "GT400",
+  "email": "cad-upload@goat-robotics.com",
+  "password": "change-me",
+  "notes": "Exported from SolidWorks"
+}

@@ -132,7 +132,9 @@ def logout(request:Request):
  with db.connect() as c:c.execute('DELETE FROM sessions WHERE hash=?',(token_hash(request.cookies.get('forge_session','')),))
  r=JSONResponse({'ok':True});r.delete_cookie('forge_session');return r
 @app.get('/api/config')
-def config():return {'standards':STANDARDS,'manual_checks':MANUAL_CHECKS,'default_rules':db.DEFAULT_RULES,'formats':['.step','.stp','.brep','.brp','.igs','.iges'],'capabilities':{'native_proprietary_cad':False,'unfolding':'Constant-thickness planar/cylindrical developable sheets; unsupported topology is blocked','rules':'Configurable workshop checks plus required engineering checks','fps':'Target 60 fps; actual FPS reported for the current device and assembly'}}
+def config():
+ from .native import available as native_available
+ return {'standards':STANDARDS,'manual_checks':MANUAL_CHECKS,'default_rules':db.DEFAULT_RULES,'formats':['.step','.stp','.brep','.brp','.igs','.iges','.forge']+(['.sldprt','.zip'] if native_available() else []),'package':{'schema':'forge-package/1','spec':'docs/FORGE_PACKAGE.md'},'capabilities':{'native_proprietary_cad':'SolidWorks parts (.sldprt) and assemblies (ZIP of the assembly with its parts), read natively with exact geometry' if native_available() else False,'forge_package':'STEP plus CAD feature data (taps, cosmetic threads, sheet-metal parameters, material, inserts) written by the CAD-side exporter','unfolding':'Constant-thickness planar/cylindrical developable sheets; unsupported topology is blocked','rules':'Configurable workshop checks plus required engineering checks','fps':'Target 60 fps; actual FPS reported for the current device and assembly'}}
 @app.get('/api/settings')
 def get_settings(request:Request):user(request);return db.settings()  # workspace defaults for new projects
 class SettingsEdit(BaseModel):
@@ -187,11 +189,18 @@ async def update_rules(pid:str,request:Request):
  # Rule changes are versioned by the next upload; existing revision snapshots do not change.
  with db.connect() as c:c.execute('UPDATE projects SET rules=? WHERE id=?',(json.dumps(body),pid));db.audit(c,u['name'],'project.rules.updated',body)
  return {'ok':True,'message':'Applies to future revisions'}
-CAD_EXTS=('.step','.stp','.brep','.brp','.igs','.iges')
+CAD_EXTS=('.step','.stp','.brep','.brp','.igs','.iges','.forge','.sldprt','.zip')
 def upload_limit():return int(os.getenv('MAX_UPLOAD_MB','1024'))*1024*1024
-def cad_name(name):
+def cad_name(name,replacement=False):
+ from .native import available as native_available
  filename=Path(name or '').name;ext=Path(filename).suffix.lower()
- if ext not in CAD_EXTS:raise HTTPException(422,'Export CAD as STEP, BREP or IGES; native proprietary part files are not supported')
+ if ext=='.sldasm':raise HTTPException(422,'A SolidWorks assembly needs its parts: upload the assembly folder as a ZIP (SolidWorks File > Pack and Go > Save to Zip, or zip the folder), or export the assembly as STEP')
+ if ext=='.sldprt' and not native_available():raise HTTPException(422,'Native SolidWorks parts are not enabled in this installation; export the part as STEP or as a Forge package')
+ if ext=='.zip' and not native_available():raise HTTPException(422,'Native SolidWorks assemblies are not enabled in this installation; export the assembly as STEP')
+ if ext not in CAD_EXTS:raise HTTPException(422,'Export CAD as STEP, BREP or IGES, as a Forge package (.forge), or upload a SolidWorks part (.sldprt) or a SolidWorks assembly as a ZIP with its parts; other native formats are not supported')
+ if replacement and ext=='.forge':raise HTTPException(422,'A Forge package imports a whole revision; to replace one part, export that part as STEP')
+ if replacement and ext=='.zip':raise HTTPException(422,'A SolidWorks assembly ZIP imports a whole revision; to replace one part, export that part as STEP')
+ if replacement and ext=='.sldprt':raise HTTPException(422,'To replace one part, export it as STEP; native SolidWorks parts are imported as new revisions')
  return filename,ext
 @app.post('/api/projects/{pid}/revisions')
 async def upload(pid:str,request:Request,file:UploadFile=File(...),notes:str=Form('')):
@@ -240,7 +249,7 @@ def upload_start(pid:str,a:UploadStart,request:Request):
   if project_of_revision(part['revision_id'])!=pid:raise HTTPException(422,'Part is not in this project')
  else:u=editor(request,'revision.upload',pid)
  if not db.row('SELECT id FROM projects WHERE id=?',(pid,)):raise HTTPException(404,'Project not found')
- filename,ext=cad_name(a.filename)
+ filename,ext=cad_name(a.filename,replacement=bool(a.part_id))
  if a.size>upload_limit():raise HTTPException(413,f'File exceeds the configured upload limit ({upload_limit()//1048576} MB)')
  sweep_uploads()
  uid=uuid.uuid4().hex;d=upload_dir(uid);d.mkdir(parents=True)
