@@ -78,7 +78,7 @@ or two); later runs are quick. If that step fails on a machine, add `--late`.
   thread instead; Forge reads geometry only for these.
 - Weld beads: listed per part, not applied.
 - Bend direction (up/down) and flat-pattern size.
-- Configurations other than the active one of each component.
+- Configurations not referenced by an assembly occurrence (a standalone part exports its active configuration).
 
 ## Conventions
 

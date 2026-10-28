@@ -512,10 +512,10 @@ def read_part(path, configuration=None):
     warnings = []
     cfg = None
     if configuration:
-        want = re.sub(r'\W+', '', configuration).lower()
-        cfg = next((c for c in cfgs if re.sub(r'\W+', '', c.name).lower() == want), None)
+        want = configuration.casefold()
+        cfg = next((c for c in cfgs if c.name.casefold() == want), None)
         if cfg is None:
-            warnings.append(f"configuration '{configuration}' is not in the part; read the active one")
+            raise ReadError(f"configuration '{configuration}' is not in the part")
     if cfg is None:
         aid = _active_config_id(streams)
         aname = _active_config_name(streams)
@@ -524,11 +524,13 @@ def read_part(path, configuration=None):
     head = streams.get('swXmlContents/Features') or b''
     m = re.search(rb'swVersion="(\d+)"', head)
     part.version = m.group(1).decode() if m else ''
-    # the configuration asked for first; a configuration SolidWorks never rebuilt has an empty partition, so the
-    # others follow (named in a warning). Solid bodies are preferred; surface bodies only when nothing else exists.
+    # Explicit configuration requests must never substitute a different configuration. For an implicit active
+    # configuration only, other saved geometry can follow with a warning. Prefer solids over surface bodies.
     owner = _stream_configs(streams, cfgs)
     nums = sorted(owner)
-    order = [n for n in nums if owner[n] is cfg] + [n for n in nums if owner[n] is not cfg]
+    order = [n for n in nums if owner[n] is cfg]
+    if not configuration:
+        order += [n for n in nums if owner[n] is not cfg]
     displayed = displayed_bodies(streams)
     active = owner.get(_active_num(owner, _active_config_id(streams)))
     errors, chosen = [], []

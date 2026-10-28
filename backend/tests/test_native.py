@@ -228,3 +228,108 @@ def test_real_parts(path):
     for s in part.solids:
         ok, detail = brep.check(s)
         assert ok, f'{Path(path).name}: {detail}'
+
+
+def test_explicit_configuration_never_uses_other_geometry(plate_file, monkeypatch):
+    with pytest.raises(swread.ReadError, match="configuration 'Missing' is not in the part"):
+        swread.read_part(plate_file, 'Missing')
+    # Punctuation distinguishes legitimate configuration names.
+    streams = container.read(plate_file)
+    streams['swXmlContents/KeyWords'] = sw_fixture.KEYWORDS.replace(
+        '<Configuration id="0"', '<Configuration id="1" Name="Default-2"/><Configuration id="2" Name="Default2"/><Configuration id="0"').encode()
+    monkeypatch.setattr(container, 'read', lambda path: streams)
+    for config in ('Default-2', 'Default2'):
+        with pytest.raises(swread.ReadError, match='no solid geometry'):
+            swread.read_part(plate_file, config)
+    assert swread.read_part(plate_file, 'default').configuration.name == 'Default'
+
+
+def test_nested_assembly_placements_and_inherited_flags():
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(sw_fixture.instance_tree(plates=((0, 0, 100),)))
+    models = root.find('swModelList')
+    assembly = models.find('swModel')
+    plate_ref = assembly.find('swReference')
+    assembly.remove(plate_ref)
+    sub = ET.SubElement(models, 'swModel', id='4', swName='Sub', swFileRef='f4')
+    sub.append(plate_ref)
+    ET.SubElement(root.find('swFileList'), 'swFile', id='f4', swPath='Sub.SLDASM', swDocType='ASSEMBLY')
+    # Rotate 90 degrees about Z and translate 200 mm along X.
+    ET.SubElement(assembly, 'swReference', swModelRef='4', swName='Sub', swHidden='YES', swExcludeFromBOM='YES',
+                  swTransform='0 1 0 0 -1 0 0 0 0 0 1 0 .2 0 0 1')
+    leaves = native.parse_instance_tree(ET.tostring(root))['leaves']
+    plate = next(l for l in leaves if l['file'] == 'TAP PLATE.SLDPRT')
+    assert plate['hidden'] and plate['exclude_from_bom']
+    assert np.array(plate['matrix']) @ [10, 0, 0, 1] == pytest.approx([200, 10, 100, 1])
+    bracket = next(l for l in leaves if l['virtual'])
+    assert not bracket['hidden'] and not bracket['exclude_from_bom']
+
+
+def test_bundle_keeps_each_configuration_separate(tmp_path, monkeypatch):
+    import xml.etree.ElementTree as ET
+    import zipfile
+    from app.cad import read_brep
+    root = ET.fromstring(sw_fixture.instance_tree())
+    refs = root.find('swModelList').find('swModel').findall('swReference')
+    refs[0].set('swConfigurationName', 'Default')
+    refs[1].set('swConfigurationName', 'Long')
+    archive = tmp_path / 'FRAME.zip'
+    with zipfile.ZipFile(archive, 'w') as z:
+        z.writestr('FRAME.SLDASM', b'\0' * 8 + sw_fixture.block('swXmlContents/COMPINSTANCETREE', ET.tostring(root)))
+        z.writestr('TAP PLATE.SLDPRT', sw_fixture.sldprt())
+    original_read = native.read
+    calls = []
+
+    def read_config(path, configuration=None):
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        part = original_read(path)
+        calls.append(configuration)
+        if configuration == 'Long':
+            part.configuration = swread.Configuration(1, 'Long')
+            part.solids = [BRepPrimAPI_MakeBox(160, 50, 10).Solid()]
+            part.holes = []
+        return part
+
+    monkeypatch.setattr(native, 'read', read_config)
+    folder = tmp_path / 'revision'
+    folder.mkdir()
+    pkg = native.convert_bundle(archive, folder, 'FRAME', 10_000_000)
+    plates = [p for p in pkg['parts'].values() if p['file'] == 'TAP PLATE.SLDPRT']
+    assert len(plates) == 2
+    assert calls == ['Default', 'Long']
+    assert {p['configuration'] for p in plates} == {'Default', 'Long'}
+    assert sorted(p['bbox'][0] for p in plates) == [80, 160]
+    assert len({c['part'] for c in pkg['assembly']['components'] if c['part'] in {p['id'] for p in plates}}) == 2
+    for p in plates:
+        shape = read_brep(folder / 'package' / 'geometry' / f"{p['id']}.brep")
+        assert native._bbox([shape])[0] == p['bbox']
+
+
+def test_native_bundle_feature_mapping_uses_definition_identity():
+    parts = {key: package.validate_part({'id': key, 'name': 'PLATE', 'file': 'PLATE.SLDPRT',
+                                       'configuration': config}, key)
+             for key, config in (('plate', 'Default'), ('plate-2', 'Long'))}
+    pkg = {'parts': parts, 'bundle': True}
+    imported = [{'id': 'body1', 'name': 'PLATE', 'geometry': {'source_component': 'plate'}},
+                {'id': 'body2', 'name': 'PLATE', 'geometry': {'source_component': 'plate-2'}},
+                {'id': 'body3', 'name': 'PLATE / Body 2', 'geometry': {'source_component': 'plate-2'}}]
+    link = package.match_parts(pkg, imported)
+    assert {key: p['configuration'] for key, p in link.items()} == {'body1': 'Default', 'body2': 'Long', 'body3': 'Long'}
+
+
+def test_repeated_name_aliases_still_match_uniquely():
+    part = package.validate_part({'id': 'plate', 'name': 'PLATE', 'file': 'PLATE.SLDPRT', 'step_names': ['PLATE']}, 'plate')
+    other = package.validate_part({'id': 'other', 'name': 'OTHER'}, 'other')
+    link = package.match_parts({'parts': {'plate': part, 'other': other}},
+                               [{'id': 'p1', 'name': 'PLATE', 'geometry': {}}])
+    assert link['p1']['id'] == 'plate'
+
+
+@pytest.mark.parametrize('compressed', [False, True])
+def test_assembly_xml_without_declaration(tmp_path, compressed):
+    xml = sw_fixture.instance_tree().split('?>', 1)[1].encode()
+    data = b'header' + (zlib.compress(xml) if compressed else xml)
+    key = native.INSTANCE_TREE_STREAMS[int(compressed)]
+    path = tmp_path / 'tree.sldasm'
+    path.write_bytes(b'\0' * 8 + sw_fixture.block(key, data))
+    assert native.parse_instance_tree(native.instance_tree_xml(path))['name'] == 'FRAME'

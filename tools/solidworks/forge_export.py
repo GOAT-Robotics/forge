@@ -507,6 +507,19 @@ def read_material(model):
 
 
 def read_part(model, config, warnings, probe=None):
+    """Read features and mass in the referenced configuration, restoring the user's active one."""
+    previous = str(get(model.ConfigurationManager.ActiveConfiguration, 'Name', '') or '')
+    changed = bool(config and config != previous)
+    if changed and not model.ShowConfiguration2(config):
+        raise RuntimeError(f"could not activate configuration '{config}'")
+    try:
+        return _read_active_part(model, config, warnings, probe)
+    finally:
+        if changed and not model.ShowConfiguration2(previous):
+            raise RuntimeError(f"could not restore configuration '{previous}'")
+
+
+def _read_active_part(model, config, warnings, probe=None):
     """Everything the package needs from one open part document."""
     part = cast(model, 'IPartDoc')
     title = str(get(model, 'GetTitle', '') or '')

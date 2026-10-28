@@ -161,6 +161,7 @@ def instance_tree_xml(path):
     """The component instance tree XML a SolidWorks assembly stores (plain in current files, zlib-compressed in
     older OLE-format ones)."""
     import zlib
+    import xml.etree.ElementTree as ET
     path = Path(path)
     try:
         streams = swread.container.read(path)
@@ -170,9 +171,14 @@ def instance_tree_xml(path):
         data = streams.get(key)
         if not data:
             continue
-        i = data.find(b'<?xml')
+        i = data.find(b'<')
         if 0 <= i < 64:
-            return data[i:]
+            try:
+                ET.fromstring(data[i:])
+            except ET.ParseError:
+                pass
+            else:
+                return data[i:]
         for off in range(0, min(64, len(data))):
             try:
                 return zlib.decompress(data[off:])
@@ -239,7 +245,7 @@ def parse_instance_tree(xml_bytes):
     rid = max(roots, key=lambda mid: len(refs(models[mid])))
     leaves, subs = [], []
 
-    def walk(mid, parent, path, depth, seen):
+    def walk(mid, parent, path, depth, seen, hidden=False, excluded=False):
         m = models.get(mid)
         if m is None or depth > 32 or mid in seen:
             return
@@ -250,14 +256,16 @@ def parse_instance_tree(xml_bytes):
             inst = f"{c.get('swName') or cm.get('swName') or 'component'}-{c.get('swReferenceNumber') or '1'}"
             M = parent @ mat(c.get('swTransform'))
             suppressed = yes(c.get('swSuppressed'))
+            child_hidden = hidden or yes(c.get('swHidden'))
+            child_excluded = excluded or yes(c.get('swExcludeFromBOM'))
             if ftype(cm) == 'ASSEMBLY':
                 subs.append(fname(cm))
                 if not suppressed:
-                    walk(cm.get('id'), M, path + [inst], depth + 1, seen | {mid})
+                    walk(cm.get('id'), M, path + [inst], depth + 1, seen | {mid}, child_hidden, child_excluded)
                 continue
             leaves.append({'file': fname(cm), 'model': cm.get('swName') or '', 'configuration': c.get('swConfigurationName') or cm.get('swConfigurationName') or '',
-                           'instance': inst, 'path': ' / '.join(path + [inst]), 'matrix': M.tolist(), 'suppressed': suppressed, 'hidden': yes(c.get('swHidden')),
-                           'exclude_from_bom': yes(c.get('swExcludeFromBOM')), 'virtual': yes(c.get('swIsVirtualComponent')), 'bbox': bbox_of(cm)})
+                           'instance': inst, 'path': ' / '.join(path + [inst]), 'matrix': M.tolist(), 'suppressed': suppressed, 'hidden': child_hidden,
+                           'exclude_from_bom': child_excluded, 'virtual': yes(c.get('swIsVirtualComponent')), 'bbox': bbox_of(cm)})
     rm = models[rid]
     walk(rid, np.eye(4), [rm.get('swName') or 'Assembly'], 0, frozenset())
     return {'name': rm.get('swName') or '', 'file': fname(rm), 'configuration': rm.get('swConfigurationName') or '', 'bbox': bbox_of(rm),
@@ -456,11 +464,11 @@ def convert_bundle(source, folder, name, limit, progress=None):
     virtual = _virtual_parts(asms, work / 'virtual')
     by_file = {}
     for l in leaves:
-        by_file.setdefault(l['file'].lower(), []).append(l)
+        by_file.setdefault((l['file'].lower(), l['configuration'].casefold()), []).append(l)
     parts, shapes, comps, used_ids, notes = {}, {}, [], set(), {}
     placeholder_n = 0
     (folder / 'package' / 'geometry').mkdir(parents=True, exist_ok=True)
-    for i, (fkey, insts) in enumerate(by_file.items()):
+    for i, insts in enumerate(by_file.values()):
         is_virtual = insts[0]['virtual'] or '^' in Path(insts[0]['file']).stem
         stem = Path(insts[0]['file']).stem.split('^', 1)[0] or insts[0]['model'] or f'part-{i + 1}'
         pname = clean_name(stem) or stem

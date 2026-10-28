@@ -446,15 +446,22 @@ def match_parts(pkg, parts):
         for cand in [pp['name'], pp['id'], Path(pp['file']).stem if pp['file'] else '', *pp['step_names']]:
             n = _norm(cand)
             if n:
-                index.setdefault(n, []).append(pid)
+                index.setdefault(n, set()).add(pid)
     out, used = {}, set()
     if len(pkg['parts']) == 1 and len({p['geometry'].get('source_component') for p in parts}) == 1:
         # one part document, one STEP component: every body belongs to it whatever the writer named the product
         pid = next(iter(pkg['parts']))
         return {p['id']: pkg['parts'][pid] for p in parts}
     for p in parts:
+        # Native bundles carry the package definition id through the geometry worker.
+        # This remains unambiguous for equal-shaped configurations and multi-body parts.
+        source_id = p['geometry'].get('source_component')
+        if pkg.get('bundle') and source_id in pkg['parts']:
+            out[p['id']] = pkg['parts'][source_id]
+            used.add(source_id)
+            continue
         n = _norm(_base_name(p['name']))
-        ids = index.get(n) or []
+        ids = list(index.get(n) or [])
         if len(ids) == 1:
             out[p['id']] = pkg['parts'][ids[0]]
             used.add(ids[0])

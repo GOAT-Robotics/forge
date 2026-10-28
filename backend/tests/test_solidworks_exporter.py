@@ -115,3 +115,40 @@ def test_written_package_is_accepted_by_the_importer(tmp_path):
     assert pkg['manifest']['source'] == {'cad': 'SolidWorks', 'version': '2024', 'file': 'FIXTURE.SLDASM', 'kind': 'assembly'} and not pkg['warnings']
     assert pkg['parts']['tap-plate']['holes'][0]['thread'] == 'M5×0.8' and pkg['assembly']['fasteners'][0]['length'] == 12.0
     assert (folder / 'source.step').read_bytes() == step.read_bytes()
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_part_export_reads_referenced_configuration_and_restores_active(monkeypatch, fails):
+    from types import SimpleNamespace
+    active = SimpleNamespace(Name='Default')
+    changes = []
+
+    def activate(name):
+        changes.append(name)
+        active.Name = name
+        return True
+
+    model = SimpleNamespace(ConfigurationManager=SimpleNamespace(ActiveConfiguration=active), ShowConfiguration2=activate)
+
+    def read_active(model, config, warnings, probe):
+        assert active.Name == config == 'Long'
+        if fails:
+            raise ValueError('unreadable feature')
+        return {'configuration': config}
+
+    monkeypatch.setattr(fx, '_read_active_part', read_active)
+    if fails:
+        with pytest.raises(ValueError, match='unreadable feature'):
+            fx.read_part(model, 'Long', [])
+    else:
+        assert fx.read_part(model, 'Long', []) == {'configuration': 'Long'}
+    assert active.Name == 'Default' and changes == ['Long', 'Default']
+
+
+def test_part_export_refuses_unavailable_configuration(monkeypatch):
+    from types import SimpleNamespace
+    model = SimpleNamespace(ConfigurationManager=SimpleNamespace(ActiveConfiguration=SimpleNamespace(Name='Default')),
+                            ShowConfiguration2=lambda name: False)
+    monkeypatch.setattr(fx, '_read_active_part', lambda *args: pytest.fail('wrong configuration read'))
+    with pytest.raises(RuntimeError, match='could not activate'):
+        fx.read_part(model, 'Missing', [])

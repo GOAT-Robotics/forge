@@ -22,6 +22,7 @@ import { Select } from './controls';
 import { weldability, seamKey, chooseSeams, toggleSeamOn, sameSide, addSeams, findAllSeams } from './welding';
 import { ReadinessWizard } from './readiness';
 import BulkReady from './bulkReady';
+import Prepare from './prepare';
 import { ReplaceDialog, VersionsDialog, CadSourceRow, FlatIssuesCard, type FlatIssue } from './partVersions';
 import { JobDocButton } from './docJob';
 import { QualityPage } from './quality';
@@ -153,6 +154,7 @@ function App() {
   const [holeCfg, setHoleCfg] = useState<string | null>(null);
   const [bendSim, setBendSim] = useState<string | null>(null);
   const [bulkReady, setBulkReady] = useState(false);
+  const [prepareFor, setPrepareFor] = useState<string[] | null>(null);
   const [stepsAdd, setStepsAdd] = useState<{ ids: string[]; n: number } | null>(null);
   const [asmView, setAsmViewState] = useState<'steps' | 'welds'>(() => { try { return localStorage.getItem('forge-asm-view') === 'welds' ? 'welds' : 'steps'; } catch { return 'steps'; } });
   const setAsmView = (v: 'steps' | 'welds') => { setAsmViewState(v); try { localStorage.setItem('forge-asm-view', v); } catch { /* ignore */ } };
@@ -846,6 +848,7 @@ function App() {
               </nav>}
               <div className="ml-auto flex flex-none items-center gap-1.5 group-[.t4]/doc:gap-0.5">
                 {vendor && <span className="text-xs text-muted-foreground">Supplier review · read only</span>}
+                {!vendor && editable && rev?.status === 'ready' && <Button type="button" size="sm" disabled={!!job} onClick={() => setPrepareFor([])}><Sparkles />Prepare</Button>}
                 {!vendor && importingRevision && <Button type="button" variant="ghost" title="View import progress" onClick={showImport}><LoaderCircle className="animate-spin" />{importingRevision.progress || 0}%</Button>}
                 {!vendor && <DropdownMenu open={moreOpen} onOpenChange={setMoreOpen}>
                   <Tip label="More">
@@ -919,7 +922,7 @@ function App() {
                         { value: 'hidden', label: 'Hidden in viewer', hint: String(hiddenIds.length) },
                         { value: 'excluded', label: 'Not for production', hint: String(parts.filter((p: Any) => p.excluded).length) },
                       ]} /></div>
-                        {editable && <Tip label="Make many parts production ready (all sheet metal, all machining or the selection)"><Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Make many parts production ready" onClick={() => setBulkReady(true)}><ListChecks /></Button></Tip>}</div>
+                        {editable && <Tip label="Prepare manufacturing details and drawings"><Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Prepare for manufacturing" onClick={() => setPrepareFor(multi.length > 1 ? [...multi] : [])}><ListChecks /></Button></Tip>}</div>
                       <Button variant="outline" className={cn('mx-1.5 mb-1 h-auto justify-start gap-2.5 bg-subtle px-2.5 py-1.5 text-left font-medium shadow-none', !selected && 'border-primary/30 bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground')} onClick={() => choosePart(null)}>
                         <Layers className="size-[18px]" /><span className="grid">Complete assembly<span className="text-2xs font-normal text-muted-foreground">{rev.manifest.occurrences || 0} body instances</span></span>
                       </Button>
@@ -1094,7 +1097,7 @@ function App() {
                       ) : multi.length > 1 ? (
                         <GroupPanel templates={templates.filter((t: Any) => t.kind === 'process')} onProcess={tid => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: multi, template_id: tid }); await loadRevision(rev.id); notify('Process template applied'); })}
                           onJoint={() => startWeld([...multi])} parts={parts.filter((p: Any) => multi.includes(p.id))} vendor={vendor} editable={editable} busy={busy}
-                          onEdit={() => { setEditing({ group: parts.filter((p: Any) => multi.includes(p.id)) }); setModal('group-spec'); }} onReady={() => setBulkReady(true)}
+                          onEdit={() => { setEditing({ group: parts.filter((p: Any) => multi.includes(p.id)) }); setModal('group-spec'); }} onReady={() => setPrepareFor([...multi])}
                           onBulk={bulk} onExclude={() => setExcluding(parts.filter((p: Any) => multi.includes(p.id)))} onRemove={id => { const next = multi.filter(x => x !== id); setMulti(next); if (selected === id) setSelected(next[next.length - 1] || null); }}
                           onFocus={id => setSelected(id)} onClear={() => choosePart(null)} />
                       ) : part ? (() => {
@@ -1106,7 +1109,7 @@ function App() {
                         const asmKey = path.join(' / ');
                         const siblings = path.length ? parts.filter((p: Any) => (p.assembly_path || []).slice(0, path.length).join(' / ') === asmKey) : [];
                         const differ = siblings.filter((p: Any) => p.category !== part.category);
-                        const missing = (k: string) => editable ? <Button type="button" variant="outline" size="xs" className="h-5 border-dashed px-2 text-2xs text-primary shadow-none hover:border-primary hover:bg-transparent hover:text-primary" onClick={() => setReadyFor(part.id)}>Add</Button> : <span className="text-muted-foreground">—</span>;
+                        const missing = (k: string) => editable ? <Button type="button" variant="outline" size="xs" className="h-5 border-dashed px-2 text-2xs text-primary shadow-none hover:border-primary hover:bg-transparent hover:text-primary" onClick={() => setPrepareFor([part.id])}>Add</Button> : <span className="text-muted-foreground">—</span>;
                         const row = (label: string, value: Any, opt = false) => (opt && !value) ? null : <div className={kv} key={label}><span className="shrink-0 text-muted-foreground">{label}</span><span className={kvValue}>{value || missing(label)}</span></div>;
                         const card = 'mx-4 mb-3 flex gap-2.5 rounded-lg border p-3';
                         const cardText = 'mt-0.5 mb-2 text-xs leading-relaxed text-muted-foreground';
@@ -1133,6 +1136,7 @@ function App() {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="min-w-[230px]">
                                 <DropdownMenuItem onClick={() => { setFlags(part.id, { hidden: !part.hidden }); }}>{part.hidden ? <Eye /> : <EyeOff />}{part.hidden ? 'Show in viewer by default' : 'Hide in viewer by default'}</DropdownMenuItem>
+                                {editable && !part.excluded && <DropdownMenuItem onClick={() => setReadyFor(part.id)}><ListChecks />Detailed engineering review</DropdownMenuItem>}
                                 {editable && !part.excluded && <DropdownMenuItem onClick={() => { setEditing(JSON.parse(JSON.stringify(part))); setModal('spec'); }}><Settings />All manufacturing details</DropdownMenuItem>}
                                 {editable && !part.excluded && <DropdownMenuItem onClick={() => { startWeld([part.id]); }}><Flame />Weld this component</DropdownMenuItem>}
                                 {editable && <DropdownMenuItem onClick={() => { addToSteps([part.id]); }}><ListPlus />Add as assembly step</DropdownMenuItem>}
@@ -1164,23 +1168,23 @@ function App() {
                               {editable && <Button type="button" variant="outline" size="xs" className="text-destructive hover:bg-danger-soft hover:text-destructive" onClick={() => setExcluding([part])}><Ban />Not for production</Button>}</div></div>
                           ) : (
                             <div className={cn(card, 'flex-col bg-subtle', ready && 'border-success/40')}>
-                              <div className="grid grid-cols-3 gap-1.5">
+                              <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Review details</summary><div className="mt-2 grid grid-cols-3 gap-1.5">
                                 <span className={step(specDone)} title={specDone ? 'Specification complete' : `${openFindings.length} open specification items`}><i className={stepDot(specDone)}>{specDone ? <Check className="size-[11px]" /> : openFindings.length}</i>Spec</span>
                                 <span className={step(!!part.reviewed)}><i className={stepDot(!!part.reviewed)}>{part.reviewed ? <Check className="size-[11px]" /> : '2'}</i>Design</span>
                                 <span className={step(!!part.doc_reviewed)}><i className={stepDot(!!part.doc_reviewed)}>{part.doc_reviewed ? <Check className="size-[11px]" /> : '3'}</i>Drawing</span>
-                              </div>
-                              {editable ? <Button type="button" variant={ready ? 'outline' : 'default'} className={cn('w-full', ready && 'text-success hover:text-success')} onClick={() => setReadyFor(part.id)}>{ready ? <><CheckCircle2 />Production ready</> : <><Sparkles />Make production ready</>}</Button>
+                              </div></details>
+                              {editable ? <Button type="button" variant={ready ? 'outline' : 'default'} className={cn('w-full', ready && 'text-success hover:text-success')} onClick={() => setPrepareFor([part.id])}>{ready ? <><CheckCircle2 />Production ready</> : <><Sparkles />Prepare this part</>}</Button>
                                 : <p className="flex items-center gap-1.5 text-xs leading-snug text-muted-foreground">{ready ? <><CheckCircle2 className="size-3.5 text-success" />Production ready</> : 'Engineering is still completing this part — manufacture only from released drawings.'}</p>}
                             </div>
                           )}
 
-                          {editable && !part.excluded && <div className="grid gap-1.5 px-4 pb-3">
+                          {editable && !part.excluded && <details className="px-4 pb-3"><summary className="cursor-pointer text-xs text-muted-foreground">Advanced part settings</summary><div className="mt-2 grid gap-1.5">
                             <Label className={propRow}><span className="text-muted-foreground">Type</span><Select size="sm" value={part.category} disabled={busy} onChange={v => action(async () => { if (v === part.category) return; await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: [part.id], category: v }); await loadRevision(rev.id); notify(`${part.name} is now ${categories[v]}`); })} options={Object.entries(categories).map(([k, v]) => ({ value: k, label: v }))} /></Label>
                             <Label className={propRow}><span className="text-muted-foreground">Process</span><Select size="sm" value={part.process_template_id || ''} disabled={busy} onChange={v => action(async () => { await api(`/revisions/${rev.id}/parts/process-template`, 'POST', { ids: [part.id], template_id: v }); await loadRevision(rev.id); })} options={[{ value: '', label: 'Custom' }, ...templates.filter((t: Any) => t.kind === 'process').map((t: Any) => ({ value: t.id, label: t.name }))]} /></Label>
                             {siblings.length > 1 && <div className={propRow}><span className="text-muted-foreground">Assembly</span><div className="flex min-w-0 flex-wrap items-center gap-1.5"><Folder className="size-3.5 text-muted-foreground" /><span className="max-w-[130px] truncate font-medium" title={asmKey}>{path[path.length - 1]}</span><span className="text-xs text-muted-foreground">{siblings.length} parts</span>
                               <Button type="button" variant="link" size="xs" className={linkBtn} onClick={() => { setMulti(siblings.map((p: Any) => p.id)); setSelected(part.id); }}>Select</Button>
                               {differ.length > 0 && <Button type="button" variant="link" size="xs" className={linkBtn} disabled={busy} onClick={() => action(async () => { await api(`/revisions/${rev.id}/parts/bulk`, 'POST', { ids: siblings.map((p: Any) => p.id), category: part.category }); await loadRevision(rev.id); notify(`${path[path.length - 1]}: ${siblings.length} parts are now ${categories[part.category]}`); })}>Make all {categories[part.category].toLowerCase()}</Button>}</div></div>}
-                          </div>}
+                          </div></details>}
                           {!vendor && <CadSourceRow part={part} editable={editable} busy={busy || !!job} onReplace={() => setReplacing(part)} onHistory={() => setVersionsOf(part)} />}
 
                           <Tabs value={detail} onValueChange={setDetail} className="sticky top-0 z-10 gap-0 bg-card px-4 pt-1 pb-0.5">
@@ -1275,7 +1279,7 @@ function App() {
                           <div className="flex-1 overflow-auto px-4 pt-3 pb-5">
                             <div className="grid grid-cols-2 gap-2.5"><div className="rounded-lg border bg-subtle px-3 py-3.5"><span className="block text-2xl font-semibold tabular-nums">{parts.length}</span><span className="text-xs text-muted-foreground">Part definitions</span></div><div className="rounded-lg border bg-subtle px-3 py-3.5"><span className="block text-2xl font-semibold tabular-nums">{holes}</span><span className="text-xs text-muted-foreground">Named bores</span></div></div>
                             <div className="mt-1.5 mb-3.5">{Object.entries(categories).map(([k, v]) => <div key={k} className={kv}><span className="flex items-center gap-2 text-muted-foreground"><Swatch hex={categoryColors[k]} /> {v}</span><span className={cn(kvValue, 'font-medium tabular-nums')}>{parts.filter((p: Any) => p.category === k).length}</span></div>)}</div>
-                            <div className="my-3.5 flex gap-2.5 rounded-lg border border-warning/30 bg-warning-soft p-3 text-warning"><ShieldCheck className="size-5 shrink-0" /><div><div className="text-sm font-medium">{blocking} release blockers</div><p className="mt-0.5 text-sm leading-relaxed">Includes missing specifications and manual engineering checks.</p></div></div>
+                            <div className="my-3.5 rounded-lg border bg-subtle p-3"><div className="text-sm font-medium">{readyCount} of {releaseParts.length} parts ready</div><p className="mt-1 text-sm text-muted-foreground">{releaseParts.length === readyCount ? 'Ready for final release.' : 'Prepare shared details and drawings, then review what needs your input.'}</p>{editable && <Button className="mt-3 w-full" disabled={!!job} onClick={() => setPrepareFor([])}><Sparkles />Prepare for manufacturing</Button>}</div>
                             {rev.manifest.package && (() => {
                               const pk = rev.manifest.package; const h = pk.holes || {}; const ins = pk.inserts || {}; const unmatched = (h.unmatched || []).length + (ins.unmatched || []).length + (pk.unmatched_parts || []).length;
                               return <div className="my-3.5 rounded-lg border bg-subtle p-3">
@@ -1301,8 +1305,8 @@ function App() {
                               <Button variant="outline" className="mb-2 h-auto w-full justify-between gap-3 p-3 text-left font-normal whitespace-normal text-muted-foreground shadow-none" key={file} disabled={!rev.assets?.includes(file)} onClick={() => doc(`/revisions/${rev.id}/assets/${file}`, file, title)}><Files className="size-[22px]" /><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-foreground">{title}</span><span className="mt-0.5 block text-2xs">{rev.assets?.includes(file) ? sub : 'Generate the manufacturing pack first'}</span></span><Eye /></Button>
                             ))}
                             {!vendor && <div className="mt-1 grid gap-2">
-                              <Button className="w-full" disabled={!!job || rev.status !== 'ready'} onClick={() => generate()}><FileText />Generate manufacturing pack</Button>
-                              <Button variant="outline" className="w-full" disabled={rev.status !== 'ready' || !!job} onClick={() => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); })}><ShieldCheck />Production readiness</Button>
+                              <details><summary className="cursor-pointer text-sm text-muted-foreground">Advanced preparation</summary><Button variant="outline" className="mt-2 w-full" disabled={!!job || rev.status !== 'ready'} onClick={() => generate()}><FileText />Regenerate manufacturing pack</Button></details>
+                              <Button variant="outline" className="w-full" disabled={rev.status !== 'ready' || !!job} onClick={() => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setModal('release'); })}><ShieldCheck />Review & release</Button>
                               {editable && <Button variant="outline" className="w-full" title="Re-run make/buy name rules and hide small bought-in items on parts you have not classified yet" onClick={() => action(async () => { const r = await api(`/revisions/${rev.id}/reclassify`, 'POST'); await loadRevision(rev.id); notify(`Re-classified ${r.recategorised} parts, hid ${r.hidden} bought-in items. Reviewed parts were left alone.`); })}><RefreshCw />Re-run classification</Button>}
                             </div>}
                             <div className="my-3.5 flex gap-2.5 rounded-lg border bg-subtle p-3 text-muted-foreground"><Palette className="size-[18px] shrink-0" /><p className="text-sm leading-relaxed">Parts are coloured by their specified coating colour; uncoated parts use a neutral tone per category. Pick a part in the viewer or navigator to inspect it.</p></div>
@@ -1313,7 +1317,7 @@ function App() {
                   </div>
                 )}
 
-                {tab === 'rules' && <DesignChecks parts={parts} onWizard={id => setReadyFor(id)} onOpen={id => { choosePart(id); setTab('parts'); }} onRules={() => setModal(project && (project.permissions || []).includes('project.settings') ? 'project-settings' : 'rules')} />}
+                {tab === 'rules' && <DesignChecks parts={parts} onWizard={id => setPrepareFor([id])} onOpen={id => { choosePart(id); setTab('parts'); }} onRules={() => setModal(project && (project.permissions || []).includes('project.settings') ? 'project-settings' : 'rules')} />}
 
                 {tab === 'joborders' && !vendor && project && (
                   rev.status !== 'released' && !project.revisions.some((r: Any) => r.status === 'released')
@@ -1424,6 +1428,12 @@ function App() {
       <DialogHost />
       <Toaster />
       {shortcutsOpen && <ShortcutsDialog {...prefsApi} close={() => setShortcutsOpen(false)} />}
+      {prepareFor !== null && rev && editable && <Prepare key={rev.id + ':' + prepareFor.join(',')} revision={rev.id} parts={parts} selection={prepareFor}
+        busyJob={!!job} canDesign={can('design.review')} canDrawing={can('drawing.review')} canRelease={can('revision.release')} suspended={!!drawingPart || !!preview}
+        close={() => setPrepareFor(null)} done={() => loadRevision(rev.id)}
+        openPart={id => { setPrepareFor(null); choosePart(id); setTab('parts'); setLayout({ right: true }); }}
+        openDrawing={async id => { const p = parts.find((p: Any) => p.id === id); setPreview({ blob: await asset(`/parts/${id}/assets/drawing.pdf`), name: (p?.name || 'Part') + '_drawing.pdf', title: 'Review drawing — ' + (p?.alias || p?.name || 'Part') }); }} advanced={() => { setPrepareFor(null); setBulkReady(true); }}
+        release={() => action(async () => { setRelease(await api(`/revisions/${rev.id}/release-check`)); setPrepareFor(null); setModal('release'); })} />}
       {bulkReady && rev && <BulkReady revision={rev.id} parts={parts} selection={multi.length > 1 ? multi : category === 'sheet_metal' || category === 'machining' ? parts.filter((p: Any) => p.category === category).map((p: Any) => p.id) : []}
         canDesign={can('design.review')} canDrawing={can('drawing.review')} close={() => setBulkReady(false)} done={() => loadRevision(rev.id)} />}
       {joSelection && project && <JobOrderDialog projects={projects} projectId={project.id} selection={joSelection} title={joTitle} ctx={{ busy, action, notify }} close={() => { setJoSelection(null); setJoTitle(''); }} onCreated={jo => { setJoSelection(null); setJoTitle(''); openJobOrder(jo.id); }} />}

@@ -686,6 +686,51 @@ def bulk_ready(rid:str,a:BulkReady,request:Request):
   with db.connect() as c:job=enqueue(c,rid,'documents',{'part_ids':stale})
  with db.connect() as c:db.audit(c,u['name'],'parts.bulk_ready',{'count':len(results),'fill':sorted(a.fill),'checks':sorted(a.manual_checks),'approve_k':a.approve_k,'waived':bool(a.waive_warnings),'design_review':a.design_review,'drawing_review':a.drawing_review,'regenerate':bool(job)},rid)
  return {'results':results,'job':job}
+class PrepareGroup(BaseModel):
+ model_config=ConfigDict(extra='forbid')
+ ids:list[str]=Field(min_length=1,max_length=2000)
+ fill:dict[str,str]=Field(default_factory=dict)
+class PrepareRevision(BaseModel):
+ model_config=ConfigDict(extra='forbid')
+ ids:list[str]=Field(min_length=1,max_length=2000)
+ groups:list[PrepareGroup]=Field(default_factory=list,max_length=2000)
+@app.post('/api/revisions/{rid}/prepare')
+def prepare_revision(rid:str,a:PrepareRevision,request:Request):
+ """Fill known defaults and shared answers, then queue missing/stale drawings. Never signs off engineering."""
+ from .preparation import prepare_spec,missing_details
+ u=revision_access(request,rid,True);mutable(rid)
+ settings=db.project_settings(project_of_revision(rid));ids=list(dict.fromkeys(a.ids));fills={}
+ for group in a.groups:
+  if set(group.fill)-set(READY_FIELDS):raise HTTPException(422,'Unsupported preparation field')
+  if any(len(v)>1000 for v in group.fill.values()):raise HTTPException(422,'Preparation answers must be at most 1000 characters')
+  for pid in group.ids:
+   if pid not in ids:raise HTTPException(422,'Group part outside preparation selection')
+   if pid in fills:raise HTTPException(422,'A part appears in more than one answer group')
+   fills[pid]=group.fill
+ planned=[];results=[];stale=[]
+ # Validate the whole selection before any mutation, including permissions, membership and spec validation.
+ for pid in ids:
+  row=db.row('SELECT * FROM parts WHERE id=? AND revision_id=?',(pid,rid))
+  if not row:raise HTTPException(422,'Part outside revision: '+pid)
+  p=deserialize(row)
+  if p['category'] in ('purchased','other') or p.get('excluded'):continue
+  spec=prepare_spec(p,settings,fills.get(pid,{}))
+  changed=json.dumps(spec,sort_keys=True)!=json.dumps(p['spec'],sort_keys=True)
+  if changed:
+   sp=Spec(**{**db.DEFAULT_SPEC,**spec});sp.operations=validate_spec(p,sp);spec=json.loads(sp.model_dump_json())
+   planned.append((pid,spec))
+  p['spec']=spec;folder=db.revdir(rid)/'parts'/pid
+  if changed or not (folder/'drawing-scene.json').exists() or (folder/'.drawing-invalid').exists():stale.append(pid)
+  results.append({'id':pid,'missing':missing_details(p),'changed':changed})
+ with db.connect() as c:
+  for pid,spec in planned:
+   c.execute("UPDATE parts SET spec=?,reviewed=0,reviewed_by='',reviewed_at='' WHERE id=?",(json.dumps(spec),pid))
+  db.audit(c,u['name'],'revision.prepared',{'parts':len(results),'updated':len(planned),'drawings':len(stale)},rid)
+ for pid,_ in planned:invalidate(rid,pid)
+ job=None
+ if stale:
+  with db.connect() as c:job=enqueue(c,rid,'documents',{'part_ids':stale})
+ return {'results':results,'updated':len(planned),'job':job}
 class BulkParts(BaseModel):
  model_config=ConfigDict(extra='forbid')
  ids:list[str]=Field(min_length=1,max_length=2000);excluded:bool|None=None;exclusion_reason:str=Field(default='',max_length=300);hidden:bool|None=None;category:str|None=None

@@ -71,8 +71,9 @@ def test_assembly_steps_crud_order_and_instructions(tmp_path, monkeypatch):
         from pypdf import PdfReader
         import io
         r = PdfReader(io.BytesIO(pdf.content))
-        assert len(r.pages) == 3
-        text = r.pages[1].extract_text()
+        assert len(r.pages) == 4  # assembly cover plus three steps
+        assert 'BUILD ORDER' in r.pages[0].extract_text()
+        text = r.pages[2].extract_text()
         assert 'Fit both brackets' in text and 'ISO 4762 M5' in text
         assert client.delete(f"/api/assembly-steps/{c['id']}", headers=H).status_code == 200
         assert [s['seq'] for s in client.get(url).json()] == [0, 1]
